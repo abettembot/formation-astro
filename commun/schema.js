@@ -13,8 +13,8 @@ export { THREE };
 
 // ---------- Couleurs 3D (alignées sur charte.css) ----------
 export const COULEURS = {
-  rouge: 0xff5f4f,   // accent / sélection
-  ambre: 0xffc861,
+  accent: 0x5b9bd5,  // bleu acier Repères-Astro : sélection et survol
+  ambre: 0xffc861,   // lumière des astres (progression étoile → corail)
   etoile: 0xf6e7b0,  // lumière incidente
   orange: 0xff9a4a,
   corail: 0xff6b5e,
@@ -113,7 +113,14 @@ export function createSchema(cfg) {
     </section>
     <section class="group" id="info" aria-live="polite"></section>
     <p class="hint">Glisser : tourner · Molette ou pincer : zoomer · Clic droit ou deux doigts : déplacer · Cliquer un élément : l'expliquer</p>`;
-  document.body.append(stage, labelsEl, panel, notice);
+  // logo de l'association, discret dans un coin de la vue 3D
+  const brand = document.createElement("a");
+  brand.className = "brand";
+  brand.href = "https://reperes-astro.fr";
+  brand.target = "_blank"; brand.rel = "noopener";
+  brand.title = "Repères-Astro";
+  brand.innerHTML = `<img src="${new URL("images/logo-reperes-astro.png", import.meta.url)}" alt="Repères-Astro.fr" width="323" height="100">`;
+  document.body.append(stage, labelsEl, panel, notice, brand);
 
   // ---------- Rendu ----------
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -327,7 +334,7 @@ export function createSchema(cfg) {
     const timer = new THREE.Timer();
     timer.connect(document);
     const v3 = new THREE.Vector3();
-    const accent = new THREE.Color(COULEURS.rouge);
+    const accent = new THREE.Color(COULEURS.accent);
 
     renderer.setAnimationLoop(() => {
       timer.update();

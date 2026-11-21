@@ -13,8 +13,19 @@ Le style et le comportement de tous les supports viennent de deux fichiers parta
 Pour faire évoluer la charte ou un comportement commun, on modifie ces fichiers : tous les supports suivent. Un besoin propre à un seul schéma qui pourrait resservir s'ajoute à `schema.js` (nouvelle option, nouveau type de commande), pas dans la page.
 Après une modification de `commun/`, vérifier que **tous** les schémas existants fonctionnent encore.
 
+## Identité Repères-Astro
+La charte reprend le modèle PowerPoint de l'association (`D:\astro\TemplatePowerPoint\Template Reperes Astro.pptx`).
+- Couleurs : fond nuit `#070b14` → bleu nuit `#0e1830`, titres `#f6f9fd`, texte `#c4d0e0`, accent bleu acier `#5b9bd5`, bleu clair `#7eb4e8`, filets blancs à 12 %.
+- Polices : Georgia pour les titres (graisse normale), Arial pour tout le reste. Surtitres en Arial gras, en capitales espacées (`.eyebrow`), couleur accent.
+- Logo : `commun/images/logo-reperes-astro.png` (blanc sur transparent), avec un lien vers https://reperes-astro.fr. `schema.js` l'ajoute automatiquement, de façon discrète, en bas à droite de chaque schéma. L'accueil l'affiche en couverture et en pied de page.
+- Photo de couverture : `commun/images/m42-orion.jpg`, la photo de la page titre du modèle. Toujours la créditer « © SLO ».
+
+## Page d'accueil : à mettre à jour à chaque ajout
+**Chaque nouveau support doit être ajouté au catalogue de `index.html`, dans le même commit que le support lui-même.** Un support absent de l'accueil est considéré comme non terminé.
+Une carte `<a class="card">` par support, la plus récente en premier, avec une catégorie (`.cat`, « Thème · Sous-thème »), un titre `h3`, une phrase de description et 2 à 4 mots-clés (`.tags`). Si un support est modifié de façon notable, mettre sa carte à jour.
+
 ## Structure
-- `index.html` : accueil, une `<a class="card">` par schéma, la plus récente en premier (catégorie, titre, une phrase, 2 à 4 mots-clés).
+- `index.html` : accueil (couverture + catalogue des supports).
 - `<nom-du-schema>/index.html` : un dossier par schéma (nom en minuscules avec tirets). Modèle de référence : `telescope-newton/index.html`.
 - `.nojekyll` : désactive Jekyll sur GitHub Pages.
 
@@ -31,11 +42,11 @@ Après une modification de `commun/`, vérifier que **tous** les schémas exista
 3. Déclarer chaque élément avec `S.part(id, nom, { eclate, ancre, texte, chiffres, extra, bind })`, puis ajouter ses meshes avec `S.add(part, mesh(...))`.
 4. Les phénomènes animés passent par `S.onFrame(({ dt, time, explode }) => ...)`. Utiliser `time`, qui s'arrête quand « Animation » est désactivée. Ajouter les étiquettes libres avec `S.label(texte, () => position, { lumiere: true, visible })`.
 5. Terminer par `S.start()`.
-6. Ajouter la carte sur l'accueil.
+6. Ajouter la carte au catalogue de l'accueil (obligatoire, voir plus haut).
 
 ## Charte visuelle 3D
 - Matériaux : uniquement les fabriques `materiaux` (peinture, flocage, miroir, verre, noir, alu, caoutchouc, lentille). Ajouter un nouveau matériau dans `schema.js` s'il en manque un.
-- Couleurs des phénomènes : `COULEURS` (etoile → ambre → orange → corail pour une progression, rouge réservé à la sélection et à l'interface).
+- Couleurs des phénomènes : `COULEURS` (etoile → ambre → orange → corail pour une progression de lumière). Le bleu `accent` est réservé à la sélection et à l'interface.
 - Lumière et rayons : lignes fines semi-transparentes et particules lumineuses (`textureHalo()`) qui se déplacent le long du trajet.
 - Échelle : 1 unité = une dimension réaliste choisie pour le schéma (ex. 100 mm), indiquée en commentaire en tête du script.
 

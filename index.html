@@ -3,27 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Supports pédagogiques astro</title>
-<meta name="description" content="Schémas 3D interactifs pour les formations et stages d'astronomie du club.">
+<title>Supports pédagogiques Repères-Astro</title>
+<meta name="description" content="Schémas 3D interactifs pour les formations et stages d'astronomie de Repères-Astro.">
 <link rel="stylesheet" href="commun/charte.css">
 </head>
 <body class="accueil">
-<main>
-  <div class="eyebrow">Club d'astronomie · Stages et formations</div>
-  <h1>Supports pédagogiques</h1>
-  <p class="lead">Des schémas en 3D à manipuler : tourner, zoomer, éclater les pièces et suivre les phénomènes en mouvement. Ils fonctionnent sur ordinateur, tablette et téléphone.</p>
 
-  <!-- Une carte par schéma, la plus récente en premier. -->
-  <div class="grid">
-    <a class="card" href="telescope-newton/">
-      <span class="cat">Instruments · Optique</span>
-      <h2>Télescope de Newton</h2>
-      <p>Vue éclatée des pièces d'un 200/1000 et trajet animé de la lumière, du miroir primaire jusqu'à l'œil.</p>
-      <div class="tags"><span>miroirs</span><span>foyer</span><span>grossissement</span></div>
+<header class="cover">
+  <div class="wrap">
+    <a class="brand" href="https://reperes-astro.fr" target="_blank" rel="noopener" title="Repères-Astro">
+      <img src="commun/images/logo-reperes-astro.png" alt="Repères-Astro.fr" width="323" height="100">
     </a>
+    <div class="eyebrow">Formation astronomie</div>
+    <h1>Supports pédagogiques</h1>
+    <p class="lead">Des schémas en 3D à manipuler pendant nos stages et chez soi : tourner, zoomer, démonter les instruments et suivre les phénomènes en mouvement.</p>
+    <p class="meta">Schémas interactifs<span class="dot"></span>Ordinateur, tablette et téléphone<span class="dot"></span>Accès libre</p>
   </div>
+  <span class="credit">M42 · Nébuleuse d'Orion · © SLO</span>
+</header>
 
-  <footer>Cliquez sur un élément dans un schéma pour afficher son explication.</footer>
+<main class="catalogue">
+  <div class="wrap">
+    <div class="eyebrow">Programme</div>
+    <h2>Les supports disponibles</h2>
+    <p class="intro">Choisissez un support. Dans chaque schéma, cliquez sur un élément pour afficher son explication.</p>
+
+    <!-- CATALOGUE : une carte par support, la plus récente en premier. À mettre à jour à chaque nouvel ajout. -->
+    <div class="grid">
+      <a class="card" href="telescope-newton/">
+        <span class="cat">Instruments · Optique</span>
+        <h3>Télescope de Newton</h3>
+        <p>Vue éclatée des pièces d'un 200/1000 et trajet animé de la lumière, du miroir primaire jusqu'à l'œil.</p>
+        <div class="tags"><span>miroirs</span><span>foyer</span><span>grossissement</span></div>
+      </a>
+    </div>
+  </div>
 </main>
+
+<footer>
+  <div class="wrap">
+    <a class="brand" href="https://reperes-astro.fr" target="_blank" rel="noopener" title="Repères-Astro">
+      <img src="commun/images/logo-reperes-astro.png" alt="Repères-Astro.fr" width="323" height="100">
+    </a>
+    <span>Supports de formation de l'association Repères-Astro</span>
+  </div>
+</footer>
 </body>
 </html>

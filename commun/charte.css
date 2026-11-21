@@ -1,30 +1,32 @@
 /* =====================================================================
-   Charte graphique commune — Supports pédagogiques astro
+   Charte graphique commune — Supports pédagogiques Repères-Astro
+   Reprise du modèle PowerPoint « Template Repères Astro » :
+   nuit bleu profond, titres Georgia, texte Arial, accent bleu acier,
+   surtitres en capitales espacées, filets blancs très légers.
    Modifier ce fichier met à jour TOUS les supports (accueil + schémas).
-   Univers : « nuit d'observation » — fond nuit, accent rouge lampe
-   frontale, lumière des astres en ambre.
    ===================================================================== */
-@import url("https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
 
 :root {
-  /* Couleurs */
-  --night: #0a0e16;          /* fond */
-  --night-2: #121a28;        /* halo du fond */
-  --panel: rgba(16, 22, 34, 0.86);
-  --card: rgba(18, 25, 38, 0.9);
-  --line: rgba(160, 180, 210, 0.16);
-  --ink: #e8e4da;            /* texte */
-  --ink-dim: #9aa3b2;        /* texte secondaire */
-  --red: #ff5f4f;            /* accent interface (lampe rouge) */
-  --amber: #ffc861;          /* lumière, chiffres, mises en avant */
-  --star: #f6e7b0;
-  /* Typographie */
-  --font-display: "Sora", "Segoe UI", system-ui, sans-serif;
-  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  /* Couleurs (valeurs exactes du modèle PowerPoint) */
+  --night: #070b14;          /* fond principal */
+  --night-2: #0e1830;        /* bleu nuit des dégradés */
+  --panel: rgba(10, 17, 32, 0.88);
+  --card: rgba(14, 24, 48, 0.72);
+  --line: rgba(255, 255, 255, 0.12);   /* filets */
+  --title: #f6f9fd;          /* titres */
+  --ink-strong: #eef3fa;     /* texte mis en avant */
+  --ink: #c4d0e0;            /* texte courant */
+  --ink-dim: #8b9ab0;        /* texte secondaire, métadonnées */
+  --accent: #5b9bd5;         /* bleu acier : surtitres, puces, numéros, sélection */
+  --accent-light: #7eb4e8;   /* bleu clair : chiffres, surtitre de couverture */
+  --accent-deep: #2f6fc4;
+  --light: #ffc861;          /* lumière des astres dans les schémas */
+  /* Typographie (polices du modèle, présentes sur tous les systèmes) */
+  --font-title: Georgia, "Times New Roman", serif;
+  --font-body: Arial, "Helvetica Neue", Helvetica, sans-serif;
   /* Mise en page */
   --panel-width: 340px;
-  --radius: 10px;
+  --radius: 8px;
   color-scheme: dark;
 }
 
@@ -32,18 +34,27 @@
 [hidden] { display: none !important; }
 body {
   margin: 0;
-  background: radial-gradient(ellipse at 70% 30%, var(--night-2), var(--night) 70%) fixed;
+  background: linear-gradient(160deg, var(--night) 30%, var(--night-2)) fixed;
   background-color: var(--night);
   color: var(--ink);
   font: 14px/1.5 var(--font-body);
 }
 button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible, .lbl:focus-visible {
-  outline: 2px solid var(--red); outline-offset: 2px;
+  outline: 2px solid var(--accent-light); outline-offset: 2px;
 }
 
 /* ---------- Éléments typographiques partagés ---------- */
-.eyebrow { font: 500 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .12em; color: var(--red); margin-bottom: 8px; }
-.spec { font: 400 12px/1.5 var(--font-mono); color: var(--amber); }
+.eyebrow {
+  font: 700 10.5px/1.2 var(--font-body);
+  text-transform: uppercase; letter-spacing: .3em;
+  color: var(--accent); margin-bottom: 8px;
+}
+.spec { font: 400 12.5px/1.5 var(--font-body); color: var(--accent-light); font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); vertical-align: middle; margin: 0 10px; }
+
+/* Logo de l'association */
+.brand { display: inline-block; line-height: 0; }
+.brand img { display: block; height: 100%; width: auto; }
 
 /* =====================================================================
    Page schéma (body.schema)
@@ -52,22 +63,33 @@ body.schema { height: 100vh; height: 100dvh; overflow: hidden; }
 #stage { position: fixed; inset: 0; }
 #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
+/* Logo discret en bas à droite de la vue 3D */
+body.schema > .brand {
+  position: fixed;
+  right: max(18px, env(safe-area-inset-right, 0px));
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  height: 30px;
+  opacity: .55;
+  transition: opacity .2s;
+}
+body.schema > .brand:hover { opacity: .95; }
+
 /* Étiquettes 3D */
 #labels { position: fixed; inset: 0; pointer-events: none; }
 .lbl {
   position: absolute; left: 0; top: 0;
   pointer-events: auto; cursor: pointer;
-  font: 500 11.5px/1 var(--font-body); letter-spacing: 0.02em;
-  color: var(--ink);
-  background: rgba(10, 14, 22, 0.72);
+  font: 400 11.5px/1 var(--font-body); letter-spacing: 0.02em;
+  color: var(--ink-strong);
+  background: rgba(7, 11, 20, 0.75);
   border: 1px solid var(--line);
-  padding: 4px 7px; border-radius: 4px;
+  padding: 4px 7px; border-radius: 3px;
   white-space: nowrap;
   transition: border-color .15s, color .15s;
 }
 .lbl::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 10px; background: var(--ink-dim); opacity: .6; }
-.lbl:hover, .lbl.on { border-color: var(--red); color: #fff; }
-.lbl.light { color: var(--amber); border-color: rgba(255, 200, 97, .35); cursor: default; }
+.lbl:hover, .lbl.on { border-color: var(--accent); color: #fff; }
+.lbl.light { color: var(--light); border-color: rgba(255, 200, 97, .35); cursor: default; }
 
 /* Panneau */
 #panel {
@@ -77,57 +99,57 @@ body.schema { height: 100vh; height: 100dvh; overflow: hidden; }
   bottom: max(16px, env(safe-area-inset-bottom, 0px));
   width: var(--panel-width);
   display: flex; flex-direction: column; gap: 14px;
-  padding: 18px;
+  padding: 20px 18px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   backdrop-filter: blur(8px);
   overflow-y: auto;
 }
-#panel header h1 { font: 700 22px/1.1 var(--font-display); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
-#panel header p { margin: 6px 0 0; color: var(--ink-dim); font: 400 12px/1.4 var(--font-mono); }
-.home { display: inline-block; margin-bottom: 12px; font-size: 12px; color: var(--ink-dim); text-decoration: none; }
-.home:hover { color: var(--ink); }
+#panel header h1 { font: 400 26px/1.1 var(--font-title); color: var(--title); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+#panel header p { margin: 8px 0 0; color: var(--ink-dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.home { display: inline-block; margin-bottom: 14px; font-size: 12px; color: var(--ink-dim); text-decoration: none; }
+.home:hover { color: var(--ink-strong); }
 .group { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Contrôles */
 #panel button, #panel select {
-  font: 500 12.5px/1 var(--font-body);
-  color: var(--ink);
+  font: 400 12.5px/1 var(--font-body);
+  color: var(--ink-strong);
   background: rgba(255,255,255,0.04);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 8px 10px;
   cursor: pointer;
 }
 #panel button:hover { border-color: var(--ink-dim); }
-#panel button[aria-pressed="true"] { border-color: var(--red); color: #fff; background: rgba(255, 95, 79, 0.14); }
+#panel button[aria-pressed="true"] { border-color: var(--accent); color: #fff; background: rgba(91, 155, 213, 0.16); }
 .slider { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
 .slider label { font-size: 12.5px; color: var(--ink-dim); }
-.slider output { font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; }
-input[type=range] { width: 100%; accent-color: var(--red); }
+.slider output { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; color: var(--ink-strong); }
+input[type=range] { width: 100%; accent-color: var(--accent); }
 .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 #panel .toggles button { text-align: left; }
 
 /* Fiche d'information */
-#info h2 { font: 600 17px/1.2 var(--font-display); margin: 0; }
-#info p { margin: 0; line-height: 1.5; max-width: 65ch; }
+#info h2 { font: 400 20px/1.2 var(--font-title); color: var(--title); margin: 0; }
+#info p { margin: 0; line-height: 1.55; max-width: 65ch; }
 #info .back { align-self: flex-start; font-size: 11.5px; padding: 6px 8px; }
 ol.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 ol.legend li { display: grid; grid-template-columns: 14px 1fr; gap: 10px; align-items: start; line-height: 1.45; }
 ol.legend .sw { width: 14px; height: 3px; border-radius: 2px; margin-top: 8px; }
 .calc { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
-.calc strong { font: 500 13px var(--font-mono); color: var(--amber); }
+.calc strong { font-size: 14px; color: var(--accent-light); font-variant-numeric: tabular-nums; }
 .hint { font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; margin: auto 0 0; }
 
 /* Bandeau d'avertissement */
 #notice {
   position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom, 0px));
   transform: translateX(calc(-50% + var(--panel-width) / 2 + 10px));
-  font-size: 12.5px; color: var(--amber);
-  background: var(--panel); border: 1px solid rgba(255,200,97,.3);
-  padding: 8px 12px; border-radius: 6px;
+  font-size: 12.5px; color: var(--ink-strong);
+  background: var(--panel); border: 1px solid rgba(91, 155, 213, .45);
+  padding: 8px 12px; border-radius: 4px;
 }
 
 @media (max-width: 760px) {
@@ -139,37 +161,69 @@ ol.legend .sw { width: 14px; height: 3px; border-radius: 2px; margin-top: 8px; }
     max-height: 46%;
     padding: 14px;
   }
-  #panel header h1 { font-size: 18px; }
-  #notice { top: max(12px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); max-width: calc(100% - 24px); }
+  #panel header h1 { font-size: 21px; }
+  body.schema > .brand { bottom: auto; top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); height: 24px; }
+  #notice { top: max(48px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); max-width: calc(100% - 24px); }
   .lbl { font-size: 10.5px; padding: 3px 5px; }
 }
 
 /* =====================================================================
-   Page d'accueil (body.accueil)
+   Page d'accueil (body.accueil) — couverture façon diapositive de titre
    ===================================================================== */
 body.accueil { min-height: 100vh; font-size: 15px; line-height: 1.55; }
-.accueil main {
-  max-width: 1040px; margin: 0 auto;
-  padding-block: 56px 64px;
+.wrap {
+  max-width: 1120px; margin: 0 auto;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
-.accueil .eyebrow { font-size: 11px; letter-spacing: .14em; margin: 0; }
-.accueil h1 { font: 700 clamp(28px, 5vw, 40px)/1.1 var(--font-display); margin: 12px 0 10px; letter-spacing: -0.015em; text-wrap: balance; }
-.accueil .lead { color: var(--ink-dim); max-width: 60ch; margin: 0 0 40px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+
+/* Couverture : photo du ciel + voile bleu nuit, comme la page titre du modèle */
+.cover {
+  position: relative;
+  background:
+    linear-gradient(90deg, rgba(7, 11, 20, .94) 0%, rgba(7, 11, 20, .74) 45%, rgba(7, 11, 20, .30) 100%),
+    linear-gradient(0deg, var(--night) 0%, rgba(7, 11, 20, 0) 35%),
+    url("images/m42-orion.jpg") center 40% / cover no-repeat,
+    var(--night);
+  border-bottom: 1px solid var(--line);
+}
+.cover .wrap { padding-block: 28px 64px; display: flex; flex-direction: column; gap: 0; }
+.cover .brand { height: 44px; margin-bottom: clamp(56px, 12vw, 120px); align-self: flex-start; }
+.cover .eyebrow { color: var(--accent-light); font-size: 12px; letter-spacing: .34em; margin-bottom: 16px; }
+.cover h1 {
+  font: 400 clamp(38px, 7vw, 76px)/1.04 var(--font-title);
+  color: var(--title); letter-spacing: -0.015em; margin: 0 0 18px; text-wrap: balance; max-width: 14ch;
+}
+.cover .lead { color: #b8c6da; font-size: clamp(16px, 2vw, 20px); max-width: 46ch; margin: 0 0 28px; }
+.cover .meta { color: #9fb3c8; font-size: 13.5px; letter-spacing: .02em; }
+.credit {
+  position: absolute; right: max(16px, env(safe-area-inset-right, 0px)); bottom: 14px;
+  font: 700 10.5px/1 var(--font-body); letter-spacing: .08em; text-transform: uppercase;
+  color: rgba(255, 255, 255, .6);
+}
+
+/* Liste des supports, façon diapositive « Sommaire » */
+.catalogue { padding-block: 56px 72px; }
+.catalogue h2 { font: 400 clamp(28px, 4vw, 40px)/1.1 var(--font-title); color: var(--title); margin: 0 0 8px; }
+.catalogue .intro { color: var(--ink-dim); margin: 0 0 32px; max-width: 60ch; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 18px; }
 .card {
   display: flex; flex-direction: column; gap: 10px;
-  padding: 20px; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 22px 22px 20px;
+  border: 1px solid var(--line); border-top: 2px solid var(--accent);
+  border-radius: 0 0 var(--radius) var(--radius);
   background: var(--card); color: inherit; text-decoration: none;
-  transition: border-color .15s, transform .15s;
+  transition: border-color .15s, transform .15s, background .15s;
 }
-.card:hover { border-color: var(--red); transform: translateY(-2px); }
-.card .cat { font: 500 11px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--amber); }
-.card h2 { font: 600 19px/1.25 var(--font-display); margin: 0; }
-.card p { margin: 0; color: var(--ink-dim); font-size: 14px; }
-.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 6px; }
-.tags span { font: 400 11.5px/1 var(--font-mono); padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink-dim); }
-.accueil footer { margin-top: 48px; color: var(--ink-dim); font-size: 13px; }
+.card:hover { border-color: rgba(91, 155, 213, .6); border-top-color: var(--accent-light); background: rgba(14, 24, 48, .92); transform: translateY(-2px); }
+.card .cat { font: 700 10.5px/1.2 var(--font-body); letter-spacing: .26em; text-transform: uppercase; color: var(--accent); }
+.card h3 { font: 400 23px/1.2 var(--font-title); color: var(--title); margin: 0; }
+.card p { margin: 0; color: var(--ink); font-size: 14.5px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 8px; }
+.tags span { font-size: 12px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--ink-dim); }
+.accueil footer { border-top: 1px solid var(--line); }
+.accueil footer .wrap { padding-block: 22px 28px; display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; color: var(--ink-dim); font-size: 13px; }
+.accueil footer .brand { height: 28px; opacity: .7; }
+.accueil footer a { color: var(--ink); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
