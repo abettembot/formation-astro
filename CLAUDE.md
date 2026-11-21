@@ -1,16 +1,49 @@
 # Supports pédagogiques astro
 
-Site statique de schémas 3D interactifs pour les formations du club d'astronomie, publié sur GitHub Pages. Tout le contenu est en français.
+Site statique de schémas 3D interactifs pour les formations et stages du club d'astronomie.
+Publié sur GitHub Pages : https://abettembot.github.io/formation-astro/ (dépôt `abettembot/formation-astro`, branche `main`, publication automatique à chaque push).
+Tout le contenu visible est en français.
+
+## Règle d'or : la charte est commune
+Le style et le comportement de tous les supports viennent de deux fichiers partagés. **Ne jamais recopier ni redéfinir leur contenu dans une page.**
+
+- `commun/charte.css` : couleurs, polices, panneau, boutons, curseurs, étiquettes, fiches, bandeau, mise en page mobile, page d'accueil.
+- `commun/schema.js` : la boîte à outils 3D (`createSchema`). Elle gère la scène, le ciel étoilé, l'éclairage, la caméra et les points de vue, le panneau, les commandes, les étiquettes, la sélection par clic, les fiches, la vue éclatée et l'animation.
+
+Pour faire évoluer la charte ou un comportement commun, on modifie ces fichiers : tous les supports suivent. Un besoin propre à un seul schéma qui pourrait resservir s'ajoute à `schema.js` (nouvelle option, nouveau type de commande), pas dans la page.
+Après une modification de `commun/`, vérifier que **tous** les schémas existants fonctionnent encore.
 
 ## Structure
-- `index.html` : page d'accueil, une carte `<a class="card">` par schéma (le plus récent en premier).
-- `<nom-du-schema>/index.html` : un schéma = un dossier = une page HTML autonome (CSS et JS inline, pas de build).
+- `index.html` : accueil, une `<a class="card">` par schéma, la plus récente en premier (catégorie, titre, une phrase, 2 à 4 mots-clés).
+- `<nom-du-schema>/index.html` : un dossier par schéma (nom en minuscules avec tirets). Modèle de référence : `telescope-newton/index.html`.
 - `.nojekyll` : désactive Jekyll sur GitHub Pages.
 
-## Conventions pour un nouveau schéma
-- Partir de `telescope-newton/index.html` comme modèle : même structure de page (canvas plein écran + panneau à gauche, en bas sur mobile), même lien `← Tous les supports` vers `../`.
-- Three.js chargé par import map depuis jsDelivr, version épinglée (actuellement `three@0.186.1`) ; addons via `three/addons/`.
-- Charte : univers sombre « nuit d'observation », polices Sora / IBM Plex Sans / IBM Plex Mono, accent rouge `#ff5f4f`, lumière ambre `#ffc861`.
-- Interactions attendues : OrbitControls (tourner/zoomer/déplacer), étiquettes cliquables, fiche explicative par élément, points de vue prédéfinis, animation désactivable, respect de `prefers-reduced-motion`.
-- Exactitude scientifique : géométrie et chiffres réalistes, avec des exemples concrets (matériel courant d'un club).
-- Ajouter la carte correspondante dans `index.html`.
+## Créer un nouveau schéma
+1. Copier l'en-tête `<head>` du télescope à l'identique (charset, viewport, lien `../commun/charte.css`, import map Three.js `three@0.186.1`), en changeant seulement `<title>` et `description`.
+2. Dans le `<script type="module">`, importer depuis `../commun/schema.js` et appeler `createSchema({...})` :
+   - `surtitre` : « Support de formation · <Thème> » (Optique, Mécanique céleste, Instruments, Ciel…).
+   - `titre` : nom de l'objet ou du phénomène, sans explication.
+   - `sousTitre` : l'exemple concret retenu, en police mono (ex. « Exemple : Newton 200/1000 · f/5 », « Latitude 47° N »).
+   - `eclate: true` seulement si l'objet se démonte.
+   - `commandes` : bascules et curseurs propres au schéma. « Étiquettes » et « Animation » sont ajoutées automatiquement, ne pas les redéclarer.
+   - `vues` : 3 à 4 points de vue. La première est la vue de départ et s'appelle « 3/4 » quand c'est une vue en perspective.
+   - `intro` : la fiche de vue d'ensemble, avec un `eyebrow`, une `legende([...])` en étapes colorées si le phénomène se déroule dans le temps ou l'espace, et une ligne `spec` de conclusion.
+3. Déclarer chaque élément avec `S.part(id, nom, { eclate, ancre, texte, chiffres, extra, bind })`, puis ajouter ses meshes avec `S.add(part, mesh(...))`.
+4. Les phénomènes animés passent par `S.onFrame(({ dt, time, explode }) => ...)`. Utiliser `time`, qui s'arrête quand « Animation » est désactivée. Ajouter les étiquettes libres avec `S.label(texte, () => position, { lumiere: true, visible })`.
+5. Terminer par `S.start()`.
+6. Ajouter la carte sur l'accueil.
+
+## Charte visuelle 3D
+- Matériaux : uniquement les fabriques `materiaux` (peinture, flocage, miroir, verre, noir, alu, caoutchouc, lentille). Ajouter un nouveau matériau dans `schema.js` s'il en manque un.
+- Couleurs des phénomènes : `COULEURS` (etoile → ambre → orange → corail pour une progression, rouge réservé à la sélection et à l'interface).
+- Lumière et rayons : lignes fines semi-transparentes et particules lumineuses (`textureHalo()`) qui se déplacent le long du trajet.
+- Échelle : 1 unité = une dimension réaliste choisie pour le schéma (ex. 100 mm), indiquée en commentaire en tête du script.
+
+## Rédaction
+- Ton : clair et direct, pour des adultes débutants ou intermédiaires, en phrases courtes. Pas de jargon sans explication.
+- Fiche d'un élément : `texte` de 2 à 4 phrases (à quoi il sert, comment il fonctionne, l'idée clé à retenir), `chiffres` sur une ligne avec des valeurs réelles séparées par « · ».
+- Libellés des boutons : un nom court (« Trajet lumière », « Tube en coupe »), avec une majuscule initiale seulement.
+- Exactitude scientifique : géométrie et chiffres justes, exemples tirés du matériel courant d'un club.
+
+## Publier
+Après vérification locale (serveur statique, par exemple `python -m http.server`), faire un commit puis `git push`. Le site se met à jour en une à deux minutes.
