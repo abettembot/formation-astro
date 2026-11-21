@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>*,*::before,*::after{box-sizing:border-box}body{margin:0}[hidden]{display:none!important}</style>
+<title>Télescope de Newton</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: plein écran 3D, panneau d'instruments à gauche (bas sur mobile). Univers unique "nuit d'observation" : sombre par choix, accent rouge lampe frontale. */
+:root {
+  --night: #0a0e16;
+  --night-2: #121a28;
+  --panel: rgba(16, 22, 34, 0.86);
+  --line: rgba(160, 180, 210, 0.16);
+  --ink: #e8e4da;
+  --ink-dim: #9aa3b2;
+  --red: #ff5f4f;
+  --amber: #ffc861;
+  --star: #f6e7b0;
+  --font-display: "Sora", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: radial-gradient(ellipse at 70% 30%, var(--night-2), var(--night) 70%);
+  background-color: var(--night);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  overflow: hidden;
+}
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#labels { position: fixed; inset: 0; pointer-events: none; }
+.lbl {
+  position: absolute; left: 0; top: 0;
+  transform: translate(-50%, -100%);
+  pointer-events: auto; cursor: pointer;
+  font: 500 11.5px/1 var(--font-body);
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: rgba(10, 14, 22, 0.72);
+  border: 1px solid var(--line);
+  padding: 4px 7px; border-radius: 4px;
+  white-space: nowrap;
+  transition: border-color .15s, color .15s;
+}
+.lbl::after {
+  content: ""; position: absolute; left: 50%; top: 100%;
+  width: 1px; height: 10px; background: var(--ink-dim); opacity: .6;
+}
+.lbl:hover, .lbl.on { border-color: var(--red); color: #fff; }
+.lbl.light { color: var(--amber); border-color: rgba(255, 200, 97, .35); cursor: default; }
+
+#panel {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  width: 340px;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  overflow-y: auto;
+}
+header h1 {
+  font: 700 22px/1.1 var(--font-display);
+  margin: 0; text-wrap: balance; letter-spacing: -0.01em;
+}
+header p { margin: 6px 0 0; color: var(--ink-dim); font: 400 12px/1.4 var(--font-mono); }
+.home { display: inline-block; margin-bottom: 12px; font-size: 12px; color: var(--ink-dim); text-decoration: none; }
+.home:hover { color: var(--ink); }
+.eyebrow { font: 500 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .12em; color: var(--red); margin-bottom: 8px; }
+.group { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+button, select {
+  font: 500 12.5px/1 var(--font-body);
+  color: var(--ink);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--ink-dim); }
+button[aria-pressed="true"] { border-color: var(--red); color: #fff; background: rgba(255, 95, 79, 0.14); }
+button:focus-visible, select:focus-visible, input:focus-visible, .lbl:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.slider { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+.slider label { font-size: 12.5px; color: var(--ink-dim); }
+.slider output { font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; }
+input[type=range] { width: 100%; accent-color: var(--red); }
+.toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.toggles button { text-align: left; }
+
+#info h2 { font: 600 17px/1.2 var(--font-display); margin: 0; }
+#info p { margin: 0; line-height: 1.5; color: var(--ink); max-width: 65ch; }
+#info .spec { font: 400 12px/1.5 var(--font-mono); color: var(--amber); }
+#info .back { align-self: flex-start; font-size: 11.5px; padding: 6px 8px; }
+ol.path { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+ol.path li { display: grid; grid-template-columns: 14px 1fr; gap: 10px; align-items: start; line-height: 1.45; }
+ol.path .sw { width: 14px; height: 3px; border-radius: 2px; margin-top: 8px; }
+.calc { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.calc strong { font: 500 13px var(--font-mono); color: var(--amber); }
+.hint { font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; margin-top: auto; }
+#notice {
+  position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  transform: translateX(calc(-50% + 180px));
+  font-size: 12.5px; color: var(--amber);
+  background: var(--panel); border: 1px solid rgba(255,200,97,.3);
+  padding: 8px 12px; border-radius: 6px;
+}
+
+@media (max-width: 760px) {
+  #panel {
+    top: auto; width: auto;
+    right: max(12px, env(safe-area-inset-right, 0px));
+    left: max(12px, env(safe-area-inset-left, 0px));
+    bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    max-height: 46%;
+    padding: 14px;
+  }
+  header h1 { font-size: 18px; }
+  #notice { top: max(12px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); }
+  .lbl { font-size: 10.5px; padding: 3px 5px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div id="stage"></div>
+<div id="labels"></div>
+
+<aside id="panel">
+  <header>
+    <a class="home" href="../">← Tous les supports</a>
+    <div class="eyebrow">Support de formation · Optique</div>
+    <h1>Télescope de Newton</h1>
+    <p>Exemple : Newton 200/1000 · f/5</p>
+  </header>
+
+  <section class="group" aria-label="Affichage">
+    <div class="slider">
+      <label for="explode">Vue éclatée</label>
+      <input id="explode" type="range" min="0" max="100" value="0">
+      <output id="explodeOut">0 %</output>
+    </div>
+    <div class="row">
+      <button id="btnExplode" type="button">Éclater</button>
+    </div>
+    <div class="toggles">
+      <button id="tLight" type="button" aria-pressed="true">Trajet lumière</button>
+      <button id="tCut" type="button" aria-pressed="true">Tube en coupe</button>
+      <button id="tLabels" type="button" aria-pressed="true">Étiquettes</button>
+      <button id="tAnim" type="button" aria-pressed="true">Animation</button>
+    </div>
+    <div class="row" role="group" aria-label="Points de vue">
+      <button type="button" data-view="iso">3/4</button>
+      <button type="button" data-view="side">Profil</button>
+      <button type="button" data-view="front">Entrée du tube</button>
+      <button type="button" data-view="top">Dessus</button>
+    </div>
+  </section>
+
+  <section class="group" id="info" aria-live="polite"></section>
+
+  <p class="hint">Glisser : tourner · Molette ou pincer : zoomer · Clic droit ou deux doigts : déplacer · Cliquer une pièce : l'expliquer</p>
+</aside>
+<div id="notice" hidden>Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière.</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+// ---------- Géométrie optique (1 unité = 100 mm) ----------
+const F = 10;          // focale du primaire (1000 mm)
+const RM = 1.0;        // rayon du primaire (200 mm de diamètre)
+const RT = 1.25;       // rayon du tube
+const XP = -4.6;       // sommet du primaire
+const TUBE_BACK = -5.0, TUBE_FRONT = 4.6;
+const D = RT + 1.05;   // distance axe -> plan focal
+const XS = XP + F - D; // centre du secondaire
+const FE = 0.4;        // focale oculaire (schématique)
+const SEC_R = 0.29;    // demi petit axe du secondaire
+
+// ---------- Rendu ----------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.6;
+
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.minDistance = 4;
+controls.maxDistance = 60;
+
+scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x1a1410, 0.7));
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(6, 10, 8);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x8fb3ff, 0.8);
+rim.position.set(-8, 3, -6);
+scene.add(rim);
+
+// étoiles de fond
+{
+  const n = 900, pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const v = new THREE.Vector3().randomDirection().multiplyScalar(80 + Math.random() * 30);
+    pos.set([v.x, v.y, v.z], i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0x9fb0cc, size: 0.18, sizeAttenuation: true, transparent: true, opacity: 0.7 })));
+}
+
+// ---------- Matériaux ----------
+const M = {
+  paint: () => new THREE.MeshStandardMaterial({ color: 0xe9edf2, roughness: 0.35, metalness: 0.05, side: THREE.DoubleSide }),
+  flock: () => new THREE.MeshStandardMaterial({ color: 0x0b0b0d, roughness: 1, metalness: 0, side: THREE.BackSide }),
+  mirror: () => new THREE.MeshStandardMaterial({ color: 0xe6edf5, roughness: 0.06, metalness: 1 }),
+  glass: () => new THREE.MeshStandardMaterial({ color: 0x9fc7c0, roughness: 0.2, metalness: 0.1, transparent: true, opacity: 0.85 }),
+  black: () => new THREE.MeshStandardMaterial({ color: 0x1b1d22, roughness: 0.55, metalness: 0.4 }),
+  alu: () => new THREE.MeshStandardMaterial({ color: 0xb9c0ca, roughness: 0.3, metalness: 0.85 }),
+  rubber: () => new THREE.MeshStandardMaterial({ color: 0x121214, roughness: 0.95 }),
+  lens: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
+};
+
+const AX_X = (geo) => geo.rotateZ(-Math.PI / 2); // axe Y -> axe X
+const AX_Z = (geo) => geo.rotateX(Math.PI / 2);  // axe Y -> axe Z
+function mesh(geo, mat, x = 0, y = 0, z = 0) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); return m; }
+
+// ---------- Pièces ----------
+const parts = [];
+function part(id, name, explode, anchor, info) {
+  const group = new THREE.Group();
+  group.userData.partId = id;
+  scene.add(group);
+  const p = { id, name, group, explode: new THREE.Vector3(...explode), anchor: new THREE.Vector3(...anchor), ...info, materials: [] };
+  parts.push(p);
+  return p;
+}
+function add(p, m) { p.group.add(m); p.materials.push(m.material); m.userData.partId = p.id; return m; }
+
+// Tube
+const tube = part("tube", "Tube optique", [0, 0, 0], [-1.0, RT + 0.05, 0], {
+  text: "Il maintient les deux miroirs parfaitement alignés et protège le trajet de la lumière. L'intérieur est noir mat (floqué) pour absorber la lumière parasite qui dégraderait le contraste.",
+  spec: "Longueur ≈ focale du primaire, soit ≈ 1 m pour un 200/1000",
+});
+const tubeLen = TUBE_FRONT - TUBE_BACK, tubeMid = (TUBE_FRONT + TUBE_BACK) / 2;
+const tubeOuter = add(tube, mesh(AX_X(new THREE.CylinderGeometry(RT, RT, tubeLen, 72, 1, true)), M.paint(), tubeMid));
+const tubeInner = add(tube, mesh(AX_X(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, tubeLen, 72, 1, true)), M.flock(), tubeMid));
+const lip = add(tube, mesh(AX_X(new THREE.TorusGeometry(RT, 0.035, 10, 72).rotateX(Math.PI / 2)), M.black(), TUBE_FRONT));
+function setCut(on) {
+  const mk = (r) => AX_X(on ? new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true, Math.PI / 2, Math.PI)
+                            : new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true));
+  tubeOuter.geometry.dispose(); tubeOuter.geometry = mk(RT);
+  tubeInner.geometry.dispose(); tubeInner.geometry = mk(RT - 0.015);
+  lip.visible = !on;
+}
+
+// Miroir primaire (paraboloïde réel : flèche = r²/4F)
+const primary = part("primary", "Miroir primaire", [-2.3, 0, 0], [XP - 0.1, RM + 0.1, 0], {
+  text: "Miroir concave de forme parabolique, aluminé sur sa face avant. Il collecte la lumière et la fait converger en un point : le foyer. Une parabole renvoie tous les rayons parallèles exactement au même point, ce qu'un miroir sphérique ne fait pas (aberration de sphéricité). Son diamètre fixe la quantité de lumière captée et le pouvoir séparateur.",
+  spec: "D = 200 mm · F = 1000 mm · rapport F/D = 5 · flèche au bord ≈ 0,25 mm",
+});
+{
+  const pts = [];
+  const T = 0.2;
+  for (let i = 0; i <= 24; i++) { const r = (i / 24) * RM; pts.push(new THREE.Vector2(r, r * r / (4 * F))); }
+  pts.push(new THREE.Vector2(RM, -T), new THREE.Vector2(0.001, -T));
+  const g = new THREE.LatheGeometry(pts, 96);
+  g.rotateZ(-Math.PI / 2);
+  // faces avant aluminées, tranche en verre
+  const face = add(primary, mesh(g, M.mirror(), XP));
+  face.material.side = THREE.DoubleSide;
+  add(primary, mesh(AX_X(new THREE.CylinderGeometry(RM - 0.002, RM - 0.002, T - 0.01, 96, 1, true)), M.glass(), XP - T / 2));
+}
+
+// Barillet
+const cell = part("cell", "Barillet", [-3.9, 0, 0], [TUBE_BACK - 0.1, -RT - 0.05, 0], {
+  text: "Support arrière du miroir primaire. Ses vis de collimation (tirantes et poussantes, montées sur ressorts) permettent d'incliner le miroir pour aligner parfaitement l'optique : c'est la collimation.",
+  spec: "3 paires de vis à 120° · clips de maintien du miroir",
+});
+{
+  add(cell, mesh(AX_X(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.12, 72)), M.black(), TUBE_BACK - 0.06));
+  add(cell, mesh(AX_X(new THREE.CylinderGeometry(RM + 0.06, RM + 0.06, 0.08, 72)), M.alu(), XP - 0.26));
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3) + Math.PI / 2;
+    const y = Math.sin(a), z = Math.cos(a);
+    add(cell, mesh(AX_X(new THREE.CylinderGeometry(0.07, 0.07, 0.55, 16)), M.alu(), TUBE_BACK - 0.22, y * 0.75, z * 0.75));
+    add(cell, mesh(AX_X(new THREE.CylinderGeometry(0.14, 0.14, 0.12, 20)), M.black(), TUBE_BACK - 0.5, y * 0.75, z * 0.75));
+    const clip = add(cell, mesh(new THREE.BoxGeometry(0.28, 0.06, 0.16), M.black(), XP + 0.01, 0, 0));
+    clip.position.set(XP + 0.03, Math.sin(a + 1) * (RM - 0.04), Math.cos(a + 1) * (RM - 0.04));
+    clip.rotation.x = Math.PI / 2 - (a + 1);
+  }
+}
+
+// Miroir secondaire (plan elliptique à 45°)
+const secondary = part("secondary", "Miroir secondaire", [2.3, 0, 0], [XS, SEC_R + 0.15, 0], {
+  text: "Petit miroir plan, de forme elliptique, incliné à 45°. Il intercepte le cône de lumière avant le foyer et le renvoie à 90° sur le côté du tube, là où l'on place l'oculaire. Vu depuis le porte-oculaire, il paraît parfaitement rond. Il masque le centre du faisceau : c'est l'obstruction centrale.",
+  spec: "Petit axe ≈ 58 mm · obstruction ≈ 29 % du diamètre",
+});
+{
+  const g = new THREE.CylinderGeometry(SEC_R, SEC_R, 0.06, 64);
+  g.rotateX(Math.PI / 2);          // axe -> Z (normale)
+  g.scale(Math.SQRT2, 1, 1);       // ellipse : grand axe = √2 × petit axe
+  const n = new THREE.Vector3(-1, 1, 0).normalize();
+  const ax = new THREE.Vector3(1, 1, 0).normalize();
+  const ay = new THREE.Vector3().crossVectors(n, ax);
+  const m = add(secondary, mesh(g, M.mirror(), XS));
+  m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ax, ay, n));
+  // support (tige) à l'arrière
+  add(secondary, mesh(AX_X(new THREE.CylinderGeometry(0.11, 0.11, 0.55, 24)), M.black(), XS + 0.36));
+}
+
+// Araignée (branches à 45° pour laisser passer les rayons du schéma)
+const spider = part("spider", "Araignée", [3.6, 0, 0], [XS + 0.55, -0.9, 0.9], {
+  text: "Fines branches qui tiennent le miroir secondaire au centre du tube. Trois vis permettent de régler son inclinaison. La diffraction sur ces branches produit les aigrettes en croix visibles autour des étoiles brillantes.",
+  spec: "4 branches de ≈ 0,5 mm d'épaisseur",
+});
+{
+  add(spider, mesh(AX_X(new THREE.CylinderGeometry(0.16, 0.16, 0.2, 24)), M.black(), XS + 0.55));
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + k * Math.PI / 2;
+    const len = RT - 0.16;
+    const v = add(spider, mesh(new THREE.BoxGeometry(0.14, len, 0.02), M.black(), XS + 0.55));
+    v.rotation.x = Math.PI / 2 - a;
+    v.position.y = Math.sin(a) * (0.16 + len / 2);
+    v.position.z = Math.cos(a) * (0.16 + len / 2);
+  }
+}
+
+// Porte-oculaire
+const focuser = part("focuser", "Porte-oculaire", [0, 1.6, 0], [XS + 0.7, RT + 0.35, 0], {
+  text: "Tube coulissant que l'on monte ou descend avec les molettes pour amener le foyer du télescope exactement sur l'oculaire : c'est la mise au point. Il est placé à hauteur du secondaire, sur le côté du tube.",
+  spec: "Coulant 31,75 mm ou 50,8 mm · type crémaillère ou Crayford",
+});
+{
+  add(focuser, mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.12, 40), M.black(), XS, RT + 0.02, 0));
+  add(focuser, mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.55, 40), M.black(), XS, RT + 0.33, 0));
+  add(focuser, mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.4, 40, 1, true), M.alu(), XS, RT + 0.78, 0)).material.side = THREE.DoubleSide;
+  add(focuser, mesh(AX_Z(new THREE.CylinderGeometry(0.05, 0.05, 1.3, 12)), M.alu(), XS, RT + 0.3, 0));
+  for (const s of [-1, 1]) add(focuser, mesh(AX_Z(new THREE.CylinderGeometry(0.17, 0.17, 0.12, 24)), M.black(), XS, RT + 0.3, s * 0.65));
+}
+
+// Oculaire
+const eyepiece = part("eyepiece", "Oculaire", [0, 3.1, 0], [XS + 0.45, D + 0.55, 0], {
+  text: "Petite loupe qui grossit l'image formée au foyer par le primaire. On change d'oculaire pour changer de grossissement.",
+  spec: "Grossissement = focale du télescope ÷ focale de l'oculaire",
+  calc: true,
+});
+{
+  add(eyepiece, mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 32, 1, true), M.alu(), XS, D + 0.15, 0)).material.side = THREE.DoubleSide;
+  add(eyepiece, mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.6, 32, 1, true), M.black(), XS, D + 0.65, 0)).material.side = THREE.DoubleSide;
+  add(eyepiece, mesh(new THREE.CylinderGeometry(0.29, 0.31, 0.22, 32, 1, true), M.rubber(), XS, D + 1.06, 0)).material.side = THREE.DoubleSide;
+  add(eyepiece, mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 32), M.lens(), XS, D + FE, 0));
+}
+
+// Chercheur
+const FY = (RT + 0.5) * Math.SQRT1_2, FZ = -(RT + 0.5) * Math.SQRT1_2;
+const finder = part("finder", "Chercheur", [0, 1.2, -1.6], [2.3, FY + 0.3, FZ], {
+  text: "Petite lunette à faible grossissement (×6 à ×9) et à grand champ, alignée avec le tube. Elle sert à viser l'objet avant de regarder dans l'oculaire du télescope, dont le champ est très étroit.",
+  spec: "Typiquement 8×50 : grossissement 8, objectif de 50 mm",
+});
+{
+  add(finder, mesh(AX_X(new THREE.CylinderGeometry(0.2, 0.2, 1.8, 32)), M.paint(), 2.3, FY, FZ));
+  add(finder, mesh(AX_X(new THREE.CylinderGeometry(0.26, 0.2, 0.35, 32)), M.paint(), 3.35, FY, FZ));
+  add(finder, mesh(AX_X(new THREE.CylinderGeometry(0.1, 0.14, 0.35, 24)), M.black(), 1.25, FY, FZ));
+  for (const x of [1.8, 2.8]) {
+    add(finder, mesh(AX_X(new THREE.TorusGeometry(0.26, 0.04, 8, 32).rotateX(Math.PI / 2)), M.black(), x, FY, FZ));
+    const foot = add(finder, mesh(new THREE.BoxGeometry(0.1, 0.36, 0.1), M.black(), x, (RT + 0.12) * Math.SQRT1_2 + 0.1, -(RT + 0.12) * Math.SQRT1_2 - 0.1));
+    foot.rotation.x = Math.PI / 4;
+  }
+}
+
+// Colliers
+const rings = part("rings", "Colliers", [0, -2.9, 0], [-2.6, -RT - 0.15, 0.9], {
+  text: "Ils serrent le tube et le relient à la queue d'aronde. Desserrés, ils permettent de faire tourner le tube sur lui-même pour placer l'oculaire dans une position confortable, ou de le faire glisser pour l'équilibrer sur la monture.",
+  spec: "Paire de colliers à charnière, molettes de serrage",
+});
+for (const x of [-2.6, 1.9]) {
+  add(rings, mesh(AX_X(new THREE.CylinderGeometry(RT + 0.07, RT + 0.07, 0.3, 72, 1, true)), M.black(), x)).material.side = THREE.DoubleSide;
+  add(rings, mesh(new THREE.BoxGeometry(0.3, 0.32, 0.5), M.black(), x, -RT - 0.22, 0));
+  add(rings, mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.4, 12), M.alu(), x, RT + 0.2, 0));
+}
+
+// Queue d'aronde
+const dovetail = part("dovetail", "Queue d'aronde", [0, -3.7, 0], [-0.4, -RT - 0.5, 0.45], {
+  text: "Barre profilée standardisée qui se glisse et se serre dans la tête de la monture. C'est l'interface entre le télescope et sa monture.",
+  spec: "Format Vixen (≈ 44 mm) ou Losmandy (≈ 75 mm)",
+});
+{
+  const s = new THREE.Shape();
+  s.moveTo(-0.38, 0); s.lineTo(0.38, 0); s.lineTo(0.3, -0.16); s.lineTo(-0.3, -0.16); s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: 6.4, bevelEnabled: false });
+  g.rotateY(Math.PI / 2); // extrusion le long de X
+  add(dovetail, mesh(g, M.alu(), -3.6, -RT - 0.38, 0));
+}
+
+for (const p of parts) p.group.traverse((o) => { if (o.isMesh) o.userData.partId = p.id; });
+
+// ---------- Trajet de la lumière ----------
+const SEG_COLORS = [0xf6e7b0, 0xffc861, 0xff9a4a, 0xff6b5e];
+const P = new THREE.Vector3(XP + F, 0, 0);       // foyer du primaire seul
+const P2 = new THREE.Vector3(XS, D, 0);          // foyer renvoyé par le secondaire
+const entries = [[0.85, 0], [-0.85, 0], [0.5, 0], [-0.5, 0], [0, 0.72], [0, -0.72]];
+const rays = entries.map(([y0, z0]) => {
+  const A = new THREE.Vector3(TUBE_FRONT + 4.5, y0, z0);
+  const H = new THREE.Vector3(XP + (y0 * y0 + z0 * z0) / (4 * F), y0, z0);
+  const dir = P.clone().sub(H);
+  const t = (XS - H.x + H.y) / (dir.x - dir.y);
+  const S = H.clone().addScaledVector(dir, t);
+  const out = P2.clone().sub(S);
+  const L = S.clone().addScaledVector(out, (D + FE - S.y) / out.y);
+  const E = L.clone().add(new THREE.Vector3(0, 1.3, 0));
+  const pts = [A, H, S, L, E];
+  const segColor = [0, 1, 2, 3];
+  const lens = []; let total = 0;
+  for (let i = 0; i < pts.length - 1; i++) { const l = pts[i].distanceTo(pts[i + 1]); lens.push(l); total += l; }
+  return { pts, segColor, lens, total };
+});
+
+const light = new THREE.Group();
+scene.add(light);
+{
+  const pos = [], col = [];
+  const c = new THREE.Color();
+  for (const r of rays) for (let i = 0; i < r.pts.length - 1; i++) {
+    c.setHex(SEG_COLORS[r.segColor[i]]);
+    pos.push(...r.pts[i].toArray(), ...r.pts[i + 1].toArray());
+    col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  light.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false })));
+}
+function glowTexture() {
+  const cv = document.createElement("canvas"); cv.width = cv.height = 64;
+  const ctx = cv.getContext("2d");
+  const gr = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, "rgba(255,255,255,1)"); gr.addColorStop(0.25, "rgba(255,255,255,0.8)"); gr.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const glow = glowTexture();
+const PHOTONS_PER_RAY = 5;
+const photonGeo = new THREE.BufferGeometry();
+photonGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(rays.length * PHOTONS_PER_RAY * 3), 3));
+photonGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(rays.length * PHOTONS_PER_RAY * 3), 3));
+const photons = new THREE.Points(photonGeo, new THREE.PointsMaterial({ size: 0.42, map: glow, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+photons.frustumCulled = false;
+light.add(photons);
+// foyer
+const focusMark = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, color: 0xff6b5e, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+focusMark.position.copy(P2); focusMark.scale.setScalar(0.55);
+light.add(focusMark);
+
+const tmpC = new THREE.Color();
+function updatePhotons(time) {
+  const pos = photonGeo.attributes.position, col = photonGeo.attributes.color;
+  let k = 0;
+  for (const r of rays) {
+    for (let j = 0; j < PHOTONS_PER_RAY; j++, k++) {
+      let s = (((time * 3.2) + j * r.total / PHOTONS_PER_RAY) % r.total);
+      let i = 0;
+      while (i < r.lens.length - 1 && s > r.lens[i]) { s -= r.lens[i]; i++; }
+      const a = r.pts[i], b = r.pts[i + 1], f = Math.min(1, s / r.lens[i]);
+      pos.setXYZ(k, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f);
+      tmpC.setHex(SEG_COLORS[r.segColor[i]]);
+      col.setXYZ(k, tmpC.r, tmpC.g, tmpC.b);
+    }
+  }
+  pos.needsUpdate = true; col.needsUpdate = true;
+}
+
+// ---------- Étiquettes ----------
+const labelsEl = document.getElementById("labels");
+const labels = [];
+function makeLabel(text, getPos, opts = {}) {
+  const el = document.createElement("div");
+  el.className = "lbl" + (opts.light ? " light" : "");
+  el.textContent = text;
+  if (opts.partId) {
+    el.tabIndex = 0; el.setAttribute("role", "button");
+    el.addEventListener("click", () => select(opts.partId));
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(opts.partId); } });
+    el.addEventListener("pointerenter", () => { hovered = opts.partId; });
+    el.addEventListener("pointerleave", () => { if (hovered === opts.partId) hovered = null; });
+  }
+  labelsEl.appendChild(el);
+  const L = { el, getPos, ...opts };
+  labels.push(L);
+  return L;
+}
+for (const p of parts) makeLabel(p.name, () => p.anchor.clone().add(p.group.position), { partId: p.id });
+makeLabel("Lumière d'une étoile", () => new THREE.Vector3(TUBE_FRONT + 3.2, 0.95, 0), { light: true });
+makeLabel("Foyer", () => P2.clone().add(new THREE.Vector3(-0.45, 0.12, 0)), { light: true });
+makeLabel("Vers l'œil", () => new THREE.Vector3(XS, D + FE + 1.45, 0), { light: true });
+
+// ---------- État & interface ----------
+const state = { explode: 0, explodeTarget: 0, light: true, cut: true, labels: true, anim: true, selected: null, ocular: 25 };
+let hovered = null;
+
+const $ = (id) => document.getElementById(id);
+const explodeInput = $("explode"), explodeOut = $("explodeOut"), btnExplode = $("btnExplode");
+explodeInput.addEventListener("input", () => { state.explodeTarget = state.explode = explodeInput.value / 100; });
+btnExplode.addEventListener("click", () => { state.explodeTarget = state.explodeTarget > 0.5 ? 0 : 1; });
+function toggle(btn, keyName, fn) {
+  btn.addEventListener("click", () => {
+    state[keyName] = !state[keyName];
+    btn.setAttribute("aria-pressed", String(state[keyName]));
+    fn && fn(state[keyName]);
+  });
+}
+toggle($("tLight"), "light");
+toggle($("tCut"), "cut", setCut);
+toggle($("tLabels"), "labels");
+toggle($("tAnim"), "anim");
+setCut(true);
+
+const SEGMENT_TEXT = [
+  "La lumière d'une étoile arrive en rayons parallèles et entre par l'ouverture du tube.",
+  "Le miroir primaire, au fond, la réfléchit et la fait converger vers le foyer.",
+  "Avant d'atteindre le foyer, le miroir secondaire à 45° renvoie le cône sur le côté.",
+  "L'image se forme au foyer, puis l'oculaire la grossit et renvoie des rayons parallèles vers l'œil.",
+];
+const css = (hex) => "#" + hex.toString(16).padStart(6, "0");
+
+function renderInfo() {
+  const info = $("info");
+  const p = parts.find((x) => x.id === state.selected);
+  if (!p) {
+    info.innerHTML = `
+      <div class="eyebrow">Le trajet de la lumière</div>
+      <ol class="path">${SEGMENT_TEXT.map((t, i) => `<li><span class="sw" style="background:${css(SEG_COLORS[i])}"></span><span>${t}</span></li>`).join("")}</ol>
+      <p class="spec">Le tube travaille « par le côté » : l'observateur se place près de l'entrée du tube, pas derrière comme avec une lunette.</p>`;
+    return;
+  }
+  info.innerHTML = `
+    <div class="eyebrow">Pièce sélectionnée</div>
+    <h2>${p.name}</h2>
+    <p>${p.text}</p>
+    <p class="spec">${p.spec}</p>
+    ${p.calc ? `<div class="calc"><label for="ocu">Oculaire de</label>
+      <select id="ocu">${[32, 25, 15, 10, 6].map((f) => `<option value="${f}" ${f === state.ocular ? "selected" : ""}>${f} mm</option>`).join("")}</select>
+      <span>→ 1000 ÷ ${state.ocular} = <strong>${Math.round(1000 / state.ocular)}×</strong></span></div>
+      <p class="spec">Grossissement utile maximal ≈ 2 × diamètre en mm, soit ≈ 400× (rarement atteint à cause de la turbulence).</p>` : ""}
+    <button class="back" type="button" id="back">← Retour au trajet de la lumière</button>`;
+  $("back").addEventListener("click", () => select(null));
+  const sel = $("ocu");
+  if (sel) sel.addEventListener("change", () => { state.ocular = +sel.value; renderInfo(); });
+}
+function select(id) {
+  state.selected = state.selected === id ? null : id;
+  for (const L of labels) L.el.classList.toggle("on", !!L.partId && L.partId === state.selected);
+  renderInfo();
+}
+renderInfo();
+
+// ---------- Sélection par clic (raycasting) ----------
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const pickables = () => parts.flatMap((p) => { const a = []; p.group.traverse((o) => o.isMesh && a.push(o)); return a; });
+let pickList = pickables();
+function pick(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObjects(pickList, false).find((h) => h.object.visible);
+  return hit ? hit.object.userData.partId : null;
+}
+let downAt = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!downAt) return;
+  const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
+  downAt = null;
+  if (moved < 6) select(pick(e));
+});
+renderer.domElement.addEventListener("pointermove", (e) => {
+  if (e.pointerType !== "mouse" || e.buttons) return;
+  hovered = pick(e);
+  renderer.domElement.style.cursor = hovered ? "pointer" : "";
+});
+
+// ---------- Vues caméra ----------
+const VIEWS = {
+  iso:   { pos: [12, 8.5, 20], target: [0, 0.2, 0] },
+  side:  { pos: [0.3, 1.0, 25], target: [0, 0.2, 0] },
+  front: { pos: [17, 0.4, 0.6], target: [0, 0, 0] },
+  top:   { pos: [XS + 0.01, 16, 0.5], target: [XS - 3, 0, 0] },
+};
+let camAnim = null;
+function goView(name, instant = false) {
+  const v = VIEWS[name];
+  const to = { pos: new THREE.Vector3(...v.pos), target: new THREE.Vector3(...v.target) };
+  if (innerWidth < 760) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
+  if (instant) { camera.position.copy(to.pos); controls.target.copy(to.target); return; }
+  camAnim = { from: { pos: camera.position.clone(), target: controls.target.clone() }, to, t: 0 };
+}
+document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => goView(b.dataset.view)));
+goView("iso", true);
+
+// ---------- Boucle ----------
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  // décaler le centre de vue hors du panneau (à droite sur desktop, en haut sur mobile)
+  if (w > 760) { camera.aspect = (w + 360) / h; camera.setViewOffset(w + 360, h, 0, 0, w, h); }
+  else { camera.aspect = w / (h * 1.4); camera.setViewOffset(w, h * 1.4, 0, h * 0.4, w, h); }
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const timer = new THREE.Timer();
+timer.connect(document);
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let simTime = 0;
+const v3 = new THREE.Vector3();
+const notice = $("notice");
+const emissive = new THREE.Color(0xff5f4f);
+
+renderer.setAnimationLoop(() => {
+  timer.update();
+  const dt = Math.min(timer.getDelta(), 0.05);
+
+  // éclaté
+  if (state.explode !== state.explodeTarget) {
+    const step = dt * (reduced ? 10 : 1.4);
+    state.explode = state.explode < state.explodeTarget ? Math.min(state.explodeTarget, state.explode + step) : Math.max(state.explodeTarget, state.explode - step);
+    explodeInput.value = Math.round(state.explode * 100);
+  }
+  explodeOut.textContent = Math.round(state.explode * 100) + " %";
+  btnExplode.textContent = state.explodeTarget > 0.5 ? "Assembler" : "Éclater";
+  const e = ease(state.explode);
+  for (const p of parts) p.group.position.copy(p.explode).multiplyScalar(e);
+
+  // surbrillance
+  for (const p of parts) {
+    const on = p.id === state.selected ? 0.35 : p.id === hovered ? 0.18 : 0;
+    for (const m of p.materials) { m.emissive.copy(emissive); m.emissiveIntensity = on; }
+  }
+
+  // lumière
+  const lightVisible = state.light && state.explode < 0.01;
+  light.visible = lightVisible;
+  notice.hidden = !(state.light && state.explode >= 0.01);
+  if (lightVisible) { if (state.anim && !reduced) simTime += dt; updatePhotons(simTime); }
+  photons.visible = state.anim || reduced;
+
+  // caméra
+  if (camAnim) {
+    camAnim.t = Math.min(1, camAnim.t + dt / (reduced ? 0.01 : 0.9));
+    const k = ease(camAnim.t);
+    camera.position.lerpVectors(camAnim.from.pos, camAnim.to.pos, k);
+    controls.target.lerpVectors(camAnim.from.target, camAnim.to.target, k);
+    if (camAnim.t >= 1) camAnim = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+
+  // étiquettes
+  const w = innerWidth, h = innerHeight;
+  for (const L of labels) {
+    const show = state.labels && (!L.light || lightVisible);
+    if (!show) { L.el.hidden = true; continue; }
+    v3.copy(L.getPos()).project(camera);
+    if (v3.z > 1) { L.el.hidden = true; continue; }
+    L.el.hidden = false;
+    L.el.style.transform = `translate(${(v3.x * 0.5 + 0.5) * w}px, ${(-v3.y * 0.5 + 0.5) * h - 10}px) translate(-50%, -100%)`;
+  }
+});
+</script>
+
+</html>
