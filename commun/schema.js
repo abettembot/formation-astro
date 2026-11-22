@@ -546,6 +546,7 @@ export function createSchema(cfg) {
   const labels = [];
   const frameFns = [];
   let time = 0;
+  let pickSale = true; // liste des meshes cliquables à recalculer (pièce ajoutée ou reconstruite)
 
   const api = {
     THREE, scene, camera, renderer, controls, state, parts, ciel, apercu,
@@ -578,7 +579,15 @@ export function createSchema(cfg) {
     add(p, m) {
       p.group.add(m);
       m.traverse((o) => { if (o.isMesh) { o.userData.partId = p.id; p.materials.add(o.material); } });
+      pickSale = true;
       return m;
+    },
+    /** Retire tous les meshes d'un élément, pour le reconstruire avec S.add (ex. changement de modèle).
+     *  L'élément garde son étiquette et sa fiche ; p.eclate, p.ancre, p.texte et p.chiffres restent modifiables. */
+    viderElement(p) {
+      vider(p.group);
+      p.materials.clear();
+      pickSale = true;
     },
     /** Étiquette libre. opts : { partId, lumiere:true, visible:() => bool } */
     label(texte, getPos, opts = {}) {
@@ -670,6 +679,11 @@ export function createSchema(cfg) {
   const ndc = new THREE.Vector2();
   let pickList = [];
   function pick(ev) {
+    if (pickSale) {
+      pickList = [];
+      for (const p of parts) p.group.traverse((o) => o.isMesh && pickList.push(o));
+      pickSale = false;
+    }
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, camera);
@@ -729,8 +743,7 @@ export function createSchema(cfg) {
 
   // ---------- Boucle ----------
   function start() {
-    pickList = [];
-    for (const p of parts) p.group.traverse((o) => o.isMesh && pickList.push(o));
+    pickSale = true;
     for (const b of bascules) b.onChange && b.onChange(state[b.id]);
     for (const c of curseurs) c._init();
     renderInfo();

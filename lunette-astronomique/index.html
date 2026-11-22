@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lunette astronomique</title>
+<meta name="description" content="Schéma 3D interactif d'une lunette astronomique : quatre modèles courants (72/420 ED, 80/600 ED, 102/1000 achromatique, 130/910 apochromatique), vue éclatée et trajet de la lumière.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo } from "../commun/schema.js";
+
+// ---------- Géométrie (1 unité = 100 mm) ----------
+// Le tube, l'objectif et le pare-buée suivent le modèle choisi : longueur ≈ focale, diamètre ≈ objectif.
+// L'objectif est une lentille mince placée en XO ; le renvoi coudé replie le foyer vers le haut.
+const MODELES = {
+  ed72:  { nom: "72/420 ED", bouton: "72/420 ED", D: 72, F: 420, type: "ed",
+           usage: "Petite lunette de voyage et d'astrophoto grand champ : grandes nébuleuses, M31 en entier." },
+  ed80:  { nom: "80/600 ED", bouton: "80/600 ED", D: 80, F: 600, type: "ed",
+           usage: "Lunette polyvalente : observation à grand champ et première lunette d'astrophoto." },
+  ach102: { nom: "102/1000 achromatique", bouton: "102/1000 achro", D: 102, F: 1000, type: "achro",
+           usage: "Lunette d'initiation classique, longue et peu chère : Lune, planètes, étoiles doubles. Un léger halo violet entoure les objets brillants." },
+  apo130: { nom: "130/910 apochromatique", bouton: "130/910 apo", D: 130, F: 910, type: "apo",
+           usage: "Grosse lunette de qualité, en visuel comme en astrophoto. Lourde : elle demande une monture solide." },
+};
+const OBJECTIFS = {
+  achro: {
+    nom: "doublet achromatique",
+    texte: "Deux lentilles accolées : une convergente en verre « crown » et une divergente en verre « flint ». Le flint corrige en grande partie le défaut du crown, qui ne fait pas converger toutes les couleurs au même endroit (chromatisme). Il reste un peu de violet hors foyer, d'où un léger halo autour des objets brillants. Pour le limiter, on fait des lunettes longues (f/10 et plus).",
+    lentilles: "2 lentilles (crown + flint)",
+  },
+  ed: {
+    nom: "doublet ED",
+    texte: "Deux lentilles séparées par un fin espace d'air, dont une en verre ED (« Extra-low Dispersion »), qui disperse très peu les couleurs. Le halo coloré devient très faible, même avec une lunette courte. C'est le bon compromis pour débuter en astrophoto.",
+    lentilles: "2 lentilles, dont 1 en verre ED (FPL-51 ou FPL-53)",
+  },
+  apo: {
+    nom: "triplet apochromatique",
+    texte: "Trois lentilles, dont au moins une en verre ED, ramènent le rouge, le vert et le bleu au même foyer. Le chromatisme devient pratiquement invisible, même à f/7. C'est l'objectif de référence en astrophoto, mais aussi le plus lourd et le plus cher.",
+    lentilles: "3 lentilles, dont au moins 1 en verre ED",
+  },
+};
+
+const YF = 0.75;            // hauteur du foyer au-dessus de l'axe, dans le renvoi coudé
+const FE = 0.4;             // focale oculaire (schématique)
+const Y_LENT = YF + FE;
+const H_DIAG = 0.22;        // demi-taille du renvoi coudé
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+
+let modele = "ed80", m = MODELES[modele];
+let R, Fu, RT, RDS, LDS, XO, XD, TB, XFRONT, TL; // dimensions du modèle courant
+let ocular = 25, vueCourante = "iso";
+const L = () => XFRONT - (XD - 0.4); // longueur hors tout, pour cadrer les vues
+
+const virgule = (v, d = 1) => v.toFixed(d).replace(".", ",").replace(/,0+$/, "");
+const fd = () => virgule(m.F / m.D, 1);
+
+function dimensions() {
+  m = MODELES[modele];
+  R = m.D / 200; Fu = m.F / 100;
+  RT = R * 1.1 + 0.03;        // tube un peu plus large que l'objectif
+  RDS = RT + 0.05;            // pare-buée
+  LDS = 1.6 * m.D / 100;      // pare-buée ≈ 1,6 × diamètre
+  XO = (Fu - YF + 0.3 - LDS) / 2; // centre l'instrument sur l'origine
+  XD = XO - Fu + YF;          // miroir du renvoi coudé : trajet déplié objectif → foyer = F
+  TB = XD + 1.35;             // arrière du tube
+  XFRONT = XO + LDS;
+  TL = XO - 0.1 - TB;         // longueur du tube seul
+}
+dimensions();
+
+const S = createSchema({
+  surtitre: "Support de formation · Instruments",
+  titre: "Lunette astronomique",
+  sousTitre: `Exemple : ${m.nom} · f/${fd()}`,
+  eclate: true,
+  commandes: [
+    { type: "raccourcis", id: "modeles", label: "Modèle", boutons: Object.entries(MODELES).map(([id, x]) => ({ id, label: x.bouton, onClick: () => choisir(id) })) },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: () => construire() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => [L() * 0.6 + 1.5, L() * 0.42 + 1.5, L() * 1.1 + 5], cible: [0.5, 0, 0] },
+    { id: "profil", label: "Profil", pos: () => [0.5, 0.5, L() * 1.3 + 5], cible: [0.5, 0, 0] },
+    { id: "objectif", label: "Objectif", pos: () => [XFRONT + 3 + 6 * R, 1.4, 2.6], cible: () => [XO, 0, 0] },
+    { id: "oculaire", label: "Côté oculaire", pos: () => [XD - 3, 2.4, 3.4], cible: () => [XD + 0.6, 0.4, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Le trajet de la lumière</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile arrive en rayons parallèles et traverse l'objectif, à l'avant du tube." },
+      { couleur: SEG[1], texte: "L'objectif, fait de 2 ou 3 lentilles, dévie les rayons. Ils convergent lentement vers le foyer, tout au long du tube." },
+      { couleur: SEG[2], texte: "À l'arrière, le renvoi coudé dévie le faisceau à 90° pour observer confortablement." },
+      { couleur: SEG[3], texte: "L'image se forme au foyer, puis l'oculaire la grossit et renvoie des rayons parallèles vers l'œil." },
+    ])}
+    <p><strong>${m.nom}</strong> · objectif ${OBJECTIFS[m.type].nom} · f/${fd()}. ${m.usage}</p>
+    <p class="spec">Rien au milieu du faisceau : pas d'obstruction centrale, d'où un très bon contraste. Changez de modèle : la longueur du tube suit la focale.</p>`,
+});
+S.controls.maxDistance = 45;
+document.querySelectorAll("#panel [data-view]").forEach((b) => b.addEventListener("click", () => { vueCourante = b.dataset.view; }));
+const sousTitre = document.querySelector("#panel header p");
+
+// ---------- Éléments (leurs meshes sont reconstruits à chaque changement de modèle) ----------
+const tube = S.part("tube", "Tube optique", {});
+const parebuee = S.part("parebuee", "Pare-buée", {
+  texte: "Prolongement du tube devant l'objectif. La nuit, la lentille frontale se refroidit en rayonnant vers le ciel et se couvre de buée : le pare-buée la protège en partie, et arrête aussi la lumière parasite (lampadaires, Lune). Sur beaucoup de modèles, il coulisse pour le transport.",
+});
+const objectif = S.part("objectif", "Objectif", {});
+const diaphragmes = S.part("diaphragmes", "Diaphragmes", {
+  texte: "Anneaux noirs placés dans le tube. Ils laissent passer le cône de lumière utile mais arrêtent les reflets sur la paroi, qui voileraient l'image. Leur ouverture diminue vers l'arrière, en suivant le cône de lumière.",
+  chiffres: "2 à 5 diaphragmes · intérieur du tube noir mat",
+});
+const focuser = S.part("focuser", "Porte-oculaire", {
+  texte: "Le coulant, tube coulissant, avance ou recule avec les molettes pour amener le foyer sur l'oculaire : c'est la mise au point. Sur une lunette, il est à l'arrière, dans l'axe du tube. En astrophoto, il doit porter la caméra sans glisser : on choisit un modèle robuste, avec une molette démultipliée pour la mise au point fine.",
+  chiffres: "Coulant 50,8 mm (2″) · démultiplication 1:10 pour la mise au point fine",
+});
+const diag = S.part("diagonal", "Renvoi coudé", {
+  texte: "Miroir (ou prisme) à 45° qui renvoie la lumière à 90° vers l'oculaire. Sans lui, il faudrait se contorsionner sous la lunette pour observer un objet haut dans le ciel. L'image est droite mais inversée gauche-droite. En astrophoto, on l'enlève : la caméra se fixe directement sur le porte-oculaire.",
+  chiffres: "Coulant 31,75 mm ou 50,8 mm · miroir diélectrique (≈ 99 % de réflexion)",
+});
+const eyepiece = S.part("eyepiece", "Oculaire", {
+  texte: "Petite loupe qui grossit l'image formée au foyer par l'objectif. On change d'oculaire pour changer de grossissement.",
+  chiffres: "Grossissement = focale de la lunette ÷ focale de l'oculaire",
+  extra: () => `
+    <div class="calc"><label for="ocu">Oculaire de</label>
+      <select id="ocu">${[32, 25, 15, 10, 6].map((f) => `<option value="${f}" ${f === ocular ? "selected" : ""}>${f} mm</option>`).join("")}</select>
+      <span>→ ${m.F} ÷ ${ocular} = <strong>${Math.round(m.F / ocular)}×</strong></span></div>
+    <p class="spec">Grossissement utile maximal ≈ 2 × diamètre en mm, soit ≈ ${2 * m.D}× pour cette lunette (rarement atteint à cause de la turbulence).</p>`,
+  bind: (root) => root.querySelector("#ocu").addEventListener("change", (e) => { ocular = +e.target.value; S.refreshInfo(); }),
+});
+const finder = S.part("finder", "Chercheur", {
+  texte: "Petite lunette à faible grossissement et à grand champ, alignée avec l'instrument. Elle sert à viser l'objet avant de regarder dans l'oculaire, dont le champ est bien plus étroit. Sur les petites lunettes, on utilise souvent un simple viseur à point rouge.",
+  chiffres: "Typiquement 6×30 ou 8×50, ou viseur à point rouge",
+});
+const rings = S.part("rings", "Colliers", {
+  texte: "Ils serrent le tube et le relient à la queue d'aronde. Desserrés, ils permettent de faire glisser la lunette pour l'équilibrer sur la monture. C'est important en astrophoto : la caméra ajoutée à l'arrière déplace le centre de gravité.",
+  chiffres: "Paire de colliers à charnière, molettes de serrage",
+});
+const dovetail = S.part("dovetail", "Queue d'aronde", {
+  texte: "Barre profilée standardisée qui se glisse et se serre dans la tête de la monture. C'est l'interface entre la lunette et sa monture.",
+  chiffres: "Format Vixen (≈ 44 mm) ou Losmandy (≈ 75 mm)",
+});
+
+// ---------- Construction ----------
+const ouvert = (mat) => { mat.side = THREE.DoubleSide; return mat; };
+/** Cylindre d'axe X entre x0 et x1, ouvert ; en coupe, seule la moitié arrière (côté −Z) est dessinée. */
+function cylindre(r, x0, x1, mat, coupe) {
+  const g = coupe ? new THREE.CylinderGeometry(r, r, x1 - x0, 72, 1, true, Math.PI / 2, Math.PI)
+                  : new THREE.CylinderGeometry(r, r, x1 - x0, 72, 1, true);
+  return mesh(axeX(g), mat, (x0 + x1) / 2);
+}
+/** Lentille de révolution d'axe X : face avant x = xv − sf·q, face arrière x = xv − t + sb·q, avec q = (r/R)². */
+function lentille(xv, t, sf, sb) {
+  const pts = [], n = 20;
+  for (let i = 0; i <= n; i++) { const r = Math.max(0.001, (i / n) * R), q = (r / R) ** 2; pts.push(new THREE.Vector2(r, xv - sf * q)); }
+  for (let i = n; i >= 0; i--) { const r = Math.max(0.001, (i / n) * R), q = (r / R) ** 2; pts.push(new THREE.Vector2(r, xv - t + sb * q)); }
+  const g = new THREE.LatheGeometry(pts, 72);
+  g.rotateZ(-Math.PI / 2);
+  return mesh(g, ouvert(M.lentille()));
+}
+/** Profils des lentilles (épaisseurs et courbures exagérées pour être visibles). Renvoie [xv, t, sf, sb] par lentille. */
+function profils(type) {
+  const tC = 0.1 + 0.1 * R, sF = 0.05 + 0.04 * R, sB = 0.04 + 0.03 * R, tF = 0.04 + 0.03 * R;
+  if (type === "apo") {
+    const t1 = tC * 0.85, t3 = 0.08 + 0.06 * R, gap = 0.02;
+    const tot = t1 + tF + t3 + 2 * gap, x0 = XO + tot / 2;
+    return [[x0, t1, sF * 0.85, sB], [x0 - t1 - gap, tF, -sB, 0.0], [x0 - t1 - tF - 2 * gap, t3, -0.005, 0.03 + 0.02 * R]];
+  }
+  const gap = type === "ed" ? 0.025 : 0.004;
+  const tot = tC + gap + tF, x0 = XO + tot / 2;
+  return [[x0, tC, sF, sB], [x0 - tC - gap, tF, -sB, 0.01]];
+}
+
+function construire() {
+  const coupe = S.state.coupe;
+  for (const p of S.parts) S.viderElement(p);
+  const tubeMid = (TB + XO - 0.1) / 2;
+
+  // tube
+  tube.ancre.set(tubeMid, RT + 0.05, 0);
+  tube.texte = "Tube fermé par l'objectif à l'avant : la poussière n'entre pas et l'air intérieur reste calme. La lunette se met vite à la température extérieure et ne se dérègle pratiquement jamais : pas de collimation à faire. Sa longueur est à peu près égale à la focale.";
+  tube.chiffres = `Focale ${m.F} mm · longueur hors tout ≈ ${Math.round((XFRONT - TB + 0.35) * 10)} cm`;
+  S.add(tube, cylindre(RT, TB, XO - 0.1, M.peinture(), coupe));
+  S.add(tube, cylindre(RT - 0.012, TB, XO - 0.1, M.flocage(), coupe));
+  S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, 0.04, 72)), M.noir(), TB - 0.02)); // fond du tube
+
+  // pare-buée (coulisse vers l'avant dans la vue éclatée)
+  parebuee.eclate.set(LDS + 1.4, 0, 0);
+  parebuee.ancre.set(XO + LDS * 0.6, RDS + 0.05, 0);
+  parebuee.chiffres = `Longueur ≈ ${Math.round(LDS * 100)} mm · souvent complété par une résistance chauffante`;
+  S.add(parebuee, cylindre(RDS, XO - 0.25, XFRONT, M.noir(), coupe));
+  S.add(parebuee, cylindre(RDS - 0.012, XO - 0.25, XFRONT, M.flocage(), coupe));
+  if (!coupe) S.add(parebuee, mesh(axeX(new THREE.TorusGeometry(RDS, 0.025, 8, 72).rotateX(Math.PI / 2)), M.noir(), XFRONT));
+
+  // objectif : lentilles dans leur cellule
+  const obj = OBJECTIFS[m.type], lent = profils(m.type);
+  const xAv = lent[0][0] + 0.06, xAr = lent.at(-1)[0] - lent.at(-1)[1] - 0.06;
+  objectif.eclate.set(1.0, 0, 0);
+  objectif.ancre.set(XO, RDS + 0.15, 0);
+  objectif.texte = `Ici, un ${obj.nom}. ${obj.texte}`;
+  objectif.chiffres = `D = ${m.D} mm · F = ${m.F} mm · f/${fd()} · ${obj.lentilles}`;
+  for (const [xv, t, sf, sb] of lent) {
+    const l = S.add(objectif, lentille(xv, t, sf, sb));
+    if (sf < 0) l.material.opacity = 0.7; // lentille divergente (flint) un peu plus dense
+  }
+  S.add(objectif, cylindre(RT + 0.02, xAr, xAv, ouvert(M.noir()), coupe));
+  S.add(objectif, mesh(axeX(new THREE.TorusGeometry(R + 0.015, 0.02, 8, 72).rotateX(Math.PI / 2)), M.noir(), xAv));
+
+  // diaphragmes : ouverture qui suit le cône de lumière
+  diaphragmes.eclate.set(0, 2 * RT + 0.9, 0);
+  const xd = [0.2, 0.45, 0.7].map((f) => TB + TL * f);
+  diaphragmes.ancre.set(xd[1], -RT + 0.08, 0);
+  for (const x of xd) {
+    const rin = Math.min(RT - 0.05, R * (x - (XO - Fu)) / Fu + 0.05);
+    const g = new THREE.RingGeometry(rin, RT - 0.015, 72);
+    g.rotateY(Math.PI / 2);
+    S.add(diaphragmes, mesh(g, ouvert(M.noir()), x));
+  }
+
+  // porte-oculaire : embase, coulant et molettes
+  focuser.eclate.set(-1.2, 0, 0);
+  focuser.ancre.set(TB - 0.2, 0.45, 0);
+  S.add(focuser, mesh(axeX(new THREE.CylinderGeometry(0.36, 0.36, 0.35, 40)), M.noir(), TB - 0.175));
+  S.add(focuser, mesh(axeX(new THREE.CylinderGeometry(0.28, 0.28, TB - 0.3 - (XD + 0.38), 40, 1, true)), ouvert(M.alu()), (TB - 0.3 + XD + 0.38) / 2));
+  S.add(focuser, mesh(new THREE.BoxGeometry(0.3, 0.14, 0.7), M.noir(), TB - 0.18, -0.38, 0));
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 12)), M.alu(), TB - 0.18, -0.42, 0));
+  for (const s of [-1, 1]) S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.15, 0.15, 0.1, 24)), M.caoutchouc(), TB - 0.18, -0.42, s * 0.5));
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.08, 0.08, 0.08, 20)), M.alu(), TB - 0.18, -0.42, 0.6)); // molette démultipliée
+
+  // renvoi coudé (ouvert en coupe pour montrer le miroir)
+  const h = H_DIAG;
+  diag.eclate.set(-2.2, 0, 0);
+  diag.ancre.set(XD - 0.25, -0.35, 0);
+  {
+    const sh = new THREE.Shape();
+    sh.moveTo(-h, h); sh.lineTo(h, -h); sh.lineTo(-h, -h); sh.closePath();
+    S.add(diag, mesh(new THREE.ExtrudeGeometry(sh, { depth: 2 * h, bevelEnabled: false }).translate(0, 0, -h), M.noir(), XD - 0.01, -0.01, 0));
+    const mir = S.add(diag, mesh(new THREE.BoxGeometry(2 * h * Math.SQRT2 - 0.02, 0.012, 2 * h - 0.02), M.miroir(), XD, 0, 0));
+    mir.rotation.z = -Math.PI / 4;
+    if (!coupe) {
+      const tri = new THREE.Shape();
+      tri.moveTo(h, -h); tri.lineTo(h, h); tri.lineTo(-h, h); tri.closePath();
+      for (const z of [-h, h]) S.add(diag, mesh(new THREE.ShapeGeometry(tri), ouvert(M.noir()), XD, 0, z));
+    }
+    S.add(diag, mesh(axeX(new THREE.CylinderGeometry(0.2, 0.2, 0.42 - h, 32, 1, true)), ouvert(M.noir()), XD + (h + 0.42) / 2));
+    S.add(diag, mesh(new THREE.CylinderGeometry(0.24, 0.24, YF - 0.05 - h, 32, 1, true), ouvert(M.noir()), XD, (YF - 0.05 + h) / 2, 0));
+  }
+
+  // oculaire
+  eyepiece.eclate.set(-2.2, 1.3, 0);
+  eyepiece.ancre.set(XD + 0.45, YF + 0.55, 0);
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 32, 1, true), ouvert(M.alu()), XD, YF + 0.15, 0));
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.6, 32, 1, true), ouvert(M.noir()), XD, YF + 0.65, 0));
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.29, 0.31, 0.22, 32, 1, true), ouvert(M.caoutchouc()), XD, YF + 1.06, 0));
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 32), M.lentille(), XD, Y_LENT, 0));
+
+  // chercheur, posé en biais sur le tube
+  {
+    const rf = 0.13 + 0.06 * R, lf = Math.min(1.5, TL * 0.7), xf = TB + TL * 0.6;
+    const FY = (RT + rf + 0.25) * Math.SQRT1_2, FZ = -(RT + rf + 0.25) * Math.SQRT1_2;
+    finder.eclate.set(0, 1.2, -1.4);
+    finder.ancre.set(xf, FY + rf + 0.12, FZ);
+    S.add(finder, mesh(axeX(new THREE.CylinderGeometry(rf, rf, lf, 32)), M.noir(), xf, FY, FZ));
+    S.add(finder, mesh(axeX(new THREE.CylinderGeometry(rf + 0.05, rf, 0.25, 32)), M.noir(), xf + lf / 2 + 0.12, FY, FZ));
+    S.add(finder, mesh(axeX(new THREE.CylinderGeometry(rf * 0.5, rf * 0.7, 0.25, 24)), M.caoutchouc(), xf - lf / 2 - 0.12, FY, FZ));
+    for (const x of [xf - lf * 0.28, xf + lf * 0.28]) {
+      S.add(finder, mesh(axeX(new THREE.TorusGeometry(rf + 0.05, 0.03, 8, 32).rotateX(Math.PI / 2)), M.alu(), x, FY, FZ));
+      const foot = S.add(finder, mesh(new THREE.BoxGeometry(0.09, 0.3, 0.09), M.alu(), x, (RT + 0.12) * Math.SQRT1_2 + 0.06, -(RT + 0.12) * Math.SQRT1_2 - 0.06));
+      foot.rotation.x = Math.PI / 4;
+    }
+  }
+
+  // colliers et queue d'aronde
+  const xc = [TB + TL * 0.25, TB + TL * 0.72];
+  rings.eclate.set(0, -1.6, 0);
+  rings.ancre.set(xc[0], -RT - 0.15, 0.6);
+  for (const x of xc) {
+    S.add(rings, mesh(axeX(new THREE.CylinderGeometry(RT + 0.05, RT + 0.05, 0.22, 72, 1, true)), ouvert(M.noir()), x));
+    S.add(rings, mesh(new THREE.BoxGeometry(0.22, 0.2, 0.4), M.noir(), x, -RT - 0.12, 0));
+    S.add(rings, mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 12), M.alu(), x, RT + 0.15, 0));
+  }
+  dovetail.eclate.set(0, -2.4, 0);
+  dovetail.ancre.set((xc[0] + xc[1]) / 2, -RT - 0.4, 0.4);
+  {
+    const s = new THREE.Shape();
+    s.moveTo(-0.3, 0); s.lineTo(0.3, 0); s.lineTo(0.24, -0.13); s.lineTo(-0.24, -0.13); s.closePath();
+    const g = new THREE.ExtrudeGeometry(s, { depth: xc[1] - xc[0] + 0.9, bevelEnabled: false });
+    g.rotateY(Math.PI / 2);
+    S.add(dovetail, mesh(g, M.alu(), xc[0] - 0.45, -RT - 0.22, 0));
+  }
+
+  poserRayons();
+}
+
+// ---------- Trajet de la lumière ----------
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const plan = (P, d, Q, n) => P.clone().addScaledVector(d, Q.clone().sub(P).dot(n) / d.dot(n));
+const refleter = (d, n) => d.clone().addScaledVector(n, -2 * d.dot(n));
+const N_DIAG = V(1, 1, 0).normalize();
+
+function rayon(y0, z0) {
+  const A = V(XFRONT + 3.2, y0, z0), C = V(XO, y0, z0);
+  const d1 = V(XO - Fu, 0, 0).sub(C).normalize();   // vers le foyer (trajet déplié)
+  const G = plan(C, d1, V(XD, 0, 0), N_DIAG);       // sur le miroir du renvoi coudé
+  const d3 = refleter(d1, N_DIAG);
+  const Lp = plan(G, d3, V(0, Y_LENT, 0), V(0, 1, 0));
+  // oculaire : lentille mince d'axe vertical passant par (XD, ·, 0)
+  const sx = d3.x / d3.y - (Lp.x - XD) / FE, sz = d3.z / d3.y - Lp.z / FE;
+  const E = Lp.clone().addScaledVector(V(sx, 1, sz).normalize(), 1.3);
+  return { pts: [A, C, G, Lp, E], cols: SEG };
+}
+
+const lum = faisceau(0.55, 0.42);
+S.scene.add(lum.group);
+const focusMark = halo(COULEURS.corail, 0.45);
+lum.group.add(focusMark);
+function poserRayons() {
+  lum.poser([[0.85, 0], [-0.85, 0], [0.5, 0], [-0.5, 0], [0, 0.7], [0, -0.7]].map(([y, z]) => rayon(y * R, z * R)));
+  focusMark.position.set(XD, YF, 0);
+}
+
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière d'une étoile", () => V(XFRONT + 2.2, R + 0.35, 0), { lumiere: true, visible: lightVisible });
+S.label("Foyer", () => V(XD - 0.45, YF + 0.12, 0), { lumiere: true, visible: lightVisible });
+S.label("Vers l'œil", () => V(XD, Y_LENT + 1.45, 0), { lumiere: true, visible: lightVisible });
+
+// ---------- Choix du modèle ----------
+function choisir(id, recadrer = true) {
+  modele = id;
+  dimensions();
+  for (const k in MODELES) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === id));
+  sousTitre.textContent = `Exemple : ${m.nom} · f/${fd()}`;
+  construire();
+  S.refreshInfo();
+  if (recadrer) S.vue(vueCourante);
+}
+
+S.onFrame(({ time }) => {
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière." : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 5);
+});
+
+choisir(modele, false);
+S.start();
+</script>
+</body>
+</html>
