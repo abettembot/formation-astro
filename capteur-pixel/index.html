@@ -365,9 +365,16 @@ function dessinerApercu() {
       dem = imageCanvas(N, (i, j) => [0, 1, 2].map((c) => Math.pow(rvb[(j * N + i) * 3 + c] / mx, GAMMA)));
     }
     const vues = bayer
-      ? [{ img: recue, titre: "Lumière reçue" }, { img: brut, titre: "Fichier brut" }, { img: dem, titre: "Après dématriçage" }]
-      : [{ img: recue, titre: "Lumière reçue" }, { img: brut, titre: "Image monochrome" }];
+      ? [{ img: recue, titre: "Lumière reçue", court: "Reçue" }, { img: brut, titre: "Fichier brut", court: "Brut" }, { img: dem, titre: "Après dématriçage", court: "Couleur" }]
+      : [{ img: recue, titre: "Lumière reçue", court: "Reçue" }, { img: brut, titre: "Image monochrome", court: "Mono" }];
     const gap = 8, lab = 18, nb = vues.length, s = Math.floor((W - gap * (nb - 1)) / nb), H = s + lab;
+    let police = 11.5;
+    { // titres : version courte quand l'un d'eux ne tient pas sous son image (encart réduit, téléphone)
+      const m = document.createElement("canvas").getContext("2d"); m.font = "11.5px Arial";
+      if (vues.some((vu) => m.measureText(vu.titre).width > s - 4)) for (const vu of vues) vu.titre = vu.court;
+      const plusLong = Math.max(...vues.map((vu) => m.measureText(vu.titre).width));
+      police = Math.max(8, Math.min(11.5, 11.5 * (s - 2) / plusLong)); // encore trop long : police réduite
+    }
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
     const ctx = cv.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -382,7 +389,7 @@ function dessinerApercu() {
       for (let q = 1; q < N; q++) { const u = Math.round(q * s / N) + 0.5; ctx.moveTo(x0 + u, 0); ctx.lineTo(x0 + u, s); ctx.moveTo(x0, u); ctx.lineTo(x0 + s, u); }
       ctx.stroke();
       ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.strokeRect(x0 + 0.5, 0.5, s - 1, s - 1);
-      ctx.font = "11.5px Arial"; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
+      ctx.font = `${police}px Arial`; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
       ctx.fillText(vu.titre, x0 + s / 2, s + 13);
     });
   }
