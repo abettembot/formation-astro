@@ -78,17 +78,39 @@ function dirCiel(ad, dec, out = new THREE.Vector3()) {
 function azh(v) { return [((Math.atan2(v.x, -v.z) / DEG) + 360) % 360, Math.asin(Math.max(-1, Math.min(1, v.y))) / DEG]; }
 const dirAzh = (A, h, out = new THREE.Vector3()) => out.set(Math.sin(A * DEG) * Math.cos(h * DEG), Math.sin(h * DEG), -Math.cos(A * DEG) * Math.cos(h * DEG));
 
-function viser() {
-  const c = CIBLES[sim.cible];
-  [sim.A, sim.h] = azh(dirCiel(c.ad, c.dec));
+const posCible = () => { const c = CIBLES[sim.cible]; return azh(dirCiel(c.ad, c.dec)); };
+function viser() { [sim.A, sim.h] = posCible(); }
+const ecartAz = (de, vers) => ((vers - de + 540) % 360) - 180; // plus court chemin en azimut
+const adoucir = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+/** Déplace le tube en douceur depuis sa position actuelle jusqu'à la cible, puis le suivi prend le relais. */
+function rallier() {
+  const [A, h] = posCible();
+  const ecart = Math.max(Math.abs(ecartAz(sim.A, A)) * Math.cos(Math.min(h, sim.h) * DEG), Math.abs(h - sim.h));
+  sim.trajet = { A0: sim.A, h0: sim.h, t: 0, duree: S.reduced ? 0 : Math.min(2.2, 0.6 + ecart / 60) };
+  sim.trace = [];
 }
 function choisir(id) {
   sim.cible = id;
   const c = CIBLES[id];
   sim.tsl = c.ad + c.h0;
-  viser();
-  sim.trace = [];
+  S.regler("suivi", true);
+  rallier();
   for (const k of Object.keys(CIBLES)) document.getElementById("r-" + k)?.setAttribute("aria-pressed", String(k === id));
+}
+// curseurs : ils pilotent le tube quand le suivi est arrêté, et affichent sa position sinon
+let synchro = false;
+function piloter() {
+  if (synchro) return;
+  if (S.state.suivi) S.regler("suivi", false);
+  sim.trajet = null;
+  sim.trace = [];
+}
+function synchroCurseurs() {
+  const a = Math.round(sim.A) % 360, h = Math.round(sim.h);
+  synchro = true;
+  if (S.state.az !== a) S.regler("az", a);
+  if (S.state.haut !== h) S.regler("haut", h);
+  synchro = false;
 }
 const CARDINAUX = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"];
 const cardinal = (A) => CARDINAUX[Math.round(A / 45) % 8];
@@ -108,11 +130,13 @@ const S = createSchema({
       { id: "m42", label: "M42 · sud", onClick: () => choisir("m42") },
       { id: "deneb", label: "Deneb · zénith", onClick: () => choisir("deneb") },
     ] },
-    { type: "bascule", id: "suivi", label: "Suivi", actif: true, onChange: () => { viser(); sim.trace = []; } },
+    { type: "curseur", id: "az", label: "Azimut", min: 0, max: 359, pas: 1, valeur: 180, format: (v) => `${v}° (${cardinal(v)})`, onInput: piloter },
+    { type: "curseur", id: "haut", label: "Hauteur", min: 0, max: 90, pas: 1, valeur: 35, format: (v) => `${v}°`, onInput: piloter },
+    { type: "bascule", id: "suivi", label: "Suivi", actif: true, onChange: (v) => { if (v) rallier(); else { sim.trajet = null; synchroCurseurs(); } sim.trace = []; } },
     { type: "bascule", id: "reperes", label: "Repères", actif: true },
   ],
   vues: [
-    { id: "iso", label: "3/4", pos: [15, 10, 17], cible: [0, 4.5, 0] },
+    { id: "iso", label: "3/4", pos: [16, 11, 18], cible: [0, 5, 0] },
     { id: "profil", label: "Profil", pos: () => new THREE.Vector3(1, 0, 0).applyQuaternion(azGroup.quaternion).multiplyScalar(27).add(new THREE.Vector3(0, 5, 0)), cible: [0, 5, 0] },
     { id: "dessus", label: "Dessus", pos: [0, 30, 3], cible: [0, 0, 0] },
     { id: "cible", label: "Vers la cible", fov: 50, exacte: true, suivre: true,
@@ -143,7 +167,7 @@ const axeTube = () => dirAzh(sim.A, sim.h);
 function poseMonture(explode) {
   azGroup.rotation.y = -sim.A * DEG;
   altGroup.rotation.x = sim.h * DEG;
-  altGroup.position.y = Y_ALT + explode * 5.2;
+  altGroup.position.y = Y_ALT + explode * 3.6;
   azGroup.updateMatrixWorld(true);
 }
 const ouvert = (m) => { m.material.side = THREE.DoubleSide; return m; };
@@ -229,10 +253,21 @@ const tube = S.part("tube", "Tube optique", {
   texte: "Un Newton de 200 mm de diamètre et de 1 200 mm de focale. Sur un Dobson, il est simplement posé dans la caisse, sans queue d'aronde ni colliers : on le soulève et on le repose en quelques secondes. On le pointe en le poussant à la main, par le haut du tube.",
   chiffres: "D = 203 mm · F = 1 200 mm · f/5,9 · tube ≈ 9 kg, longueur ≈ 1,15 m",
 });
+// en vue éclatée, la moitié haute du tube s'efface pour montrer l'optique de Newton
+let tubeExt, tubeInt, enCoupe = null;
+const L_TUBE = AR - AV, Z_TUBE = (AR + AV) / 2;
+const geoTube = (r, ouvre) => axeZ(ouvre ? new THREE.CylinderGeometry(r, r, L_TUBE, 72, 1, true, -Math.PI / 2, Math.PI)
+                                         : new THREE.CylinderGeometry(r, r, L_TUBE, 72, 1, true));
+function coupe(on) {
+  if (on === enCoupe) return;
+  enCoupe = on;
+  primaire.group.visible = secondaire.group.visible = on; // cachés (avec leur étiquette) quand le tube est fermé
+  tubeExt.geometry.dispose(); tubeExt.geometry = geoTube(RT, on);
+  tubeInt.geometry.dispose(); tubeInt.geometry = geoTube(RT - 0.015, on);
+}
 {
-  const L = AR - AV, zm = (AR + AV) / 2;
-  S.add(tube, ouvert(mesh(axeZ(new THREE.CylinderGeometry(RT, RT, L, 72, 1, true)), M.peinture(), 0, 0, zm)));
-  S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, L, 72, 1, true)), M.flocage(), 0, 0, zm));
+  tubeExt = S.add(tube, ouvert(mesh(geoTube(RT, false), M.peinture(), 0, 0, Z_TUBE)));
+  tubeInt = S.add(tube, mesh(geoTube(RT - 0.015, false), M.flocage(), 0, 0, Z_TUBE));
   S.add(tube, mesh(new THREE.TorusGeometry(RT, 0.035, 10, 72), M.noir(), 0, 0, AV));
   S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.25, 72)), M.noir(), 0, 0, AR - 0.1));
   for (let k = 0; k < 3; k++) { // vis de collimation du barillet
@@ -240,7 +275,7 @@ const tube = S.part("tube", "Tube optique", {
     S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(0.12, 0.12, 0.2, 20)), M.noir(), Math.sin(a) * 0.7, Math.cos(a) * 0.7, AR + 0.12));
   }
   // araignée et support du secondaire, vus par l'entrée du tube
-  S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 24)), M.noir(), 0, 0, ZF));
+  S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(0.17, 0.17, 0.4, 24)), M.noir(), 0, 0, ZF - 0.45));
   for (let k = 0; k < 4; k++) {
     const a = 45 * DEG + k * 90 * DEG, len = RT - 0.2;
     const v = S.add(tube, mesh(new THREE.BoxGeometry(0.02, len, 0.14), M.noir(), -Math.sin(a) * (0.2 + len / 2), Math.cos(a) * (0.2 + len / 2), ZF - 0.3));
@@ -248,8 +283,36 @@ const tube = S.part("tube", "Tube optique", {
   }
 }
 
-// ---------- Porte-oculaire, oculaire, chercheur ----------
+// ---------- Optique de Newton, visible dans le tube en coupe ----------
 const DOC = new THREE.Vector3(Math.sin(45 * DEG), Math.cos(45 * DEG), 0); // vers l'observateur, à 45° du haut du tube
+const primaire = S.part("primaire", "Miroir primaire", {
+  parent: altGroup, ancre: [0, -1.25, AR - 0.4],
+  texte: "Au fond du tube, le miroir parabolique de 200 mm collecte la lumière et la fait converger vers le foyer, à 1 200 mm. C'est lui qui fixe la quantité de lumière captée. Il est assez lourd pour que le centre de gravité du tube soit vers l'arrière : c'est là que sont placés les tourillons.",
+  chiffres: "D = 203 mm · F = 1 200 mm · rapport F/D = 5,9 · miroir en verre aluminé",
+});
+{
+  const R = 1.0, F = 12, T = 0.22, z0 = AR - 0.32, pts = [];
+  for (let i = 0; i <= 24; i++) { const r = (i / 24) * R; pts.push(new THREE.Vector2(r, -r * r / (4 * F))); } // creux tourné vers l'entrée
+  pts.push(new THREE.Vector2(R, T), new THREE.Vector2(0.001, T));
+  const g = new THREE.LatheGeometry(pts, 96); g.rotateX(Math.PI / 2); // axe Y → axe Z, face aluminée côté -Z
+  S.add(primaire, ouvert(mesh(g, M.miroir(), 0, 0, z0)));
+  S.add(primaire, mesh(axeZ(new THREE.CylinderGeometry(R + 0.05, R + 0.05, 0.1, 72)), M.alu(), 0, 0, z0 + T + 0.05));
+}
+const secondaire = S.part("secondaire", "Miroir secondaire", {
+  parent: altGroup, ancre: [-0.55, 0.45, ZF],
+  texte: "Petit miroir plan incliné à 45°, tenu au centre du tube par l'araignée. Il renvoie le cône de lumière sur le côté, vers le porte-oculaire. C'est pour cela qu'on observe en haut du tube, sur le côté, comme avec tout télescope de Newton.",
+  chiffres: "Miroir elliptique · petit axe ≈ 50 mm · obstruction ≈ 25 % du diamètre",
+});
+{
+  const n = DOC.clone().add(new THREE.Vector3(0, 0, 1)).normalize();      // normale : renvoie vers DOC la lumière venue du primaire
+  const ax = new THREE.Vector3(0, 0, 1).sub(DOC).normalize();             // grand axe de l'ellipse
+  const ay = new THREE.Vector3().crossVectors(n, ax);
+  const g = new THREE.CylinderGeometry(0.25, 0.25, 0.05, 48); g.rotateX(Math.PI / 2); g.scale(Math.SQRT2, 1, 1);
+  const m = S.add(secondaire, mesh(g, M.miroir(), 0, 0, ZF));
+  m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ax, ay, n));
+}
+
+// ---------- Porte-oculaire, oculaire, chercheur ----------
 const surDoc = (r) => DOC.clone().multiplyScalar(r).setZ(ZF);
 const focuser = S.part("focuser", "Porte-oculaire", {
   parent: altGroup, eclate: DOC.clone().multiplyScalar(0.8).toArray(), ancre: surDoc(RT + 0.45).setZ(ZF + 1.0).toArray(),
@@ -455,7 +518,7 @@ function dessiner() {
   ctx.font = "11px Arial"; ctx.fillStyle = "#c4d0e0"; ctx.textAlign = "left";
   ctx.fillText("↑ zénith", 6, 14);
   ctx.textAlign = "right";
-  ctx.fillText(`${grossissement()}× · champ ${nb(champReel(), 2)}°`, W - 6, 14);
+  ctx.fillText(`${grossissement()}× · ${nb(champReel(), 2)}°`, W - 6, H - 6);
 
   // légende : vitesses à donner aux axes pour suivre la cible
   const [A, h] = azh(dirCiel(c.ad, c.dec)), v = vitesses(A, h);
@@ -474,28 +537,49 @@ function dessiner() {
 
 // ---------- Animation ----------
 let tPrec = 0;
-S.onFrame(({ time, explode }) => {
+S.onFrame(({ dt, time, explode }) => {
   sim.tsl += (time - tPrec) * VITESSE; tPrec = time;
   const c = CIBLES[sim.cible];
   if (sim.tsl - c.ad > c.h1) { // nouvelle nuit : on revient au début de la fenêtre et on repointe
-    sim.tsl -= c.h1 - c.h0; viser(); sim.trace = [];
+    sim.tsl -= c.h1 - c.h0; sim.trace = [];
+    if (S.state.suivi) rallier();
   }
-  if (S.state.suivi) viser();
+  if (sim.trajet) { // ralliement animé vers la cible, qui continue de bouger pendant ce temps
+    const tr = sim.trajet, [A, h] = posCible();
+    tr.t += dt;
+    const k = tr.duree ? adoucir(Math.min(1, tr.t / tr.duree)) : 1;
+    sim.A = (tr.A0 + ecartAz(tr.A0, A) * k + 360) % 360;
+    sim.h = tr.h0 + (h - tr.h0) * k;
+    if (k >= 1) { sim.trajet = null; sim.trace = []; }
+  } else if (S.state.suivi) viser();
+  else { // pilotage aux curseurs : le tube rejoint la position demandée en douceur
+    const f = S.reduced ? 1 : 1 - Math.exp(-dt * 5);
+    sim.A = (sim.A + ecartAz(sim.A, S.state.az) * f + 360) % 360;
+    sim.h += (S.state.haut - sim.h) * f;
+  }
+  if (S.state.suivi || sim.trajet) synchroCurseurs();
+  coupe(explode > 0.01);
   poseMonture(explode);
+  if (enCoupe) { // la coupe du tube reste tournée vers la caméra
+    const p = altGroup.worldToLocal(S.camera.position.clone());
+    tubeExt.rotation.z = tubeInt.rotation.z = Math.atan2(-p.x, p.y);
+  }
   qCiel(ciel.quaternion);
   S.ciel.quaternion.copy(ciel.quaternion);
   reperes.visible = S.state.reperes;
   majReperes();
   repereChamp(axeTube());
-  echantillonner();
+  if (!sim.trajet) echantillonner();
   dessiner();
-  S.notice(!S.state.suivi ? "Suivi arrêté : le ciel tourne, l'objet sort du champ de l'oculaire en quelques minutes."
+  S.notice(!S.state.suivi ? "Suivi arrêté : déplacez le tube avec les curseurs Azimut et Hauteur. Le ciel continue de tourner : l'objet sort du champ en quelques minutes."
     : sim.h > 80 ? "Près du zénith : la caisse doit pivoter très vite en azimut pour garder l'objet."
     : null);
 });
 
 choisir("m42");
+synchro = true; // l'initialisation des curseurs ne doit pas couper le suivi
 S.start();
+synchro = false;
 </script>
 </body>
 </html>
