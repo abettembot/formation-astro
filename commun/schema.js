@@ -449,6 +449,7 @@ const MOBILE = 760;
  *           Options : fov (champ en degrés, 38 par défaut), exacte:true (pas de recul sur mobile),
  *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue)
  *  - eclate : true pour afficher le curseur « Vue éclatée »
+ *  - animation : false pour retirer le bouton « Animation » (schéma sans rien d'animé)
  *  - commandes : [{ type:"bascule", id, label, actif, onChange(v) }
  *                 | { type:"curseur", id, label, min, max, pas, valeur, format(v), onInput(v), retour }
  *                   (retour : libellé d'un bouton qui remet le curseur à sa valeur de départ)
@@ -471,7 +472,7 @@ export function createSchema(cfg) {
   const commandes = cfg.commandes || [];
   const bascules = [...commandes.filter((c) => c.type === "bascule"),
     { type: "bascule", id: "labels", label: "Étiquettes", actif: true },
-    { type: "bascule", id: "anim", label: "Animation", actif: true }];
+    ...(cfg.animation === false ? [] : [{ type: "bascule", id: "anim", label: "Animation", actif: true }])];
   const curseurs = commandes.filter((c) => c.type === "curseur");
   const raccourcis = commandes.filter((c) => c.type === "raccourcis");
   panel.innerHTML = `

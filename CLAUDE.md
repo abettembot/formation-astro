@@ -22,7 +22,12 @@ La charte reprend le modèle PowerPoint de l'association (`D:\astro\TemplatePowe
 
 ## Page d'accueil : à mettre à jour à chaque ajout
 **Chaque nouveau support doit être ajouté au catalogue de `index.html`, dans le même commit que le support lui-même.** Un support absent de l'accueil est considéré comme non terminé.
-Une carte `<a class="card">` par support, la plus récente en premier, avec une catégorie (`.cat`, « Thème · Sous-thème »), un titre `h3`, une phrase de description et 2 à 4 mots-clés (`.tags`). Si un support est modifié de façon notable, mettre sa carte à jour.
+Le catalogue est rangé en quatre rubriques (`section.rubrique`, avec un lien dans le sommaire `.sommaire`) : « Les instruments », « Utiliser son instrument », « Astrophotographie », « Le ciel et ses phénomènes ». Une nouvelle rubrique s'ajoute seulement si aucune ne convient.
+Une carte `<a class="card">` par support, placée dans sa rubrique à sa place pédagogique (du plus simple au plus avancé), avec :
+- une vignette `img.vignette` (`commun/images/vignettes/<nom-du-schema>.webp`, 720 × 405, capture du rendu 3D sans panneau ni étiquettes) ;
+- la pastille `<span class="nouveau">Nouveau</span>` pour les supports de la dernière série (la retirer des anciens quand une nouvelle série arrive) ;
+- une catégorie (`.cat`, « Thème · Sous-thème »), un titre `h3`, une phrase de description et 2 à 4 mots-clés (`.tags`).
+Si un support est modifié de façon notable, mettre sa carte (et sa vignette si l'aspect change) à jour.
 
 ## Structure
 - `index.html` : accueil (couverture + catalogue des supports).
@@ -36,7 +41,7 @@ Une carte `<a class="card">` par support, la plus récente en premier, avec une 
    - `titre` : nom de l'objet ou du phénomène, sans explication.
    - `sousTitre` : l'exemple concret retenu, en police mono (ex. « Exemple : Newton 200/1000 · f/5 », « Latitude 47° N »).
    - `eclate: true` seulement si l'objet se démonte.
-   - `commandes` : bascules et curseurs propres au schéma. « Étiquettes » et « Animation » sont ajoutées automatiquement, ne pas les redéclarer.
+   - `commandes` : bascules et curseurs propres au schéma. « Étiquettes » et « Animation » sont ajoutées automatiquement, ne pas les redéclarer. Un schéma sans rien d'animé passe `animation: false` (exemple : `champ-de-vision`).
    - `vues` : 3 à 4 points de vue. La première est la vue de départ et s'appelle « 3/4 » quand c'est une vue en perspective.
    - `intro` : la fiche de vue d'ensemble, avec un `eyebrow`, une `legende([...])` en étapes colorées si le phénomène se déroule dans le temps ou l'espace, et une ligne `spec` de conclusion.
    - Une vue peut suivre une pièce mobile : `pos` et `cible` en fonctions, avec `fov`, `exacte: true` et `suivre: true` (exemple : vue « Viseur polaire » de `monture-equatoriale`).

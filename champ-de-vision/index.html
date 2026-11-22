@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Champ de vision</title>
+<meta name="description" content="Schéma interactif du champ de vision : ce qu'un instrument cadre sur M31, M42, M45 et d'autres objets photographiés par le club, selon la focale, le capteur ou l'oculaire.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, css, materiaux as M, mesh, textures } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 10 minutes d'arc sur le ciel ----------
+// Les photos du club sont posées à leur vraie taille angulaire ; les cadres des instruments aussi.
+// Échelle de chaque photo (″ par pixel) : mesurée sur des repères de position connue
+// (M31 : M32 et M110 · M51 : noyaux de M51 et NGC 5195 · M33 : noyau et NGC 604 · M42 : 42 et ι Orionis ·
+//  M45 : Alcyone, Atlas, Pleione, Merope, Maia) ; estimée à ±20 % pour M8, M16 et M20.
+const U = 10; // minutes d'arc par unité
+const OBJETS = {
+  m31: { nom: "M31 · Galaxie d'Andromède", bouton: "M31", fichier: "m31-andromede.webp", px: [2000, 1341], ech: 4.92, taille: [190, 60], credit: "Mathieu Guinot",
+         texte: "La grande galaxie voisine de la nôtre, à 2,5 millions d'années-lumière. Avec ses deux compagnes M32 et M110, elle couvre six fois le diamètre de la Lune." },
+  m33: { nom: "M33 · Galaxie du Triangle", bouton: "M33", fichier: "m33-triangle.webp", px: [2000, 1625], ech: 1.215, taille: [70, 42], credit: "Romain",
+         texte: "Galaxie spirale vue de face, à 2,7 millions d'années-lumière. La tache rose en bas à gauche est NGC 604, une immense région de formation d'étoiles. La photo n'en montre que le cœur." },
+  m42: { nom: "M42 · Nébuleuse d'Orion", bouton: "M42", fichier: "m42-orion.webp", px: [2000, 1125], ech: 5.34, taille: [65, 60], credit: "SLO",
+         texte: "La pouponnière d'étoiles la plus brillante du ciel, sous le Baudrier d'Orion. À gauche, la nébuleuse de l'Homme qui court (NGC 1977)." },
+  m45: { nom: "M45 · Les Pléiades", bouton: "M45", fichier: "m45-pleiades.webp", px: [2000, 1125], ech: 3.26, taille: [110, 110], credit: "SLO",
+         texte: "Amas d'étoiles jeunes et bleues, à 440 années-lumière, enveloppé d'un nuage de poussière qui reflète leur lumière. L'amas entier fait près de 2° : la photo en montre la partie centrale." },
+  m51: { nom: "M51 · Galaxie du Tourbillon", bouton: "M51", fichier: "m51-tourbillon.webp", px: [2000, 1439], ech: 1.07, taille: [11, 7], credit: "Romain",
+         texte: "Galaxie spirale en interaction avec sa petite voisine NGC 5195, à 30 millions d'années-lumière. Petite sur le ciel : il faut une longue focale." },
+  m8:  { nom: "M8 · Nébuleuse de la Lagune", bouton: "M8", fichier: "m8-lagune.webp", px: [2000, 1573], ech: 1.75, taille: [90, 40], credit: "Mathieu", approx: true,
+         texte: "Grande nébuleuse du Sagittaire, ici en palette SHO (fausses couleurs : soufre, hydrogène, oxygène). La photo montre sa partie centrale." },
+  m16: { nom: "M16 · Nébuleuse de l'Aigle", bouton: "M16", fichier: "m16-aigle.webp", px: [2000, 1476], ech: 1.6, taille: [35, 28], credit: "Romain", approx: true,
+         texte: "Nébuleuse du Serpent qui abrite les célèbres « Piliers de la création », au centre de la photo." },
+  m20: { nom: "M20 · Nébuleuse Trifide", bouton: "M20", fichier: "m20-trifide.webp", px: [2000, 1125], ech: 1.25, taille: [28, 28], credit: "SLO", approx: true,
+         texte: "Nébuleuse du Sagittaire partagée en trois par des bandes sombres de poussière. À gauche, la partie bleue est une nébuleuse par réflexion." },
+};
+const INSTRUMENTS = {
+  obj135: { nom: "Objectif photo 135 mm", bouton: "Objectif 135 mm", D: 48, F: 135, visuel: false },
+  l72:  { nom: "Lunette 72/420", bouton: "Lunette 72/420", D: 72, F: 420 },
+  l80:  { nom: "Lunette 80/480", bouton: "Lunette 80/480", D: 80, F: 480, red: 0.8 },
+  n200: { nom: "Newton 200/1000", bouton: "Newton 200/1000", D: 200, F: 1000 },
+  c8:   { nom: "Schmidt-Cassegrain C8", bouton: "C8 203/2032", D: 203, F: 2032, red: 0.63 },
+};
+const CAPTEURS = {
+  apsc: { nom: "APS-C", w: 23.5, h: 15.6, pix: 3.76 },
+  ff:   { nom: "Plein format", w: 36, h: 24, pix: 5.9 },
+  m43:  { nom: "Caméra 4/3", w: 19.1, h: 13.0, pix: 4.63 },
+  carre: { nom: "Caméra 1″ carrée", w: 11.3, h: 11.3, pix: 3.76 },
+};
+const OCULAIRES = {
+  o32: { nom: "32 mm · 52°", f: 32, champ: 52 },
+  o24: { nom: "24 mm · 68°", f: 24, champ: 68 },
+  o15: { nom: "15 mm · 66°", f: 15, champ: 66 },
+  o10: { nom: "10 mm · 52°", f: 10, champ: 52 },
+};
+const COUL_INST = { obj135: COULEURS.etoile, l72: COULEURS.vert, l80: COULEURS.ambre, n200: COULEURS.orange, c8: COULEURS.corail };
+
+const st = { objet: "m31", inst: "l80", mode: "photo", capteur: "apsc", oculaire: "o32", fx: 0, fy: 0 };
+const v = (x, d = 1) => x.toFixed(d).replace(".", ",").replace(/,0$/, "");
+const angle = (am) => (am >= 60 ? `${v(am / 60, am >= 600 ? 0 : 1)}°` : `${Math.round(am)}′`);
+const reduc = (id) => (S.state.reducteur && INSTRUMENTS[id].red) || 1;
+const focale = (id) => INSTRUMENTS[id].F * reduc(id);
+/** Champ (minutes d'arc) d'un instrument dans le mode courant : [largeur, hauteur], ou [diamètre] en visuel. */
+function champ(id) {
+  const F = focale(id);
+  if (st.mode === "photo") { const c = CAPTEURS[st.capteur]; return [3437.7 * c.w / F, 3437.7 * c.h / F]; }
+  const o = OCULAIRES[st.oculaire];
+  return [o.champ * 60 * o.f / F];
+}
+const photo = () => OBJETS[st.objet];
+const taillePhoto = () => { const o = photo(); return [o.px[0] * o.ech / 60 / U, o.px[1] * o.ech / 60 / U]; }; // unités
+
+// ---------- Cadrage des vues (la photo ou le cadre remplit l'écran) ----------
+function recul(w, h) {
+  const t = Math.tan(19 * Math.PI / 180), asp = Math.max(1, (innerWidth - (innerWidth > 760 ? 420 : 0)) / innerHeight);
+  return Math.max(h / 2 / t, w / 2 / (t * asp)) * 1.12;
+}
+function tailleCadre() { const c = champ(st.inst); return c.length === 2 ? [c[0] / U, c[1] / U] : [c[0] / U, c[0] / U]; }
+
+const S = createSchema({
+  surtitre: "Support de formation · Astrophoto",
+  titre: "Champ de vision",
+  sousTitre: "Photos du club à leur vraie taille sur le ciel",
+  apercu: { titre: "Sur le capteur" },
+  animation: false, // rien n'est animé sur ce schéma
+  commandes: [
+    { type: "raccourcis", id: "objets", label: "Objet", boutons: Object.entries(OBJETS).map(([id, o]) => ({ id: "ob-" + id, label: o.bouton, onClick: () => choisir("objet", id) })) },
+    { type: "raccourcis", id: "insts", label: "Instrument", boutons: Object.entries(INSTRUMENTS).map(([id, o]) => ({ id: "in-" + id, label: o.bouton, onClick: () => choisir("inst", id) })) },
+    { type: "raccourcis", id: "modes", label: "Mode", boutons: [{ id: "mo-photo", label: "Photo", onClick: () => choisir("mode", "photo") }, { id: "mo-visuel", label: "Visuel (oculaire)", onClick: () => choisir("mode", "visuel") }] },
+    { type: "raccourcis", id: "capteurs", label: "Capteur", boutons: Object.entries(CAPTEURS).map(([id, o]) => ({ id: "ca-" + id, label: o.nom, onClick: () => choisir("capteur", id) })) },
+    { type: "raccourcis", id: "oculaires", label: "Oculaire (focale · champ apparent)", boutons: Object.entries(OCULAIRES).map(([id, o]) => ({ id: "oc-" + id, label: o.nom, onClick: () => choisir("oculaire", id) })) },
+    { type: "curseur", id: "luneOp", label: "Lune : opacité", min: 0, max: 100, pas: 5, valeur: 40,
+      format: (x) => (x ? `${x} %` : "contour"), onInput: (x) => opaciteLune(x) },
+    { type: "bascule", id: "reducteur", label: "Réducteur", actif: false, onChange: () => maj() },
+    { type: "bascule", id: "tous", label: "Tous les instruments", actif: false, onChange: () => maj() },
+    { type: "bascule", id: "lune", label: "Lune à l'échelle", actif: false, onChange: () => maj() },
+  ],
+  vues: [
+    { id: "photo", label: "Photo entière", pos: () => [0, 0, recul(...taillePhoto())], cible: [0, 0, 0], exacte: true },
+    { id: "cadre", label: "Cadre", pos: () => { const [w, h] = tailleCadre(); return [st.fx, st.fy, recul(w * 1.3, h * 1.3)]; }, cible: () => [st.fx, st.fy, 0], exacte: true },
+    { id: "detail", label: "Détail", pos: () => { const [w, h] = tailleCadre(); return [st.fx, st.fy, recul(w * 0.45, h * 0.45)]; }, cible: () => [st.fx, st.fy, 0], exacte: true },
+  ],
+  aide: "Glisser : déplacer · Molette ou pincer : zoomer · Cliquer sur la photo : y placer le cadre",
+  intro: () => {
+    const o = photo(), [wp, hp] = taillePhoto();
+    return `
+    <div class="eyebrow">${o.nom}</div>
+    <p>${o.texte}</p>
+    <p class="spec">Taille sur le ciel ≈ ${angle(o.taille[0])} × ${angle(o.taille[1])} · Lune : 31′ · photo ≈ ${angle(wp * U)} × ${angle(hp * U)}${o.approx ? " (échelle estimée)" : ""} · photo © ${o.credit}</p>
+    <div class="eyebrow">Ce qui fixe le champ</div>
+    <p><strong>En photo</strong>, le champ dépend seulement de la focale et de la taille du capteur : champ (°) ≈ 57,3 × côté du capteur ÷ focale. Doubler la focale divise le champ par deux.</p>
+    <p><strong>En visuel</strong>, grossissement = focale de l'instrument ÷ focale de l'oculaire, et champ réel ≈ champ apparent de l'oculaire ÷ grossissement.</p>
+    <p class="spec">Le diamètre ne change pas le champ : il change la quantité de lumière récoltée et la finesse des détails.</p>`;
+  },
+});
+S.controls.enableRotate = false;
+S.controls.screenSpacePanning = true;
+S.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+S.controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
+S.controls.minDistance = 0.3;
+S.controls.maxDistance = 90;
+
+// ---------- Photo (texture chargée à la demande) ----------
+const chargeur = new THREE.TextureLoader(), images = {};
+const matPhoto = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
+const plan = mesh(new THREE.PlaneGeometry(1, 1), matPhoto);
+S.scene.add(plan);
+function poserPhoto() {
+  const o = photo(), [w, h] = taillePhoto();
+  plan.scale.set(w, h, 1);
+  if (!images[st.objet]) {
+    images[st.objet] = chargeur.load(`../commun/images/ciel/${o.fichier}`, () => { majApercu(); });
+    images[st.objet].colorSpace = THREE.SRGBColorSpace;
+    images[st.objet].anisotropy = 8;
+  }
+  matPhoto.map = images[st.objet];
+  matPhoto.needsUpdate = true;
+}
+
+// ---------- Cadres des instruments ----------
+const cadres = new THREE.Group();
+cadres.position.z = 0.002;
+S.scene.add(cadres);
+const ETIQ = Object.keys(INSTRUMENTS).map(() => {
+  const e = { pos: new THREE.Vector3(), on: false };
+  e.L = S.label("", () => e.pos, { lumiere: true, visible: () => e.on });
+  return e;
+});
+function cadre(w, h, ep, couleur, opacite) { // rectangle ou cercle (h nul) d'épaisseur ep, centré en (0,0)
+  const g = new THREE.Group(), mat = M.lumineux(couleur, opacite);
+  if (!h) { g.add(new THREE.Mesh(new THREE.RingGeometry(w / 2 - ep, w / 2, 160), mat)); return g; }
+  for (const [x, y, sx, sy] of [[0, h / 2, w + ep, ep], [0, -h / 2, w + ep, ep], [w / 2, 0, ep, h], [-w / 2, 0, ep, h]])
+    g.add(mesh(new THREE.PlaneGeometry(sx, sy), mat, x, y, 0));
+  return g;
+}
+function poserCadres() {
+  cadres.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+  cadres.clear();
+  const [wp] = taillePhoto(), ep = wp / 450;
+  const liste = S.state.tous ? Object.keys(INSTRUMENTS).filter((id) => st.mode === "photo" || INSTRUMENTS[id].visuel !== false) : [st.inst];
+  ETIQ.forEach((e) => (e.on = false));
+  liste.forEach((id, k) => {
+    const c = champ(id), courant = id === st.inst, w = c[0] / U, h = c.length === 2 ? c[1] / U : 0;
+    const g = cadre(w, h, ep * (courant ? 2.2 : 1.2), COUL_INST[id], courant ? 0.95 : 0.7);
+    g.position.set(st.fx, st.fy, courant ? 0.001 : 0);
+    cadres.add(g);
+    const e = ETIQ[k];
+    e.on = true;
+    e.L.el.textContent = `${INSTRUMENTS[id].nom}${reduc(id) < 1 ? " + réducteur" : ""} · ${angle(c[0])}${h ? " × " + angle(c[1]) : ""}`;
+    e.L.el.style.color = css(COUL_INST[id]);
+    e.pos.set(st.fx - w / 2, st.fy + (h || w) / 2 * (h ? 1 : 0.72), 0);
+  });
+  // la Lune à l'échelle, en bas à gauche de la photo
+  lune.visible = S.state.lune;
+  const [wph, hph] = taillePhoto(), r = 31 / U / 2;
+  lune.position.set(-wph / 2 + r * 1.3, -hph / 2 + r * 1.3, 0.003);
+}
+const lune = new THREE.Group();
+const disqueLune = (() => {
+  const tex = new THREE.CanvasTexture(textures.faceLune()); tex.colorSpace = THREE.SRGBColorSpace;
+  const d = new THREE.Mesh(new THREE.CircleGeometry(31 / U / 2, 96), new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false, depthWrite: false }));
+  lune.add(d);
+  // contour toujours visible, même quand le disque est transparent
+  const c = new THREE.Mesh(new THREE.RingGeometry(31 / U / 2 - 0.025, 31 / U / 2, 128), M.lumineux(COULEURS.etoile, 0.85));
+  c.position.z = 0.001;
+  lune.add(c);
+  return d;
+})();
+function opaciteLune(p) { disqueLune.material.opacity = p / 100; disqueLune.visible = p > 0; }
+S.scene.add(lune);
+S.label("Lune", () => lune.position.clone().add(new THREE.Vector3(0, 31 / U / 2, 0)), { visible: () => lune.visible });
+
+// ---------- Clic sur la photo : y placer le cadre ----------
+{
+  const rc = new THREE.Raycaster(), ndc = new THREE.Vector2(), el = S.renderer.domElement;
+  let depart = null;
+  el.addEventListener("pointerdown", (e) => { depart = [e.clientX, e.clientY]; });
+  el.addEventListener("pointerup", (e) => {
+    if (!depart || Math.hypot(e.clientX - depart[0], e.clientY - depart[1]) > 6) return;
+    const r = el.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    rc.setFromCamera(ndc, S.camera);
+    const hit = rc.intersectObject(plan)[0];
+    if (hit) { st.fx = hit.point.x; st.fy = hit.point.y; poserCadres(); majApercu(); }
+  });
+}
+
+// ---------- Encart : ce que montre l'instrument ----------
+function majApercu() {
+  const ap = S.apercu, o = photo(), inst = INSTRUMENTS[st.inst], c = champ(st.inst), F = focale(st.inst);
+  ap.el.querySelector(".eyebrow").textContent = st.mode === "photo" ? "Sur le capteur" : "Dans l'oculaire";
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  const ratio = c.length === 2 ? c[1] / c[0] : 1, H = Math.round(W * ratio);
+  if (W) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    if (c.length === 1) { ctx.beginPath(); ctx.arc(W / 2, H / 2, W / 2 - 1, 0, 2 * Math.PI); ctx.clip(); }
+    const img = images[st.objet]?.image;
+    if (img && img.width) {
+      const parPx = o.ech / 60;                                   // minutes d'arc par pixel de la photo
+      const cx = o.px[0] / 2 + st.fx * U / parPx, cy = o.px[1] / 2 - st.fy * U / parPx;
+      const sw = c[0] / parPx, sh = (c.length === 2 ? c[1] : c[0]) / parPx;
+      const sx = cx - sw / 2, sy = cy - sh / 2;
+      // partie de la photo visible (le reste du champ est hors de la photo : laissé noir)
+      const x0 = Math.max(0, sx), y0 = Math.max(0, sy), x1 = Math.min(o.px[0], sx + sw), y1 = Math.min(o.px[1], sy + sh);
+      if (x1 > x0 && y1 > y0) ctx.drawImage(img, x0 * img.width / o.px[0], y0 * img.height / o.px[1], (x1 - x0) * img.width / o.px[0], (y1 - y0) * img.height / o.px[1],
+        (x0 - sx) / sw * W, (y0 - sy) / sh * H, (x1 - x0) / sw * W, (y1 - y0) / sh * H);
+    }
+    ctx.restore();
+    if (c.length === 1) { ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.beginPath(); ctx.arc(W / 2, H / 2, W / 2 - 1, 0, 2 * Math.PI); ctx.stroke(); }
+  }
+  // texte : réglages, champ, verdict
+  const grand = Math.max(...o.taille), cote = Math.max(...c), petit = c.length === 2 ? Math.min(...c) : c[0];
+  const diag = c.length === 2 ? Math.hypot(c[0], c[1]) : c[0];
+  const nomObj = o.nom.split(" · ")[0];
+  let verdict;
+  if (grand > cote && grand <= diag * 0.95) verdict = `${nomObj} (≈ ${angle(grand)}) est plus grand que le côté du cadre : il ne tient qu'en le plaçant en biais, dans la diagonale. Ça passe tout juste.`;
+  else if (grand > cote) verdict = `${nomObj} (≈ ${angle(grand)}) déborde du champ : on n'en voit qu'une partie. Il faudrait une focale plus courte${st.mode === "photo" ? ", un plus grand capteur ou une mosaïque de plusieurs photos" : " ou un oculaire de plus grand champ"}.`;
+  else if (grand > petit * 0.9) verdict = `${nomObj} (≈ ${angle(grand)}) tient tout juste, dans la longueur du cadre.`;
+  else if (grand < cote * 0.2) verdict = `${nomObj} (≈ ${angle(grand)}) n'occupe qu'une petite partie du champ : une focale plus longue la montrerait plus grande.`;
+  else verdict = `${nomObj} (≈ ${angle(grand)}) tient dans le champ avec de la marge : bon cadrage.`;
+  let reglage, chiffres;
+  if (st.mode === "photo") {
+    const k = CAPTEURS[st.capteur], ech = k.pix / 1000 / F * 206265;
+    reglage = `${inst.nom}${reduc(st.inst) < 1 ? " + réducteur ×" + v(reduc(st.inst), 2) : ""} · ${k.nom}`;
+    chiffres = `Focale ${Math.round(F)} mm · f/${v(F / inst.D)} · champ ${angle(c[0])} × ${angle(c[1])} · ${v(ech)}″ par pixel`;
+  } else {
+    const oc = OCULAIRES[st.oculaire], G = F / oc.f, pupille = inst.D / G;
+    reglage = `${inst.nom}${reduc(st.inst) < 1 ? " + réducteur ×" + v(reduc(st.inst), 2) : ""} · oculaire ${oc.nom}`;
+    chiffres = `Grossissement ${Math.round(G)}× · champ réel ${angle(c[0])} · pupille de sortie ${v(pupille)} mm${pupille > 7 ? " (plus large que la pupille de l'œil : lumière perdue)" : ""}`;
+  }
+  ap.legende.innerHTML = `<h2>${reglage}</h2><p class="spec">${chiffres}</p><p>${verdict}</p>`;
+}
+
+// ---------- Choix ----------
+function presse(prefixe, table, actif) { for (const k in table) document.getElementById(`r-${prefixe}-${k}`).setAttribute("aria-pressed", String(k === actif)); }
+function choisir(cle, val) {
+  if (cle === "inst" && st.mode === "visuel" && INSTRUMENTS[val].visuel === false) return;
+  st[cle] = val;
+  if (cle === "objet") { st.fx = 0; st.fy = 0; }
+  if (cle === "mode" && val === "visuel" && INSTRUMENTS[st.inst].visuel === false) st.inst = "l80";
+  maj();
+  if (cle === "objet") S.vue("photo");
+}
+function maj() {
+  presse("ob", OBJETS, st.objet); presse("in", INSTRUMENTS, st.inst); presse("ca", CAPTEURS, st.capteur); presse("oc", OCULAIRES, st.oculaire);
+  document.getElementById("r-mo-photo").setAttribute("aria-pressed", String(st.mode === "photo"));
+  document.getElementById("r-mo-visuel").setAttribute("aria-pressed", String(st.mode === "visuel"));
+  document.getElementById("r-ca-apsc").closest(".raccourcis").hidden = st.mode !== "photo";
+  document.getElementById("r-oc-o32").closest(".raccourcis").hidden = st.mode !== "visuel";
+  document.getElementById("r-in-obj135").disabled = st.mode === "visuel";
+  document.getElementById("c-luneOp").closest(".slider").hidden = !S.state.lune; // curseur utile seulement avec la Lune
+  poserPhoto();
+  poserCadres();
+  majApercu();
+  S.refreshInfo();
+  S.notice(S.state.reducteur && !INSTRUMENTS[st.inst].red ? `Pas de réducteur courant pour ${INSTRUMENTS[st.inst].nom.toLowerCase()} : seuls la lunette 80/480 (×0,8) et le C8 (×0,63) en ont un.` : null);
+}
+
+let largeur = 0;
+S.onFrame(() => { // l'encart change de taille (bouton Agrandir) : on le redessine
+  const W = S.apercu.canvas.clientWidth;
+  if (W !== largeur) { largeur = W; majApercu(); }
+});
+
+maj();
+S.start();
+</script>
+</body>
+</html>

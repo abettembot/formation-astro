@@ -28,75 +28,131 @@
     <h2>Les supports disponibles</h2>
     <p class="intro">Choisissez un support. Dans chaque schéma, cliquez sur un élément pour afficher son explication.</p>
 
-    <!-- CATALOGUE : une carte par support, la plus récente en premier. À mettre à jour à chaque nouvel ajout. -->
-    <div class="grid">
-      <a class="card" href="lunette-astrographe/">
-        <span class="cat">Instruments · Astrophoto</span>
-        <h3>Lunette astrographe</h3>
-        <p>Pourquoi les étoiles des coins sont déformées : courbure de champ, aplanisseur, réducteur ×0,8 et formule Petzval, avec le tirage à respecter et les étoiles vues sur la photo.</p>
-        <div class="tags"><span>aplanisseur</span><span>réducteur</span><span>Petzval</span><span>tirage</span></div>
-      </a>
-      <a class="card" href="chromatisme-objectifs/">
-        <span class="cat">Optique · Lunettes</span>
-        <h3>Chromatisme des objectifs</h3>
-        <p>Pourquoi chaque couleur a son foyer : lentille simple, achromatique, ED et apochromatique comparés, avec le halo violet vu sur une étoile et au bord de la Lune.</p>
-        <div class="tags"><span>dispersion</span><span>spectre secondaire</span><span>verre ED</span><span>halo violet</span></div>
-      </a>
-      <a class="card" href="lunette-astronomique/">
-        <span class="cat">Instruments · Optique</span>
-        <h3>Lunette astronomique</h3>
-        <p>Quatre lunettes courantes en 3D, de la 72/420 ED à la 130/910 apo : objectif à 2 ou 3 lentilles, trajet de la lumière et longueur du tube qui suit la focale.</p>
-        <div class="tags"><span>achromatique</span><span>ED</span><span>apochromatique</span><span>focale</span></div>
-      </a>
-      <a class="card" href="schmidt-cassegrain/">
-        <span class="cat">Instruments · Optique</span>
-        <h3>Télescope Schmidt-Cassegrain</h3>
-        <p>Un C8 en 3D : la lumière repliée dans un tube court, la mise au point par le miroir primaire mobile et l'étoile vue à l'oculaire, nette ou défocalisée.</p>
-        <div class="tags"><span>lame de Schmidt</span><span>C8</span><span>mise au point</span><span>vu à l'oculaire</span></div>
-      </a>
-      <a class="card" href="schmidt-newton/">
-        <span class="cat">Instruments · Optique</span>
-        <h3>Télescope Schmidt-Newton</h3>
-        <p>Un Newton 200/800 fermé par une lame de Schmidt : miroir sphérique, secondaire sans araignée, et l'étoile vue à l'oculaire avec ou sans la lame.</p>
-        <div class="tags"><span>lame de Schmidt</span><span>miroir sphérique</span><span>aberration</span><span>vu à l'oculaire</span></div>
-      </a>
-      <a class="card" href="collimation-newton/">
-        <span class="cat">Instruments · Réglage</span>
-        <h3>Collimation d'un Newton</h3>
-        <p>Déréglez les miroirs d'un 200/1000 et voyez l'effet sur une étoile, puis apprenez à les réaligner au Cheshire et au collimateur laser.</p>
-        <div class="tags"><span>Cheshire</span><span>laser</span><span>coma</span><span>star test</span></div>
-      </a>
-      <a class="card" href="eclipse-lune/">
-        <span class="cat">Mécanique céleste · Éclipses</span>
-        <h3>Éclipse de Lune</h3>
-        <p>La Lune traverse l'ombre de la Terre : éclipses pénombrale, partielle et totale, et la teinte cuivrée donnée par l'atmosphère terrestre.</p>
-        <div class="tags"><span>ombre et pénombre</span><span>Lune rouge</span><span>Danjon</span><span>contacts</span></div>
-      </a>
-      <a class="card" href="eclipse-soleil/">
-        <span class="cat">Mécanique céleste · Éclipses</span>
-        <h3>Éclipse de Soleil</h3>
-        <p>L'ombre de la Lune sur la Terre : éclipses partielle, totale et annulaire, avec la couronne solaire et les grains de Baily vus par l'observateur.</p>
-        <div class="tags"><span>totalité</span><span>annulaire</span><span>couronne</span><span>grains de Baily</span></div>
-      </a>
-      <a class="card" href="phases-lune/">
-        <span class="cat">Mécanique céleste · Lune</span>
-        <h3>Phases de la Lune</h3>
-        <p>Soleil, Terre et Lune vus de dessus : déplacez la Lune sur son orbite, faites tourner la Terre et voyez la Lune comme l'observateur, avec le vocabulaire des phases.</p>
-        <div class="tags"><span>lunaison</span><span>quartier</span><span>gibbeuse</span><span>lever et coucher</span></div>
-      </a>
-      <a class="card" href="monture-equatoriale/">
-        <span class="cat">Instruments · Monture</span>
-        <h3>Monture équatoriale</h3>
-        <p>Une EQ5 en 3D : les deux axes, le suivi du ciel, la rotation de champ comparée à une azimutale et la mise en station au viseur polaire.</p>
-        <div class="tags"><span>mise en station</span><span>viseur polaire</span><span>suivi</span><span>rotation de champ</span></div>
-      </a>
+    <nav class="sommaire" aria-label="Rubriques">
+      <a href="#instruments">Les instruments</a>
+      <a href="#utiliser">Utiliser son instrument</a>
+      <a href="#astrophoto">Astrophotographie</a>
+      <a href="#ciel">Le ciel et ses phénomènes</a>
+    </nav>
+
+    <!-- CATALOGUE : une carte par support, rangée dans sa rubrique, à sa place pédagogique.
+         Un support récent porte la pastille « Nouveau » (à retirer à la série suivante). -->
+    <section class="rubrique" id="instruments" aria-labelledby="titre-instruments">
+      <h2 id="titre-instruments">Les instruments</h2>
+      <p class="intro">Comprendre comment sont faits les télescopes et les lunettes, et le trajet de la lumière jusqu'à l'œil.</p>
+      <div class="grid">
       <a class="card" href="telescope-newton/">
+        <img class="vignette" src="commun/images/vignettes/telescope-newton.webp" alt="" width="720" height="405" loading="lazy">
         <span class="cat">Instruments · Optique</span>
         <h3>Télescope de Newton</h3>
         <p>Vue éclatée des pièces d'un 200/1000 et trajet animé de la lumière, du miroir primaire jusqu'à l'œil.</p>
         <div class="tags"><span>miroirs</span><span>foyer</span><span>grossissement</span></div>
       </a>
-    </div>
+      <a class="card" href="schmidt-newton/">
+        <img class="vignette" src="commun/images/vignettes/schmidt-newton.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Instruments · Optique</span>
+        <h3>Télescope Schmidt-Newton</h3>
+        <p>Un Newton 200/800 fermé par une lame de Schmidt : miroir sphérique, secondaire sans araignée, et l'étoile vue à l'oculaire avec ou sans la lame.</p>
+        <div class="tags"><span>lame de Schmidt</span><span>miroir sphérique</span><span>aberration</span><span>vu à l'oculaire</span></div>
+      </a>
+      <a class="card" href="schmidt-cassegrain/">
+        <img class="vignette" src="commun/images/vignettes/schmidt-cassegrain.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Instruments · Optique</span>
+        <h3>Télescope Schmidt-Cassegrain</h3>
+        <p>Un C8 en 3D : la lumière repliée dans un tube court, la mise au point par le miroir primaire mobile et l'étoile vue à l'oculaire, nette ou défocalisée.</p>
+        <div class="tags"><span>lame de Schmidt</span><span>C8</span><span>mise au point</span><span>vu à l'oculaire</span></div>
+      </a>
+      <a class="card" href="lunette-astronomique/">
+        <img class="vignette" src="commun/images/vignettes/lunette-astronomique.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="nouveau">Nouveau</span>
+        <span class="cat">Instruments · Optique</span>
+        <h3>Lunette astronomique</h3>
+        <p>Quatre lunettes courantes en 3D, de la 72/420 ED à la 130/910 apo : objectif à 2 ou 3 lentilles, trajet de la lumière et longueur du tube qui suit la focale.</p>
+        <div class="tags"><span>achromatique</span><span>ED</span><span>apochromatique</span><span>focale</span></div>
+      </a>
+      <a class="card" href="chromatisme-objectifs/">
+        <img class="vignette" src="commun/images/vignettes/chromatisme-objectifs.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="nouveau">Nouveau</span>
+        <span class="cat">Optique · Lunettes</span>
+        <h3>Chromatisme des objectifs</h3>
+        <p>Pourquoi chaque couleur a son foyer : lentille simple, achromatique, ED et apochromatique comparés, avec le halo violet vu sur une étoile et au bord de la Lune.</p>
+        <div class="tags"><span>dispersion</span><span>spectre secondaire</span><span>verre ED</span><span>halo violet</span></div>
+      </a>
+      </div>
+    </section>
+
+    <section class="rubrique" id="utiliser" aria-labelledby="titre-utiliser">
+      <h2 id="titre-utiliser">Utiliser son instrument</h2>
+      <p class="intro">Monter, régler et pointer : les gestes qui font la différence sur le terrain.</p>
+      <div class="grid">
+      <a class="card" href="monture-equatoriale/">
+        <img class="vignette" src="commun/images/vignettes/monture-equatoriale.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Instruments · Monture</span>
+        <h3>Monture équatoriale</h3>
+        <p>Une EQ5 en 3D : les deux axes, le suivi du ciel, la rotation de champ comparée à une azimutale et la mise en station au viseur polaire.</p>
+        <div class="tags"><span>mise en station</span><span>viseur polaire</span><span>suivi</span><span>rotation de champ</span></div>
+      </a>
+      <a class="card" href="collimation-newton/">
+        <img class="vignette" src="commun/images/vignettes/collimation-newton.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Instruments · Réglage</span>
+        <h3>Collimation d'un Newton</h3>
+        <p>Déréglez les miroirs d'un 200/1000 et voyez l'effet sur une étoile, puis apprenez à les réaligner au Cheshire et au collimateur laser.</p>
+        <div class="tags"><span>Cheshire</span><span>laser</span><span>coma</span><span>star test</span></div>
+      </a>
+      </div>
+    </section>
+
+    <section class="rubrique" id="astrophoto" aria-labelledby="titre-astrophoto">
+      <h2 id="titre-astrophoto">Astrophotographie</h2>
+      <p class="intro">Préparer ses photos : choisir l'instrument et le capteur, et obtenir des étoiles fines jusque dans les coins.</p>
+      <div class="grid">
+      <a class="card" href="champ-de-vision/">
+        <img class="vignette" src="commun/images/vignettes/champ-de-vision.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="nouveau">Nouveau</span>
+        <span class="cat">Astrophoto · Cadrage</span>
+        <h3>Champ de vision</h3>
+        <p>Ce que chaque instrument cadre sur M31, M42, les Pléiades et d'autres objets photographiés par le club, selon la focale, le capteur ou l'oculaire.</p>
+        <div class="tags"><span>focale</span><span>capteur</span><span>oculaire</span><span>photos du club</span></div>
+      </a>
+      <a class="card" href="lunette-astrographe/">
+        <img class="vignette" src="commun/images/vignettes/lunette-astrographe.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="nouveau">Nouveau</span>
+        <span class="cat">Instruments · Astrophoto</span>
+        <h3>Lunette astrographe</h3>
+        <p>Pourquoi les étoiles des coins sont déformées : courbure de champ, aplanisseur, réducteur ×0,8 et formule Petzval, avec le tirage à respecter et les étoiles vues sur la photo.</p>
+        <div class="tags"><span>aplanisseur</span><span>réducteur</span><span>Petzval</span><span>tirage</span></div>
+      </a>
+      </div>
+    </section>
+
+    <section class="rubrique" id="ciel" aria-labelledby="titre-ciel">
+      <h2 id="titre-ciel">Le ciel et ses phénomènes</h2>
+      <p class="intro">La mécanique céleste en mouvement : la Lune, le Soleil, la Terre et leurs ombres.</p>
+      <div class="grid">
+      <a class="card" href="phases-lune/">
+        <img class="vignette" src="commun/images/vignettes/phases-lune.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Mécanique céleste · Lune</span>
+        <h3>Phases de la Lune</h3>
+        <p>Soleil, Terre et Lune vus de dessus : déplacez la Lune sur son orbite, faites tourner la Terre et voyez la Lune comme l'observateur, avec le vocabulaire des phases.</p>
+        <div class="tags"><span>lunaison</span><span>quartier</span><span>gibbeuse</span><span>lever et coucher</span></div>
+      </a>
+      <a class="card" href="eclipse-soleil/">
+        <img class="vignette" src="commun/images/vignettes/eclipse-soleil.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Mécanique céleste · Éclipses</span>
+        <h3>Éclipse de Soleil</h3>
+        <p>L'ombre de la Lune sur la Terre : éclipses partielle, totale et annulaire, avec la couronne solaire et les grains de Baily vus par l'observateur.</p>
+        <div class="tags"><span>totalité</span><span>annulaire</span><span>couronne</span><span>grains de Baily</span></div>
+      </a>
+      <a class="card" href="eclipse-lune/">
+        <img class="vignette" src="commun/images/vignettes/eclipse-lune.webp" alt="" width="720" height="405" loading="lazy">
+        <span class="cat">Mécanique céleste · Éclipses</span>
+        <h3>Éclipse de Lune</h3>
+        <p>La Lune traverse l'ombre de la Terre : éclipses pénombrale, partielle et totale, et la teinte cuivrée donnée par l'atmosphère terrestre.</p>
+        <div class="tags"><span>ombre et pénombre</span><span>Lune rouge</span><span>Danjon</span><span>contacts</span></div>
+      </a>
+      </div>
+    </section>
+
   </div>
 </main>
 
