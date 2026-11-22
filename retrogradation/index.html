@@ -110,7 +110,7 @@ const S = createSchema({
   titre: "Rétrogradation des planètes",
   sousTitre: "Exemple : Mars, opposition du 16 janvier 2025",
   distanceMax: 220,
-  apercu: { titre: "Vu de la Terre" },
+  apercu: { titre: "Vu de la Terre", grand: true },
   commandes: [
     { type: "curseur", id: "date", label: "Date", min: 0, max: N_JOURS, pas: 1, valeur: sim.d - D_MIN,
       format: (v) => fmtCourt(D_MIN + v) + " " + dateDe(D_MIN + v).getUTCFullYear(),
