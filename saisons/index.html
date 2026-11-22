@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Saisons et trajectoire du Soleil</title>
+<meta name="description" content="Schéma 3D interactif des saisons : la course du Soleil dans le ciel selon la date et la latitude, l'ombre d'un bâton, la lumière reçue par le sol et l'inclinaison de l'axe de la Terre.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, legende, css, faisceau, halo, textureHalo } from "../commun/schema.js";
+
+// ---------- Échelle et repère ----------
+// 1 unité = 1 m autour de l'observateur. Le dôme du ciel (rayon 10 m) est symbolique :
+// il porte les directions dans lesquelles on voit le Soleil, qui est en réalité à 150 millions de km.
+// Repère local : sol = plan XZ, zénith = +Y, nord = −Z, sud = +Z, est = +X, ouest = −X.
+const DEG = Math.PI / 180;
+const R_DOME = 10, R_SOL = 11.5;
+const LAT_CLUB = 49 + 38 / 60 + 55 / 3600;   // 49° 38′ 55″ N
+const ANNEE = 2025, J2000 = Date.UTC(2000, 0, 1, 12);
+const EPS = 23.44;                            // inclinaison de l'axe de la Terre (degrés)
+
+// ---------- Position du Soleil (formules de l'Almanach astronomique, précision ≈ 0,01°) ----------
+function soleilDuJour(j) {
+  const n = (Date.UTC(ANNEE, 0, 1 + j, 12) - J2000) / 864e5;
+  const g = (357.529 + 0.98560028 * n) * DEG;
+  const lam = (280.459 + 0.98564736 * n + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * DEG;
+  const eps = (23.439 - 0.00000036 * n) * DEG;
+  return {
+    dec: Math.asin(Math.sin(eps) * Math.sin(lam)) / DEG,               // déclinaison (degrés)
+    lam: (((lam / DEG) % 360) + 360) % 360,                             // longitude du Soleil (degrés)
+    dist: (1.00014 - 0.01671 * Math.cos(g) - 0.00014 * Math.cos(2 * g)) * 149.598, // millions de km
+  };
+}
+/** Direction du Soleil (vecteur unitaire) pour une latitude, une déclinaison et une heure solaire. */
+function dirSoleil(phi, dec, heure, out = new THREE.Vector3()) {
+  const H = (heure - 12) * 15 * DEG, p = phi * DEG, d = dec * DEG;
+  const est = -Math.cos(d) * Math.sin(H);
+  const nord = Math.cos(p) * Math.sin(d) - Math.sin(p) * Math.cos(d) * Math.cos(H);
+  const haut = Math.sin(p) * Math.sin(d) + Math.cos(p) * Math.cos(d) * Math.cos(H);
+  return out.set(est, haut, -nord);
+}
+/** La journée : hauteur à midi, durée du jour (réfraction et demi-diamètre compris), lever et coucher. */
+function journee(phi, dec) {
+  const p = phi * DEG, d = dec * DEG, h0 = -0.833 * DEG;
+  const cp = Math.max(Math.cos(p), 1e-9);
+  const c = (Math.sin(h0) - Math.sin(p) * Math.sin(d)) / (cp * Math.cos(d));
+  const midi = 90 - Math.abs(phi - dec);
+  const cA = Math.min(1, Math.max(-1, Math.sin(d) / cp)); // azimut du lever, compté depuis le nord
+  if (c >= 1) return { midi, duree: 0, nuit: true };
+  if (c <= -1) return { midi, duree: 24, jour: true };
+  const H0 = Math.acos(c) / DEG / 15;
+  return { midi, duree: 2 * H0, lever: 12 - H0, coucher: 12 + H0, azLever: Math.acos(cA) / DEG };
+}
+
+// ---------- Mise en forme ----------
+const dateDe = (j) => new Date(Date.UTC(ANNEE, 0, 1 + Math.round(j)));
+const fmtDate = (j, mois = "long") => dateDe(j).toLocaleDateString("fr-FR", { day: "numeric", month: mois, timeZone: "UTC" });
+const fmt = (v, n = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+const mod = (v, m) => ((v % m) + m) % m;
+const fmtHeure = (h) => { const m = Math.round(mod(h, 24) * 60) % 1440; return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmtDuree = (h) => { const m = Math.round(h * 60); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmtLat = (v) => Math.abs(v) < 0.05 ? "0° (équateur)" : `${fmt(Math.abs(v), 1)}° ${v > 0 ? "N" : "S"}`;
+const POINTS = ["nord", "nord-est", "est", "sud-est", "sud", "sud-ouest", "ouest", "nord-ouest"];
+const direction = (az) => POINTS[Math.round(mod(az, 360) / 45) % 8];
+
+// ---------- Dates clés 2025 et lieux ----------
+const JOURS = [
+  { id: "hiver", label: "Solstice d'hiver", j: 354 },     // 21 décembre
+  { id: "printemps", label: "Équinoxe de mars", j: 78 },  // 20 mars
+  { id: "ete", label: "Solstice d'été", j: 171 },         // 21 juin
+  { id: "automne", label: "Équinoxe de sept.", j: 264 },  // 22 septembre
+];
+const LIEUX = [
+  { id: "equateur", label: "Équateur", lat: 0 },
+  { id: "club", label: "Le club", lat: LAT_CLUB },
+  { id: "polaire", label: "Cercle polaire", lat: 66.56 },
+  { id: "pole", label: "Pôle Nord", lat: 90 },
+  { id: "sydney", label: "Sydney", lat: -33.87 },
+];
+
+// ---------- État ----------
+const sim = { j: 171, heure: 15, lat: LAT_CLUB };
+let pilote = false, arcsSales = true;
+
+const S = createSchema({
+  surtitre: "Support de formation · Ciel",
+  titre: "Saisons et trajectoire du Soleil",
+  sousTitre: "Exemple : latitude du club, 49° 39′ N",
+  distanceMax: 70,
+  apercu: { titre: "Vue de l'espace" },
+  commandes: [
+    { type: "curseur", id: "date", label: "Date", min: 0, max: 364, pas: 1, valeur: sim.j,
+      format: (v) => fmtDate(v, "short"), onInput: (v) => { if (!pilote) { sim.j = v; arcsSales = true; } } },
+    { type: "curseur", id: "heure", label: "Heure solaire", min: 0, max: 24, pas: 0.25, valeur: sim.heure,
+      format: fmtHeure, onInput: (v) => { if (!pilote) sim.heure = v; } },
+    { type: "curseur", id: "lat", label: "Latitude", min: -90, max: 90, pas: "any", valeur: LAT_CLUB,
+      format: fmtLat, onInput: (v) => { if (!pilote) { sim.lat = v; arcsSales = true; } } },
+    { type: "raccourcis", id: "jours", label: "Aller au", boutons: JOURS.map((d) => ({ id: d.id, label: d.label, onClick: () => { regler("date", d.j); } })) },
+    { type: "raccourcis", id: "lieux", label: "Lieu", boutons: LIEUX.map((l) => ({ id: l.id, label: l.label, onClick: () => { regler("lat", l.lat); } })) },
+    { type: "bascule", id: "trajets", label: "Trajectoires", actif: true },
+    { type: "bascule", id: "faisceau", label: "Faisceau", actif: true },
+    { type: "bascule", id: "ombre", label: "Ombre", actif: true },
+    { type: "bascule", id: "reperes", label: "Repères", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [-12, 26, -44] : [-9, 17, -31], cible: [0, 3, 3] },
+    // par les yeux de l'observateur, face au sud
+    { id: "sud", label: "Face au sud", fov: 75, exacte: true, pos: [-1.9, 1.65, -1.4], cible: [-1.9, 4.2, 8.6] },
+    { id: "dessus", label: "Dessus", exacte: true, pos: () => [0, innerWidth < 760 ? 46 : 33, 0.01], cible: [0, 0, 0] },
+    { id: "est", label: "Face à l'est", fov: 75, exacte: true, pos: [-1.9, 1.65, -1.4], cible: [8.1, 3.4, -1.4] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Ce qu'on voit dans le ciel</div>
+    <p>Chaque jour, le Soleil se lève à l'est, monte vers le sud, puis se couche à l'ouest. Mais sa course change au fil de l'année :</p>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "En hiver (21 décembre), il se lève au sud-est, reste bas et se couche tôt au sud-ouest : au club, 17° de hauteur à midi et 8 h de jour." },
+      { couleur: COULEURS.ambre, texte: "Aux équinoxes (20 mars, 22 septembre), il se lève plein est et se couche plein ouest : 12 h de jour partout sur Terre." },
+      { couleur: COULEURS.corail, texte: "En été (21 juin), il se lève au nord-est, monte haut et se couche tard au nord-ouest : 64° à midi et plus de 16 h de jour." },
+    ])}
+    <div class="eyebrow">L'explication</div>
+    <p>L'axe de la Terre est incliné de 23,4° et pointe toujours vers l'étoile Polaire. En juin, l'hémisphère Nord penche vers le Soleil : le Soleil monte haut et reste longtemps dans le ciel. En décembre, il penche à l'opposé. Un Soleil bas étale sa lumière sur une plus grande surface de sol (bascule « Faisceau ») et brille moins longtemps : il fait plus froid.</p>
+    <p class="spec">Ce n'est pas la distance au Soleil qui fait les saisons : la Terre en est même au plus près début janvier, en plein hiver chez nous.</p>`,
+});
+
+// ---------- Réglages pilotés par le script (raccourcis, animation) ----------
+const affiche = {};
+function recaler(id, v) {
+  const r = Math.round(v * 100);
+  if (affiche[id] === r) return;
+  affiche[id] = r; pilote = true; S.regler(id, v); pilote = false;
+}
+function regler(id, v) {
+  if (id === "date") sim.j = v;
+  if (id === "lat") sim.lat = v;
+  arcsSales = true;
+  recaler(id, v);
+}
+
+// ---------- Éclairage : le Soleil du schéma ----------
+S.scene.environmentIntensity = 0.25;
+S.lumieres.contre.intensity = 0;
+const lumiere = S.lumieres.principale;
+
+// ---------- Sol, horizon et points cardinaux ----------
+const sol = S.part("horizon", "Horizon", {
+  etiquette: false,
+  texte: "Le sol cache la moitié du ciel : on ne voit que ce qui est au-dessus de l'horizon. Le Soleil est levé quand il passe au-dessus de cette ligne, couché quand il passe dessous. Le point du ciel juste au-dessus de la tête s'appelle le zénith.",
+  chiffres: "Hauteur d'un astre : 0° sur l'horizon, 90° au zénith · direction (azimut) comptée depuis le nord, vers l'est",
+});
+{
+  const g = new THREE.CircleGeometry(R_SOL, 96); g.rotateX(-Math.PI / 2);
+  S.add(sol, mesh(g, M.sol()));
+}
+const lignes = (pts, couleur, op, tirets = false) => {
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), tirets
+    ? new THREE.LineDashedMaterial({ color: couleur, dashSize: 0.25, gapSize: 0.2, transparent: true, opacity: op, depthWrite: false })
+    : new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: op, depthWrite: false }));
+  if (tirets) l.computeLineDistances();
+  S.scene.add(l); return l;
+};
+const cercle = (r, y, n = 128) => Array.from({ length: n + 1 }, (_, i) => new THREE.Vector3(Math.cos(i / n * 2 * Math.PI) * r, y, Math.sin(i / n * 2 * Math.PI) * r));
+lignes(cercle(R_DOME, 0.02), 0xc4d0e0, 0.55);
+for (const [nom, x, z] of [["Nord", 0, -1], ["Est", 1, 0], ["Sud", 0, 1], ["Ouest", -1, 0]]) {
+  S.label(nom, () => new THREE.Vector3(x * (R_SOL + 0.2), 0.1, z * (R_SOL + 0.2)), { partId: "horizon" });
+}
+
+// ---------- Repères du ciel : hauteurs, méridien, axe du monde ----------
+const reperes = new THREE.Group(); S.scene.add(reperes);
+{
+  const add = (o) => { S.scene.remove(o); reperes.add(o); };
+  for (const h of [30, 60]) add(lignes(cercle(R_DOME * Math.cos(h * DEG), R_DOME * Math.sin(h * DEG)), 0x8b9ab0, 0.3, true));
+  const meridien = []; for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI; meridien.push(new THREE.Vector3(0, Math.sin(a) * R_DOME, -Math.cos(a) * R_DOME)); }
+  add(lignes(meridien, 0x8b9ab0, 0.35, true));
+}
+for (const h of [30, 60]) S.label(h + "°", () => new THREE.Vector3(0, R_DOME * Math.sin(h * DEG) + 0.15, R_DOME * Math.cos(h * DEG)), { visible: () => S.state.reperes });
+S.label("Zénith", () => new THREE.Vector3(0, R_DOME + 0.3, 0), { visible: () => S.state.reperes });
+const polaire = S.part("polaire", "Axe du monde", {
+  etiquette: false,
+  texte: "Le prolongement de l'axe de rotation de la Terre. Dans l'hémisphère Nord, il pointe vers l'étoile Polaire, à une hauteur égale à la latitude du lieu. Le Soleil, comme les étoiles, tourne chaque jour autour de cet axe : ses trajectoires sont des cercles parallèles, perpendiculaires à l'axe.",
+  chiffres: "Hauteur du pôle céleste = latitude · au club : 49,6° au-dessus de l'horizon nord",
+});
+const axe = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3)),
+  new THREE.LineDashedMaterial({ color: COULEURS.etoile, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.6, depthWrite: false }));
+axe.frustumCulled = false; reperes.add(axe);
+const etoilePolaire = halo(COULEURS.etoile, 0.9); reperes.add(etoilePolaire);
+const posPole = () => { const p = Math.abs(sim.lat) * DEG; return new THREE.Vector3(0, Math.sin(p), (sim.lat >= 0 ? -1 : 1) * Math.cos(p)).multiplyScalar(R_DOME); };
+const lblPole = S.label("Étoile Polaire", () => posPole().add(new THREE.Vector3(0, 0.45, 0)), { partId: "polaire", visible: () => S.state.reperes });
+
+// ---------- Bâton (gnomon) et son ombre ----------
+const baton = S.part("baton", "Bâton et son ombre", {
+  etiquette: false,
+  texte: "Un simple bâton planté droit : son ombre indique la direction opposée au Soleil, et sa longueur dépend de la hauteur du Soleil. À midi solaire, elle pointe plein nord (sous nos latitudes) et elle est la plus courte de la journée. C'est le principe du cadran solaire.",
+  chiffres: "Bâton de 1 m · longueur de l'ombre = 1 m ÷ tangente de la hauteur du Soleil",
+  extra: () => {
+    const jr = journee(sim.lat, soleilDuJour(sim.j).dec);
+    return jr.midi > 0 ? `<p class="spec">Le ${fmtDate(sim.j)}, à midi : ombre de ${fmt(1 / Math.tan(jr.midi * DEG), 2)} m.</p>` : "";
+  },
+});
+S.add(baton, mesh(new THREE.CylinderGeometry(0.035, 0.035, 1, 16), M.alu(), 0, 0.5, 0));
+S.add(baton, mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.04, 24), M.noir(), 0, 0.02, 0));
+S.label("Bâton de 1 m", () => new THREE.Vector3(0, 1.25, 0), { partId: "baton" });
+const ombre = mesh(new THREE.BoxGeometry(0.07, 0.004, 1), M.lumineux(0x000000, 0.6));
+S.scene.add(ombre);
+const lblOmbre = S.label("", () => _bout.clone().add(new THREE.Vector3(0, 0.25, 0)), { lumiere: true, visible: () => S.state.ombre && ombre.visible });
+const _bout = new THREE.Vector3();
+
+// ---------- Observateur ----------
+const obs = S.part("observateur", "Observateur", {
+  etiquette: false,
+  texte: "Il regarde vers le sud. Dans l'hémisphère Nord, hors des tropiques, c'est de ce côté que le Soleil culmine à midi. La hauteur du Soleil à midi vaut 90° moins la latitude, plus ou moins 23,4° selon la saison.",
+  chiffres: "Au club, à midi : 64° le 21 juin · 40° aux équinoxes · 17° le 21 décembre",
+});
+{
+  const mat = () => M.peinture(), X = -1.9, Z = -1.4;
+  for (const s of [-1, 1]) {
+    S.add(obs, mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.85, 12), mat(), X + s * 0.1, 0.43, Z));
+    const bras = S.add(obs, mesh(new THREE.CylinderGeometry(0.05, 0.045, 0.62, 12), mat(), X + s * 0.27, 1.12, Z));
+    bras.rotation.z = s * 0.18;
+  }
+  S.add(obs, mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.65, 16), mat(), X, 1.17, Z));
+  S.add(obs, mesh(new THREE.SphereGeometry(0.14, 20, 14), mat(), X, 1.65, Z));
+}
+const TETE = new THREE.Vector3(-1.9, 1.65, -1.4);
+/** Vue « par les yeux de l'observateur » : on masque sa silhouette. */
+const parSesYeux = () => S.camera.position.distanceTo(TETE) < 1;
+S.label("Observateur", () => new THREE.Vector3(-1.9, 2.05, -1.4), { partId: "observateur", visible: () => !parSesYeux() });
+
+// ---------- Soleil ----------
+const pSoleil = S.part("soleil", "Soleil", {
+  etiquette: false,
+  texte: "Il semble tourner autour de nous en 24 heures : c'est la Terre qui tourne sur elle-même. Il se lève à l'est, culmine au sud à midi solaire, puis se couche à l'ouest. Au fil de l'année, sa trajectoire glisse vers le nord (été) ou vers le sud (hiver), entre deux limites atteintes aux solstices.",
+  chiffres: "Déclinaison du Soleil : de −23,4° (21 décembre) à +23,4° (21 juin) · 0° aux équinoxes",
+});
+const soleil = new THREE.Group(); S.scene.add(soleil);
+S.add(pSoleil, mesh(new THREE.SphereGeometry(0.55, 32, 16), M.lumineux(0xffd98a)));
+pSoleil.group.removeFromParent(); soleil.add(pSoleil.group);
+soleil.add(halo(COULEURS.ambre, 3.4));
+S.label("Soleil", () => soleil.position.clone().add(new THREE.Vector3(0, 0.9, 0)), { partId: "soleil", visible: () => soleil.position.y > -0.3 });
+
+// ---------- Trajectoires : solstices, équinoxes et jour choisi ----------
+const trajets = S.part("trajets", "Trajectoires du Soleil", {
+  etiquette: false,
+  texte: "La course du Soleil dans le ciel, un jour donné. Ce sont des arcs de cercles parallèles entre eux, autour de l'axe du monde. Plus l'arc est long au-dessus de l'horizon, plus le jour dure. Les points marquent la position du Soleil heure par heure.",
+  chiffres: "Solstices : 21 juin et 21 décembre 2025 · équinoxes : 20 mars et 22 septembre 2025",
+});
+const arcs = new THREE.Group(); S.scene.add(arcs);
+const ARCS = [
+  { dec: EPS, couleur: COULEURS.corail, nom: "21 juin" },
+  { dec: 0, couleur: COULEURS.ambre, nom: "Équinoxes" },
+  { dec: -EPS, couleur: COULEURS.etoile, nom: "21 décembre" },
+  { dec: null, couleur: 0xf6f9fd, nom: "" }, // jour choisi
+];
+/** Arc du jour (partie au-dessus de l'horizon) et points horaires. */
+function construireArc(a) {
+  const dec = a.dec ?? soleilDuJour(sim.j).dec, v = new THREE.Vector3(), seg = [], heures = [];
+  let prec = null;
+  for (let i = 0; i <= 480; i++) {
+    const h = i / 20;
+    dirSoleil(sim.lat, dec, h, v);
+    const p = v.clone().multiplyScalar(R_DOME);
+    if (prec && prec.y >= 0 && p.y >= 0) seg.push(prec, p);
+    if (i % 20 === 0 && i < 480 && p.y >= 0) heures.push(p);
+    prec = p;
+  }
+  const g = new THREE.Group();
+  if (seg.length) {
+    const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), a.dec === null
+      ? new THREE.LineDashedMaterial({ color: a.couleur, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.8, depthWrite: false })
+      : new THREE.LineBasicMaterial({ color: a.couleur, transparent: true, opacity: 0.85, depthWrite: false }));
+    if (a.dec === null) l.computeLineDistances();
+    g.add(l);
+  }
+  if (heures.length && a.dec !== null) {
+    g.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(heures),
+      new THREE.PointsMaterial({ color: a.couleur, size: 0.32, map: textureHalo(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })));
+  }
+  a.midi = dirSoleil(sim.lat, dec, 12).multiplyScalar(R_DOME);
+  a.repere = dirSoleil(sim.lat, dec, 16).multiplyScalar(R_DOME);
+  return g;
+}
+function majArcs() {
+  for (const o of arcs.children) o.traverse((x) => { x.geometry?.dispose(); x.material?.dispose(); });
+  arcs.clear();
+  for (const a of ARCS) arcs.add(construireArc(a));
+}
+for (const a of ARCS.slice(0, 3)) {
+  S.label(a.nom, () => a.repere.clone().add(new THREE.Vector3(0, 0.45, 0)), { partId: "trajets", visible: () => S.state.trajets && a.repere?.y > 0.3 });
+}
+const lblMidi = S.label("", () => ARCS[3].midi.clone().add(new THREE.Vector3(0, -0.6, 0)), { lumiere: true, visible: () => ARCS[3].midi?.y > 0.2 });
+const lblLever = S.label("", () => _lever.clone(), { lumiere: true, visible: () => !!jourCourant.lever });
+const lblCoucher = S.label("", () => _coucher.clone(), { lumiere: true, visible: () => !!jourCourant.lever });
+const _lever = new THREE.Vector3(), _coucher = new THREE.Vector3();
+let jourCourant = {};
+
+// ---------- Faisceau : la même lumière sur plus ou moins de sol ----------
+const pFaisceau = S.part("faisceau", "Faisceau de lumière", {
+  etiquette: false,
+  texte: "Un faisceau de lumière solaire de 1 m² de section. Quand le Soleil est haut, il éclaire une petite tache de sol, qui reçoit beaucoup d'énergie par mètre carré. Quand le Soleil est bas, la même lumière s'étale sur une grande surface : chaque mètre carré reçoit moins d'énergie et chauffe moins. C'est la première raison du froid de l'hiver ; la seconde, ce sont des journées plus courtes.",
+  chiffres: "Surface éclairée = 1 m² ÷ sinus de la hauteur du Soleil · au club, à midi : 1,1 m² le 21 juin, 3,4 m² le 21 décembre",
+});
+const P0 = new THREE.Vector3(3.4, 0, 2.6), DEMI = 0.5, LONG_F = 7.5;
+const fGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(30 * 3), 3));
+const fFaces = new THREE.Mesh(fGeo, M.lumineux(COULEURS.etoile, 0.08)); fFaces.frustumCulled = false;
+const tGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(6 * 3), 3));
+const tache = new THREE.Mesh(tGeo, M.lumineux(COULEURS.ambre, 0.5)); tache.frustumCulled = false;
+const fLignes = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(24 * 3), 3)),
+  new THREE.LineBasicMaterial({ color: COULEURS.etoile, transparent: true, opacity: 0.55, depthWrite: false }));
+fLignes.frustumCulled = false;
+const rayons = faisceau(0.35, 0.3, 40);
+const groupeF = new THREE.Group(); groupeF.add(fFaces, tache, fLignes, rayons.group); S.scene.add(groupeF);
+const lblTache = S.label("", () => P0.clone().add(new THREE.Vector3(0, 0.35, 0)), { lumiere: true, visible: () => S.state.faisceau && groupeF.visible });
+lblTache.el.addEventListener("click", () => S.select("faisceau"));
+function majFaisceau(u, time) {
+  const e1 = new THREE.Vector3().crossVectors(u, new THREE.Vector3(0, 1, 0)).normalize();
+  const e2 = new THREE.Vector3().crossVectors(e1, u).normalize();
+  const sol = [], haut = [];
+  for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    const c = P0.clone().addScaledVector(e1, a * DEMI).addScaledVector(e2, b * DEMI);
+    const g = c.clone().addScaledVector(u, -c.y / u.y);
+    sol.push(g); haut.push(g.clone().addScaledVector(u, LONG_F));
+  }
+  const T = tGeo.attributes.position;
+  [0, 1, 2, 0, 2, 3].forEach((k, i) => T.setXYZ(i, sol[k].x, 0.015, sol[k].z));
+  T.needsUpdate = true;
+  const F = fGeo.attributes.position; let n = 0;
+  for (let k = 0; k < 4; k++) {
+    const a = sol[k], b = sol[(k + 1) % 4], c = haut[(k + 1) % 4], d = haut[k];
+    for (const p of [a, b, c, a, c, d]) F.setXYZ(n++, p.x, p.y, p.z);
+  }
+  F.needsUpdate = true;
+  const L = fLignes.geometry.attributes.position; n = 0;
+  for (let k = 0; k < 4; k++) {
+    for (const p of [sol[k], haut[k], sol[k], sol[(k + 1) % 4], haut[k], haut[(k + 1) % 4]]) L.setXYZ(n++, p.x, p.y, p.z);
+  }
+  L.needsUpdate = true;
+  const trajetsF = [];
+  for (const [a, b] of [[0, 0], [-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]) {
+    const c = P0.clone().addScaledVector(e1, a * DEMI).addScaledVector(e2, b * DEMI);
+    const g = c.clone().addScaledVector(u, -c.y / u.y);
+    trajetsF.push({ pts: [g.clone().addScaledVector(u, LONG_F), g], cols: [COULEURS.ambre] });
+  }
+  rayons.poser(trajetsF);
+  rayons.animer(time * 0.6, 4);
+}
+
+// ---------- Encart : la Terre sur son orbite, vue de l'espace ----------
+const ap = S.apercu;
+const ALPHA = 22 * DEG; // élévation du point de vue au-dessus du plan de l'orbite
+// base : P vers l'équinoxe de mars (longitude 0), Q vers longitude 90°, N pôle nord de l'écliptique
+const projU = (p, q, n) => n * Math.cos(ALPHA) - p * Math.sin(ALPHA); // vers le haut de l'écran
+const globe = document.createElement("canvas");
+let legendePrec = "";
+/** Saison astronomique du lieu ; le jour même d'un solstice ou d'un équinoxe, son nom. */
+function saison(lam, lat) {
+  const nord = ["Printemps", "Été", "Automne", "Hiver"], sud = ["Automne", "Hiver", "Printemps", "Été"];
+  const k = Math.round(lam / 90) % 4;
+  if (Math.abs(lam - Math.round(lam / 90) * 90) < 0.6) {
+    const ev = ["Équinoxe de mars", "Solstice de juin", "Équinoxe de septembre", "Solstice de décembre"][k];
+    const nomLocal = (lat >= 0 ? nord : sud)[k];
+    return k % 2 ? `${ev} : début de l'${nomLocal === "Été" ? "été" : "hiver"}` : `${ev} : début ${nomLocal === "Printemps" ? "du printemps" : "de l'automne"}`;
+  }
+  return (lat >= 0 ? nord : sud)[Math.floor(lam / 90) % 4];
+}
+function dessinerApercu(sj, jr, h) {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.66);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#04070e"); g.addColorStop(1, "#0c1528");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const cx = W / 2, cy = H * 0.52, R = W * 0.34;
+  const X = (p, q) => cx + q * R, Y = (p, q, n = 0) => cy - projU(p, q, n) * R;
+  // orbite
+  ctx.strokeStyle = "rgba(139,154,176,0.45)"; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.ellipse(cx, cy, R, R * Math.sin(ALPHA), 0, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  // repères de dates (position de la Terre)
+  ctx.font = "10px Arial"; ctx.fillStyle = "rgba(196,208,224,0.75)"; ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const sous = W * 0.075 + 9; // sous le globe de la Terre
+  for (const [lamS, texte, dy] of [[90, "21 juin", sous], [270, "21 déc.", sous], [0, "20 mars", -11], [180, "22 sept.", 13]]) {
+    const L = (lamS + 180) * DEG;
+    ctx.fillText(texte, X(Math.cos(L), Math.sin(L)), Y(Math.cos(L), Math.sin(L)) + dy);
+  }
+  const ordre = [];
+  // Soleil
+  const dessinSoleil = () => {
+    const gs = ctx.createRadialGradient(cx, cy, 0, cx, cy, W * 0.09);
+    gs.addColorStop(0, "rgba(255,217,138,1)"); gs.addColorStop(0.25, "rgba(255,200,97,0.6)"); gs.addColorStop(1, "rgba(255,200,97,0)");
+    ctx.fillStyle = gs; ctx.beginPath(); ctx.arc(cx, cy, W * 0.09, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = "#ffe2a0"; ctx.beginPath(); ctx.arc(cx, cy, W * 0.03, 0, 2 * Math.PI); ctx.fill();
+  };
+  // Terre : globe éclairé, axe incliné, parallèle de l'observateur
+  const LE = (sj.lam + 180) * DEG, ep = Math.cos(LE), eq = Math.sin(LE);
+  const ex = X(ep, eq), ey = Y(ep, eq), rg = Math.round(W * 0.075);
+  const dessinTerre = () => {
+    const n = 2 * rg;
+    if (globe.width !== n) { globe.width = globe.height = n; }
+    const gx = globe.getContext("2d"), img = gx.createImageData(n, n);
+    const sA = Math.sin(EPS * DEG), cA = Math.cos(EPS * DEG), sa = Math.sin(ALPHA), ca = Math.cos(ALPHA);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const dx = (i + 0.5 - rg) / rg, dy = (j + 0.5 - rg) / rg, q2 = dx * dx + dy * dy;
+      if (q2 > 1) continue;
+      const z = Math.sqrt(1 - q2);
+      const np = sa * dy + ca * z, nq = dx, nn = -ca * dy + sa * z;   // normale (P, Q, N)
+      const eclaire = -(np * ep + nq * eq);                          // vers le Soleil
+      const lat = Math.asin(nq * sA + nn * cA) / DEG;
+      let c;
+      const bande = Math.abs(lat - sim.lat) < 3.2;
+      if (eclaire > 0) { const k = 0.55 + 0.45 * Math.sqrt(eclaire); c = bande ? [255 * k, 107 * k, 94 * k] : [70 * k, 125 * k, 185 * k]; }
+      else c = bande ? [110, 46, 42] : [14, 22, 38];
+      const o = (j * n + i) * 4;
+      img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255 * Math.min(1, (1 - Math.sqrt(q2)) * rg);
+    }
+    gx.putImageData(img, 0, 0);
+    ctx.drawImage(globe, ex - rg, ey - rg);
+    // axe
+    const ax = sA, ay = -(cA * ca);
+    ctx.strokeStyle = "rgba(246,249,253,0.85)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(ex - ax * rg * 1.5, ey - ay * rg * 1.5); ctx.lineTo(ex + ax * rg * 1.5, ey + ay * rg * 1.5); ctx.stroke();
+    ctx.fillStyle = "#f6f9fd"; ctx.font = "bold 9px Arial"; ctx.textAlign = "center";
+    ctx.fillText("N", ex + ax * rg * 1.85, ey + ay * rg * 1.85);
+  };
+  if (ep > 0) { dessinSoleil(); dessinTerre(); } else { dessinTerre(); dessinSoleil(); }
+  ctx.font = "bold 9px Arial"; ctx.fillStyle = css(COULEURS.accent); ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("AXE TOUJOURS VERS LA POLAIRE", 6, 6);
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  // légende
+  let jourTxt;
+  if (jr.nuit) jourTxt = "Nuit polaire : le Soleil ne se lève pas de la journée.";
+  else if (jr.jour) jourTxt = "Jour polaire : le Soleil ne se couche pas (Soleil de minuit).";
+  else jourTxt = `Lever à ${fmtHeure(jr.lever)} vers le ${direction(jr.azLever)}, coucher à ${fmtHeure(jr.coucher)} vers le ${direction(360 - jr.azLever)}.`;
+  const midi = jr.midi > 0
+    ? `À midi, une ombre de ${fmt(1 / Math.tan(jr.midi * DEG), 2)} m pour un bâton de 1 m, et ${fmt(Math.sin(jr.midi * DEG) * 100)} % de la lumière d'un Soleil au zénith sur chaque m² de sol.`
+    : "";
+  const html = `<h2>${saison(sj.lam, sim.lat)} · ${fmtDate(sim.j)}</h2>
+    <p class="spec">${fmtLat(sim.lat)} · Soleil à ${fmt(Math.max(0, jr.midi), 1)}° à midi · jour de ${fmtDuree(jr.duree)}</p>
+    <p>${jourTxt} ${midi}</p>
+    <p class="spec">Distance Terre-Soleil : ${fmt(sj.dist, 1)} millions de km${h > 0 ? ` · Soleil à ${fmt(h, 1)}° en ce moment` : " · Soleil couché en ce moment"}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Animation ----------
+const u = new THREE.Vector3();
+let tPrec = 0;
+S.onFrame(({ time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  const sj = soleilDuJour(sim.j);
+  const jr = journee(sim.lat, sj.dec);
+  dirSoleil(sim.lat, sj.dec, sim.heure, u);
+  if (dtt > 0) { // le temps passe ; la nuit défile plus vite
+    sim.heure = mod(sim.heure + dtt * (u.y > 0 ? 1.2 : 4), 24);
+    dirSoleil(sim.lat, sj.dec, sim.heure, u);
+  }
+  recaler("heure", sim.heure);
+  if (arcsSales) { majArcs(); arcsSales = false; }
+  const h = Math.asin(u.y) / DEG;
+
+  // Soleil et lumière
+  soleil.position.copy(u).multiplyScalar(R_DOME);
+  const jour = Math.min(1, Math.max(0, (h + 1) / 6));
+  lumiere.position.copy(u).multiplyScalar(20);
+  lumiere.intensity = 2.6 * jour;
+  S.lumieres.ambiance.intensity = 0.2 + 0.45 * jour;
+
+  // trajectoires
+  arcs.visible = S.state.trajets;
+  jourCourant = jr;
+  lblMidi.el.textContent = `Midi · ${fmt(Math.max(0, jr.midi), 1)}°`;
+  if (jr.lever !== undefined) {
+    const az = jr.azLever * DEG;
+    _lever.set(Math.sin(az) * R_DOME, 0.35, -Math.cos(az) * R_DOME);
+    _coucher.set(-Math.sin(az) * R_DOME, 0.35, -Math.cos(az) * R_DOME);
+    lblLever.el.textContent = `Lever · ${fmtHeure(jr.lever)}`;
+    lblCoucher.el.textContent = `Coucher · ${fmtHeure(jr.coucher)}`;
+  }
+
+  obs.group.visible = !parSesYeux();
+
+  // ombre du bâton
+  ombre.visible = S.state.ombre && h > 0.5;
+  if (ombre.visible) {
+    const s = new THREE.Vector3(-u.x, 0, -u.z).normalize(), L = Math.min(1 / Math.tan(h * DEG), R_DOME);
+    ombre.scale.z = L;
+    ombre.position.copy(s).multiplyScalar(L / 2).setY(0.006);
+    ombre.rotation.y = Math.atan2(s.x, s.z);
+    _bout.copy(s).multiplyScalar(L);
+    lblOmbre.el.textContent = L >= R_DOME ? "Ombre très longue" : `Ombre · ${fmt(L, 2)} m`;
+  }
+
+  // faisceau
+  groupeF.visible = S.state.faisceau && h > 4;
+  if (groupeF.visible) {
+    majFaisceau(u, time);
+    lblTache.el.textContent = `1 m² de lumière → ${fmt(1 / u.y, 1)} m² de sol`;
+  }
+
+  // axe du monde
+  const pp = posPole(), a = axe.geometry.attributes.position;
+  a.setXYZ(0, -pp.x * 0.15, -pp.y * 0.15, -pp.z * 0.15); a.setXYZ(1, pp.x, pp.y, pp.z); a.needsUpdate = true;
+  axe.computeLineDistances();
+  etoilePolaire.position.copy(pp);
+  reperes.visible = S.state.reperes;
+  lblPole.el.textContent = sim.lat >= 0 ? "Étoile Polaire" : "Pôle céleste sud";
+
+  // raccourcis actifs
+  for (const d of JOURS) document.getElementById("r-" + d.id).setAttribute("aria-pressed", String(d.j === Math.round(sim.j)));
+  for (const l of LIEUX) document.getElementById("r-" + l.id).setAttribute("aria-pressed", String(Math.abs(l.lat - sim.lat) < 0.3));
+
+  dessinerApercu(sj, jr, h);
+});
+
+S.start();
+</script>
+</body>
+</html>

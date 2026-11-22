@@ -36,6 +36,8 @@ export const materiaux = {
   noir: () => new THREE.MeshStandardMaterial({ color: 0x1b1d22, roughness: 0.55, metalness: 0.4 }),
   alu: () => new THREE.MeshStandardMaterial({ color: 0xb9c0ca, roughness: 0.3, metalness: 0.85 }),
   caoutchouc: () => new THREE.MeshStandardMaterial({ color: 0x121214, roughness: 0.95 }),
+  // sol d'un paysage (herbe sombre), éclairé par le Soleil du schéma
+  sol: () => new THREE.MeshStandardMaterial({ color: 0x34462f, roughness: 1, metalness: 0, envMapIntensity: 0.3 }),
   lentille: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
   // astre éclairé par une seule source (planète, Lune) : mat. Pour une face de nuit vraiment sombre,
   // le schéma met aussi scene.environment à null (l'environnement éclaire sinon tout l'objet).
