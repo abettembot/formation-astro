@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Newton et correcteur de coma</title>
+<meta name="description" content="Schéma 3D interactif de la coma d'un télescope de Newton en astrophoto : étoiles en forme de comète dans les coins, rôle du correcteur de coma et du tirage, selon le rapport F/D.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, mesh, legende, faisceau, halo, lentille, vuesRondes, pupille, champEtoiles } from "../commun/schema.js";
+
+// ---------- Géométrie (1 unité = 100 mm) ----------
+// Newton de 200 mm de diamètre ; la focale suit le rapport F/D choisi. Le foyer est renvoyé vers le haut (+Y).
+// Exagérations pour la lisibilité : l'étoile du bord est placée 1,5 fois plus loin du centre que le coin d'un
+// capteur APS-C, le secondaire est agrandi pour recevoir son faisceau, et la coma des rayons est très agrandie.
+// L'encart « Sur la photo » utilise, lui, les vraies valeurs.
+const R = 1, RT = 1.25, D_FOY = 2.3;          // rayon du miroir et du tube ; hauteur du foyer au-dessus de l'axe
+const H_BORD = 0.22;                           // position de l'étoile du bord sur le capteur (dessin)
+const SEC_R = 0.46;                            // demi petit axe du secondaire (agrandi)
+const TIRAGE = 0.55;                           // correcteur → capteur : 55 mm
+const ARCSEC = 206264.8, PIXEL = 0.00376;
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+const RAPPORTS = { f4: 4, f5: 5, f6: 6, f8: 8 };
+const CAPTEURS = { apsc: { nom: "APS-C", h: 14.15 }, ff: { nom: "Plein format", h: 21.63 } }; // demi-diagonale (mm)
+
+let rapport = "f5", capteur = "apsc", tirage = 0, etoile = "deux", vueCourante = "iso";
+let N, F, XP, XS, TB, TF;
+const v = (x, d = 1) => x.toFixed(d).replace(".", ",").replace(/,0+$/, "");
+const signe = (x, d = 1) => (x > 1e-6 ? "+" : x < -1e-6 ? "−" : "") + v(Math.abs(x), d);
+/** Coma restante, en fraction de la coma du miroir seul (signe + : queues vers l'extérieur). */
+const reste = () => (S.state.correcteur ? -tirage / 6 : 1);
+
+function dimensions() {
+  N = RAPPORTS[rapport]; F = 2 * N;            // focale en unités (200 mm × N)
+  XP = -(F - 1.2) / 2;                         // sommet du primaire : tube centré sur l'origine
+  XS = XP + F - D_FOY;                         // centre du secondaire
+  TB = XP - 0.4; TF = XS + 1.5;                // arrière et avant du tube
+}
+dimensions();
+const L = () => TF - TB;
+
+const S = createSchema({
+  surtitre: "Support de formation · Astrophoto",
+  titre: "Newton et correcteur de coma",
+  sousTitre: "Exemple : Newton 200/1000 · f/5 · capteur APS-C",
+  eclate: true,
+  apercu: { titre: "Sur la photo" },
+  commandes: [
+    { type: "raccourcis", id: "rapports", label: "Rapport F/D (miroir de 200 mm)", boutons: Object.entries(RAPPORTS).map(([id, n]) => ({ id, label: `f/${n} · ${200 * n} mm`, onClick: () => choisir("rapport", id) })) },
+    { type: "raccourcis", id: "etoiles", label: "Étoiles tracées", boutons: [
+      { id: "e-deux", label: "Les deux", onClick: () => choisir("etoile", "deux") },
+      { id: "e-centre", label: "Étoile du centre", onClick: () => choisir("etoile", "centre") },
+      { id: "e-bord", label: "Étoile du bord", onClick: () => choisir("etoile", "bord") },
+    ] },
+    { type: "raccourcis", id: "capteurs", label: "Capteur", boutons: Object.entries(CAPTEURS).map(([id, c]) => ({ id: "c-" + id, label: c.nom, onClick: () => choisir("capteur", id) })) },
+    { type: "curseur", id: "tirage", label: "Écart de tirage", min: -5, max: 5, pas: 0.1, valeur: 0, retour: "Tirage idéal (55 mm)",
+      format: (x) => `${signe(x)} mm`, onInput: (x) => { tirage = x; maj(); } },
+    { type: "bascule", id: "correcteur", label: "Correcteur de coma", actif: false, onChange: () => maj() },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: () => maj() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => [L() * 0.45 + 2, L() * 0.4 + 3, L() * 0.85 + 4], cible: [0, 0.6, 0] },
+    { id: "profil", label: "Profil", pos: () => [0, 1.0, L() * 1.1 + 5], cible: [0, 0.6, 0] },
+    { id: "porte", label: "Porte-oculaire", pos: () => [XS + 2.6, D_FOY + 1.2, 3.4], cible: () => [XS, D_FOY - 0.5, 0] },
+    { id: "capteur", label: "Au capteur", pos: () => [XS + 0.8, D_FOY + 0.7, 1.4], cible: () => [XS, D_FOY - 0.05, 0], fov: 30, exacte: true },
+  ],
+  intro: () => `
+    <div class="eyebrow">Des étoiles en forme de comète</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile au centre du champ et d'une étoile au bord entre dans le tube." },
+      { couleur: SEG[1], texte: "Le miroir parabolique la renvoie vers le foyer. Parfait pour l'étoile du centre, il disperse un peu la lumière de l'étoile du bord : les rayons du bord du miroir ne tombent pas au même endroit que ceux du centre." },
+      { couleur: SEG[2], texte: "Le secondaire renvoie le faisceau vers le porte-oculaire, où se trouve le correcteur de coma s'il est en place." },
+      { couleur: SEG[3], texte: "Les images se forment sur le capteur : nettes au centre, en forme de comète vers les bords sans correcteur." },
+    ])}
+    <p>${bilan()}</p>
+    <p class="spec">Sur le schéma, la position de l'étoile du bord, le secondaire et la coma des rayons sont agrandis pour être visibles. Idée et premier prototype : Stéphane (SLO).</p>`,
+});
+S.controls.maxDistance = 50;
+document.querySelectorAll("#panel [data-view]").forEach((b) => b.addEventListener("click", () => { vueCourante = b.dataset.view; }));
+const sousTitre = document.querySelector("#panel header p");
+
+// ---------- Valeurs réelles (encart et fiches) ----------
+function coma() { // longueur de la comète dans le coin (″) pour le miroir seul : 3θ / (16 N²)
+  const Fmm = 200 * N, theta = CAPTEURS[capteur].h / Fmm;
+  return 3 * theta / (16 * N * N) * ARCSEC;
+}
+function bilan() {
+  const z = 0.022 * N ** 3;
+  if (!S.state.correcteur) return `<strong>Sans correcteur, à f/${N}.</strong> La zone sans coma ne mesure que ${v(z)} mm de diamètre au centre du capteur, pour ${CAPTEURS[capteur].nom === "APS-C" ? "28" : "43"} mm de diagonale. Dans les coins, les étoiles s'étirent en comètes d'environ ${Math.round(coma())}″. Activez le « Correcteur de coma ».`;
+  if (Math.abs(tirage) < 0.05) return "<strong>Avec correcteur, au bon tirage.</strong> Ses lentilles créent une coma opposée à celle du miroir : les étoiles redeviennent rondes jusque dans les coins. Essayez le curseur « Écart de tirage ».";
+  return `<strong>Avec correcteur, tirage décalé de ${signe(tirage)} mm.</strong> La correction ${tirage < 0 ? "est trop faible : la coma du miroir réapparaît, queues vers l'extérieur" : "est trop forte : la coma s'inverse, queues vers le centre"}. Le sens exact dépend du modèle : on vérifie sur une photo.`;
+}
+
+// ---------- Éléments ----------
+const tube = S.part("tube", "Tube optique", {
+  texte: "Tube ouvert à l'avant, qui porte les deux miroirs. En astrophoto, un Newton court (f/4 à f/5) est très lumineux et compact, mais c'est justement là que la coma est la plus forte.",
+});
+const primaire = S.part("primaire", "Miroir primaire", {});
+const secondaire = S.part("secondaire", "Miroir secondaire", {
+  texte: "Petit miroir plan à 45° qui renvoie le faisceau vers le porte-oculaire. En astrophoto, on le choisit assez grand pour éclairer tout le capteur jusque dans les coins. Ici, il est agrandi pour recevoir le faisceau de l'étoile du bord, très exagéré.",
+  chiffres: "Petit axe réel ≈ 58 à 70 mm pour un 200 mm · obstruction de 29 à 35 %",
+});
+const porte = S.part("porte", "Porte-oculaire", {
+  texte: "Il porte le correcteur, les bagues et la caméra. Sur un Newton, il est sur le côté du tube, à hauteur du secondaire. Il doit être assez haut pour que le foyer sorte du tube, mais pas trop, sinon le capteur ne peut pas atteindre le foyer.",
+  chiffres: "Coulant 2″ · démultiplication 1:10 pour la mise au point fine",
+});
+const correcteur = S.part("correcteur", "Correcteur de coma", { etiquette: false,
+  texte: "Groupe de 2 à 4 lentilles placé juste avant le capteur. Il crée une coma exactement opposée à celle du miroir : les deux s'annulent et les étoiles redeviennent rondes jusque dans les coins. Il ne fonctionne bien qu'à la distance du capteur prévue par le fabricant : le tirage.",
+  chiffres: "Tirage typique 55 mm · focale le plus souvent inchangée (×1), parfois ×0,73 à ×1,15 selon le modèle",
+  extra: () => `<div class="eyebrow">Quel correcteur pour quel instrument ?</div>
+    <p class="spec">Newton : correcteur de coma (ou réducteur-correcteur de coma) · Lunette : aplanisseur ou réducteur (voir « Lunette astrographe ») · Schmidt-Cassegrain : réducteur-correcteur f/6,3</p>`,
+});
+S.label("Correcteur de coma", () => correcteur.group.localToWorld(correcteur.ancre.clone()), { partId: "correcteur", visible: () => correcteur.group.children.length > 0 });
+const bagues = S.part("bagues", "Bagues de tirage", { etiquette: false });
+const lblBagues = S.label("Bagues de tirage", () => bagues.group.localToWorld(bagues.ancre.clone()), { partId: "bagues", visible: () => bagues.group.children.length > 0 });
+const camera = S.part("camera", "Caméra", {
+  texte: "Caméra astro ou appareil photo sans objectif. Son capteur est plat : ce sont ses coins, les plus éloignés du centre, qui montrent le plus la coma.",
+  chiffres: "APS-C : 23,5 × 15,6 mm · plein format : 36 × 24 mm · pixels de 3,76 µm",
+});
+
+const ouvert = (m) => { m.side = THREE.DoubleSide; return m; };
+function cylindreX(r, x0, x1, mat, coupe) {
+  const g = coupe ? new THREE.CylinderGeometry(r, r, x1 - x0, 72, 1, true, Math.PI / 2, Math.PI) : new THREE.CylinderGeometry(r, r, x1 - x0, 72, 1, true);
+  return mesh(axeX(g), ouvert(mat), (x0 + x1) / 2);
+}
+function cylindreY(r, y0, y1, mat, coupe) { // vertical, au-dessus du secondaire
+  const g = coupe ? new THREE.CylinderGeometry(r, r, y1 - y0, 48, 1, true, 0.75 * Math.PI, Math.PI) : new THREE.CylinderGeometry(r, r, y1 - y0, 48, 1, true);
+  return mesh(g, ouvert(mat), XS, (y0 + y1) / 2, 0);
+}
+/** Lentille d'axe vertical (Y), centrée en y, lumière venant du bas. */
+function lentilleY(r, y, t, sf, sb) {
+  const l = lentille(r, t / 2, t, sf, sb); // axe X, lumière venant de +X
+  l.geometry.rotateZ(-Math.PI / 2);         // +X → −Y : la face « avant » regarde vers le bas
+  l.position.set(XS, y, 0);
+  return l;
+}
+
+function construire() {
+  const coupe = S.state.coupe, corr = S.state.correcteur;
+  for (const p of S.parts) S.viderElement(p);
+  const ySens = D_FOY + (corr ? tirage / 100 : 0); // le capteur suit l'écart de tirage (réel : 1 mm = 0,01 unité)
+
+  // tube
+  tube.ancre.set((TB + TF) / 2, RT + 0.08, 0);
+  tube.chiffres = `D = 200 mm · F = ${200 * N} mm · longueur ≈ ${Math.round((TF - TB) * 10)} cm`;
+  S.add(tube, cylindreX(RT, TB, TF, M.peinture(), coupe));
+  S.add(tube, cylindreX(RT - 0.015, TB, TF, M.flocage(), coupe));
+  S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, 0.04, 72)), M.noir(), TB - 0.02));
+
+  // primaire parabolique (flèche réelle r²/4F)
+  primaire.eclate.set(-2.0, 0, 0);
+  primaire.ancre.set(XP - 0.1, R + 0.12, 0);
+  primaire.texte = "Miroir parabolique : parfait au centre du champ, où tous les rayons se rejoignent en un point. Mais pour une étoile hors de l'axe, chaque zone du miroir donne une image un peu décalée : c'est la coma. Elle croît avec la distance au centre, et comme l'inverse du carré de F/D : 4 fois plus forte à f/4 qu'à f/8.";
+  primaire.chiffres = `f/${N} · zone sans coma ≈ ${v(0.022 * N ** 3)} mm de diamètre au foyer (0,022 × N³)`;
+  {
+    const pts = [], T = 0.2;
+    for (let i = 0; i <= 24; i++) { const r = (i / 24) * R; pts.push(new THREE.Vector2(r, r * r / (4 * F))); }
+    pts.push(new THREE.Vector2(R, -T), new THREE.Vector2(0.001, -T));
+    const g = new THREE.LatheGeometry(pts, 96); g.rotateZ(-Math.PI / 2);
+    S.add(primaire, mesh(g, ouvert(M.miroir()), XP));
+    S.add(primaire, mesh(axeX(new THREE.CylinderGeometry(R + 0.06, R + 0.06, 0.1, 72)), M.noir(), XP - 0.27));
+  }
+
+  // secondaire à 45° (ellipse) et son support
+  secondaire.eclate.set(1.6, 0, 0);
+  secondaire.ancre.set(XS, -SEC_R - 0.25, 0.3);
+  {
+    const g = new THREE.CylinderGeometry(SEC_R, SEC_R, 0.05, 64); g.rotateX(Math.PI / 2); g.scale(Math.SQRT2, 1, 1);
+    const n = new THREE.Vector3(-1, 1, 0).normalize(), ax = new THREE.Vector3(1, 1, 0).normalize(), ay = new THREE.Vector3().crossVectors(n, ax);
+    const m = S.add(secondaire, mesh(g, M.miroir(), XS));
+    m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ax, ay, n));
+    S.add(secondaire, mesh(axeX(new THREE.CylinderGeometry(0.1, 0.1, 0.6, 20)), M.noir(), XS + 0.55));
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + k * Math.PI / 2, len = RT - 0.12;
+      const b = S.add(secondaire, mesh(new THREE.BoxGeometry(0.1, len, 0.02), M.noir(), XS + 0.75));
+      b.rotation.x = Math.PI / 2 - a; b.position.y = Math.sin(a) * (0.12 + len / 2); b.position.z = Math.cos(a) * (0.12 + len / 2);
+    }
+  }
+
+  // porte-oculaire : embase sur le tube, coulant jusqu'au correcteur ou à la caméra
+  const yHautPO = corr ? ySens - TIRAGE - 0.12 : ySens - 0.3;
+  porte.eclate.set(0, 1.0, 0);
+  porte.ancre.set(XS + 0.62, RT + 0.3, 0);
+  S.add(porte, cylindreY(0.56, RT - 0.02, RT + 0.3, M.noir(), coupe));
+  S.add(porte, cylindreY(0.44, RT + 0.3, yHautPO, M.alu(), coupe));
+  S.add(porte, mesh(new THREE.BoxGeometry(0.4, 0.2, 0.3), M.noir(), XS + 0.62, RT + 0.15, 0));
+
+  // correcteur de coma (2 lentilles), vissé en haut du coulant
+  const yCorr = ySens - TIRAGE;
+  if (corr) {
+    correcteur.eclate.set(0, 1.8, 0);
+    correcteur.ancre.set(XS + 0.5, yCorr, 0);
+    S.add(correcteur, cylindreY(0.44, yCorr - 0.12, yCorr + 0.12, M.noir(), coupe));
+    S.add(correcteur, lentilleY(0.4, yCorr - 0.05, 0.06, -0.025, 0.0));
+    S.add(correcteur, lentilleY(0.4, yCorr + 0.04, 0.08, 0.03, 0.02));
+  }
+
+  // bagues de tirage (avec correcteur) ou adaptateur
+  {
+    const y0 = corr ? yCorr + 0.12 : yHautPO, y1 = ySens - 0.06;
+    bagues.nom = lblBagues.el.textContent = corr ? "Bagues de tirage" : "Adaptateur";
+    bagues.texte = corr
+      ? "Elles placent le capteur à 55 mm du correcteur, au millimètre près. Trop près, la correction est insuffisante ; trop loin, elle est excessive. Dans les deux cas, les étoiles des coins se déforment alors que le centre reste net. Essayez le curseur « Écart de tirage »."
+      : "Simple bague qui relie la caméra au porte-oculaire. Sans correcteur, sa longueur n'a pas d'importance : on fait la mise au point avec le porte-oculaire.";
+    bagues.chiffres = corr ? "Tirage typique 55 mm, du filetage du correcteur au capteur · tolérance de l'ordre de ±1 mm" : "Filetage T2 (M42 × 0,75) ou M48";
+    bagues.eclate.set(0, 2.5, 0);
+    bagues.ancre.set(XS - 0.55, (y0 + y1) / 2, 0);
+    if (y1 > y0) {
+      S.add(bagues, cylindreY(0.44, y0, y1, M.noir(), coupe));
+      const n = Math.max(1, Math.round((y1 - y0) / 0.12));
+      for (let i = 0; i <= n; i++) S.add(bagues, mesh(new THREE.TorusGeometry(0.445, 0.01, 6, 48).rotateX(Math.PI / 2), M.alu(), XS, y0 + (y1 - y0) * i / n, 0));
+    }
+  }
+
+  // caméra (boîtier cylindrique ouvert) et capteur horizontal
+  camera.eclate.set(0, 3.3, 0);
+  camera.ancre.set(XS + 0.75, ySens + 0.3, 0);
+  S.add(camera, cylindreY(0.62, ySens - 0.06, ySens + 0.5, M.noir(), coupe));
+  S.add(camera, mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.03, 48), M.noir(), XS, ySens + 0.5, 0));
+  const capt = S.add(camera, mesh(new THREE.BoxGeometry(0.235, 0.015, 0.156), M.noir(), XS, ySens + 0.008, 0));
+  capt.material.color.set(0x1d2740);
+  capt.scale.set(H_BORD / 0.1415, 1, H_BORD / 0.1415); // capteur agrandi comme le champ : son coin reçoit l'étoile du bord
+  capt.rotation.y = -Math.atan2(0.235, 0.156);           // diagonale le long de Z
+
+  poserRayons(ySens, yCorr);
+}
+
+// ---------- Trajet de la lumière ----------
+// Trajet « déplié » le long de X jusqu'au foyer (XP + F), puis replié vers le haut par le secondaire en x = XS.
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const plier = (p) => (p.x <= XS ? p.clone() : V(XS, p.x - XS, p.z));
+const lum = faisceau(0.55, 0.38, 64);
+S.scene.add(lum.group);
+const marques = [halo(COULEURS.corail, 0.16), halo(COULEURS.corail, 0.16)];
+marques.forEach((m) => lum.group.add(m));
+const COMA_DESSIN = 0.05; // décalage de coma (unités) des rayons du bord du miroir, à f/5, sans correcteur
+function poserRayons(ySens, yCorr) {
+  const trajets = [], corr = S.state.correcteur, xFoy = XP + F;
+  const xSens = XS + ySens, xCorr = XS + yCorr; // positions dépliées du capteur et du correcteur
+  [0, 1].forEach((s, i) => {
+    const montre = etoile === "deux" || (etoile === "centre") === (s === 0);
+    marques[i].visible = montre;
+    const t = s * H_BORD / F, h = s * H_BORD;      // inclinaison de l'étoile ; position de son image
+    const c0 = s * COMA_DESSIN * (5 / N) ** 2;     // coma (dessin) du miroir seul pour cette étoile
+    marques[i].position.copy(plier(V(xSens, 0, -h)));
+    if (!montre) return;
+    for (const z0 of [-0.8 * R, 0, 0.8 * R]) {
+      const rho2 = (z0 / R) ** 2;
+      const H = V(XP + z0 * z0 / (4 * F), 0, z0);
+      const A = H.clone().add(V(TF + 2.5 - H.x, 0, (TF + 2.5 - H.x) * t)); // vient de devant le tube
+      const brut = V(xFoy, 0, -h - 3 * rho2 * c0);               // impact sans correcteur (coma vers l'extérieur)
+      const pts = [A, H, plier(V(XS, 0, H.z + (brut.z - H.z) * (XS - H.x) / (brut.x - H.x)))];
+      const cols = [SEG[0], SEG[1], SEG[2], SEG[3], SEG[3]];
+      if (corr) {
+        const Q = H.clone().lerp(brut, (xCorr - H.x) / (brut.x - H.x)); // traversée du correcteur
+        const fin = V(xSens, 0, -h - 3 * rho2 * c0 * reste());
+        const E = Q.clone().lerp(fin, (xSens + 0.3 - Q.x) / (fin.x - Q.x));
+        pts.push(plier(Q), plier(fin), plier(E));
+      } else {
+        const E = H.clone().lerp(brut, (xSens + 0.3 - H.x) / (brut.x - H.x));
+        pts.push(plier(brut), plier(E));
+      }
+      trajets.push({ pts, cols });
+    }
+  });
+  lum.poser(trajets);
+}
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Étoiles du centre et du bord", () => V(TF + 2.8, 0.6, 0.6), { lumiere: true, visible: lightVisible });
+
+// ---------- Encart « Sur la photo » : centre et coin du capteur ----------
+const PUP = pupille(61, 0.3); // pupille obstruée par le secondaire (points nombreux : grandes comètes sans grain)
+function tacheComa(longueur) { // points d'impact (″) d'une comète de longueur donnée, orientée vers le coin (haut-droite)
+  const s = longueur / 3, ux = Math.SQRT1_2, uy = -Math.SQRT1_2; // direction radiale vers l'extérieur
+  return PUP.map(([u, w]) => {
+    const rad = s * (2 * (u * u + w * w) + (u * u - w * w)), tan = s * 2 * u * w;
+    return [rad * ux - tan * uy, rad * uy + tan * ux];
+  });
+}
+let vues = null, cleDessin = "";
+function majApercu() {
+  const l = coma() * reste(), Fmm = 200 * N;
+  vues = [
+    { image: champEtoiles([[0, 0]]), titre: "Centre de l'image" },
+    { image: champEtoiles(tacheComa(l)), titre: "Coin de l'image" },
+  ];
+  cleDessin = "";
+  const lg = Math.abs(l), ech = PIXEL / Fmm * ARCSEC;
+  const h2 = lg < 3 ? "Étoiles rondes partout" : l > 0 ? "Comètes vers l'extérieur" : "Comètes vers le centre";
+  const p = !S.state.correcteur
+    ? "Au centre, l'étoile est un point. Dans le coin, elle s'étire en comète : tête brillante, queue en éventail vers l'extérieur du champ."
+    : lg < 3 ? "Le correcteur annule la coma du miroir : les étoiles du coin sont aussi fines que celle du centre."
+    : l > 0 ? "Correction insuffisante : la coma du miroir réapparaît en partie. On ajuste avec les bagues de tirage, pas avec la mise au point."
+    : "Correction excessive : la coma s'inverse et les queues pointent vers le centre. On ajuste avec les bagues de tirage.";
+  S.apercu.legende.innerHTML = `<h2>${h2}</h2>
+    <p class="spec">f/${N} · ${CAPTEURS[capteur].nom} · coma dans le coin ≈ ${Math.round(lg)}″ · 1 pixel = ${v(ech)}″</p><p>${p}</p>`;
+}
+
+// ---------- Choix ----------
+function presse() {
+  for (const k in RAPPORTS) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === rapport));
+  for (const k in CAPTEURS) document.getElementById("r-c-" + k).setAttribute("aria-pressed", String(k === capteur));
+  for (const k of ["deux", "centre", "bord"]) document.getElementById("r-e-" + k).setAttribute("aria-pressed", String(k === etoile));
+}
+function choisir(cle, val) {
+  if (cle === "rapport") rapport = val;
+  if (cle === "capteur") capteur = val;
+  if (cle === "etoile") etoile = val;
+  maj();
+  if (cle === "rapport") S.vue(vueCourante);
+}
+function maj() {
+  dimensions();
+  presse();
+  sousTitre.textContent = `Exemple : Newton 200/${200 * N} · f/${N} · capteur ${CAPTEURS[capteur].nom}`;
+  construire();
+  majApercu();
+  S.refreshInfo();
+}
+
+S.onFrame(({ time }) => {
+  const W = S.apercu.canvas.clientWidth, cle = W + "|" + !!vues;
+  if (cle !== cleDessin && vues) { cleDessin = cle; vuesRondes(S.apercu.canvas, vues); }
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière."
+    : Math.abs(tirage) > 0.05 && !S.state.correcteur ? "L'écart de tirage ne compte qu'avec le correcteur de coma : activez-le."
+    : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 4);
+});
+
+maj();
+S.start();
+</script>
+</body>
+</html>

@@ -404,6 +404,76 @@ export function imageEtoile(o) {
   ctx.putImageData(img, 0, 0);
   return cv;
 }
+/** Points répartis uniformément dans la pupille (disque unité), sans la partie masquée au centre
+ *  (obstruction : rapport des rayons). Renvoie [[u, v], ...]. */
+export function pupille(n = 13, obstruction = 0) {
+  const pts = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const u = (i + 0.5) / n * 2 - 1, v = (j + 0.5) / n * 2 - 1, r = Math.hypot(u, v);
+    if (r <= 1 && r >= obstruction) pts.push([u, v]);
+  }
+  return pts;
+}
+/**
+ * Petit champ d'étoiles photographié : canvas carré de n px couvrant « champ » secondes d'arc.
+ * Toutes les étoiles ont la même tache, décrite par les points d'impact des rayons
+ * (en ″, x vers la droite, y vers le bas, 0 = image idéale), lissée par la turbulence (sigma, ″).
+ * o : n (101) · champ (100) · sigma (1) · graine (7, position des étoiles) · gain (60, luminosité)
+ */
+export function champEtoiles(impacts, o = {}) {
+  const NI = o.n ?? 101, PX = (o.champ ?? 100) / NI, SIG = o.sigma ?? 1, gain = o.gain ?? 60;
+  let m = 1;
+  for (const [x, y] of impacts) m = Math.max(m, Math.abs(x), Math.abs(y));
+  // noyau : les impacts sont accumulés sur la grille (répartition bilinéaire), puis lissés par un flou gaussien séparable
+  const sg = SIG / PX, GR = Math.ceil(3 * sg), KR = Math.ceil(m / PX) + GR + 1, KW = 2 * KR + 1;
+  let K = new Float32Array(KW * KW);
+  for (const [ix, iy] of impacts) {
+    const x = ix / PX + KR, y = iy / PX + KR, i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j;
+    K[j * KW + i] += (1 - fx) * (1 - fy); K[j * KW + i + 1] += fx * (1 - fy);
+    K[(j + 1) * KW + i] += (1 - fx) * fy; K[(j + 1) * KW + i + 1] += fx * fy;
+  }
+  const g = []; for (let d = -GR; d <= GR; d++) g.push(Math.exp(-(d * d) / (2 * sg * sg)));
+  for (const horiz of [true, false]) {
+    const out = new Float32Array(KW * KW);
+    for (let y = 0; y < KW; y++) for (let x = 0; x < KW; x++) {
+      let s = 0;
+      for (let d = -GR; d <= GR; d++) {
+        const xx = horiz ? x + d : x, yy = horiz ? y : y + d;
+        if (xx >= 0 && yy >= 0 && xx < KW && yy < KW) s += K[yy * KW + xx] * g[d + GR];
+      }
+      out[y * KW + x] = s;
+    }
+    K = out;
+  }
+  let somme = 0;
+  for (let q = 0; q < K.length; q++) somme += K[q];
+  for (let q = 0; q < K.length; q++) K[q] /= somme;
+  // étoiles : une brillante au centre, d'autres plus faibles, de teintes variées
+  const r = alea(o.graine ?? 7), etoiles = [];
+  for (let i = 0; i < 9; i++) etoiles.push([r() * 0.8 + 0.1, r() * 0.8 + 0.1, i === 0 ? 3 : 0.3 + r() * 1.2, r()]);
+  etoiles[0][0] = etoiles[0][1] = 0.5;
+  const acc = [0, 1, 2].map(() => new Float32Array(NI * NI));
+  for (const [fx, fy, br, teinte] of etoiles) {
+    const cx = Math.round(fx * NI), cy = Math.round(fy * NI);
+    const col = teinte < 0.3 ? [1, 0.86, 0.7] : teinte > 0.75 ? [0.8, 0.88, 1] : [1, 0.97, 0.92];
+    for (let y = -KR; y <= KR; y++) {
+      const py = cy + y; if (py < 0 || py >= NI) continue;
+      for (let x = -KR; x <= KR; x++) {
+        const px = cx + x; if (px < 0 || px >= NI) continue;
+        const k = K[(y + KR) * KW + x + KR] * br;
+        for (let c = 0; c < 3; c++) acc[c][py * NI + px] += k * col[c];
+      }
+    }
+  }
+  const cv = document.createElement("canvas"); cv.width = cv.height = NI;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(NI, NI);
+  for (let q = 0; q < NI * NI; q++) {
+    for (let c = 0; c < 3; c++) img.data[q * 4 + c] = 255 * Math.sqrt(1 - Math.exp(-gain * acc[c][q]));
+    img.data[q * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
 /** Dessine côte à côte des vues rondes (champ d'oculaire) dans le canvas d'un encart d'aperçu.
  *  vues : [{ image (canvas ou null), titre }] — à rappeler quand l'encart change de taille. */
 export function vuesRondes(canvas, vues) {

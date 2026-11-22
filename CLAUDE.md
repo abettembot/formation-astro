@@ -25,7 +25,6 @@ La charte reprend le modèle PowerPoint de l'association (`D:\astro\TemplatePowe
 Le catalogue est rangé en quatre rubriques (`section.rubrique`, avec un lien dans le sommaire `.sommaire`) : « Les instruments », « Utiliser son instrument », « Astrophotographie », « Le ciel et ses phénomènes ». Une nouvelle rubrique s'ajoute seulement si aucune ne convient.
 Une carte `<a class="card">` par support, placée dans sa rubrique à sa place pédagogique (du plus simple au plus avancé), avec :
 - une vignette `img.vignette` (`commun/images/vignettes/<nom-du-schema>.webp`, 720 × 405, capture du rendu 3D sans panneau ni étiquettes) ;
-- la pastille `<span class="nouveau">Nouveau</span>` pour les supports de la dernière série (la retirer des anciens quand une nouvelle série arrive) ;
 - une catégorie (`.cat`, « Thème · Sous-thème »), un titre `h3`, une phrase de description et 2 à 4 mots-clés (`.tags`).
 Si un support est modifié de façon notable, mettre sa carte (et sa vignette si l'aspect change) à jour.
 

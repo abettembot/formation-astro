@@ -273,11 +273,6 @@ body.accueil { min-height: 100vh; font-size: 15px; line-height: 1.55; }
   display: block; width: calc(100% + 44px); height: auto; aspect-ratio: 16 / 9; object-fit: cover;
   margin: -22px -22px 6px; border-bottom: 1px solid var(--line); background: var(--night);
 }
-.card .nouveau {
-  position: absolute; top: 12px; right: 12px;
-  font: 700 10.5px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase;
-  padding: 6px 9px; border-radius: 3px; color: var(--night); background: var(--accent-light);
-}
 .card .cat { font: 700 10.5px/1.2 var(--font-body); letter-spacing: .26em; text-transform: uppercase; color: var(--accent); }
 .card h3 { font: 400 23px/1.2 var(--font-title); color: var(--title); margin: 0; }
 .card p { margin: 0; color: var(--ink); font-size: 14.5px; }

@@ -17,7 +17,7 @@
 </head>
 <body>
 <script type="module">
-import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, lentille, objectifLunette, vuesRondes, alea } from "../commun/schema.js";
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, lentille, objectifLunette, vuesRondes, pupille, champEtoiles } from "../commun/schema.js";
 
 // ---------- Échelle (libre, pour rendre les défauts visibles) ----------
 // Le long de l'axe : 1 unité ≈ 69 mm (focale de 480 mm dessinée sur 7 unités).
@@ -302,44 +302,13 @@ S.onFrame(() => {
 });
 
 // ---------- Encart « Sur la photo » : étoiles au centre et dans un coin du capteur ----------
-const NI = 101, CHAMP = 100, PX = CHAMP / NI, SIGMA = 1.0; // ″ ; flou de turbulence et diffraction
-const ETOILES = (() => { const r = alea(7), l = []; for (let i = 0; i < 9; i++) l.push([r() * 0.8 + 0.1, r() * 0.8 + 0.1, i === 0 ? 3 : 0.3 + r() * 1.2, r()]); l[0][0] = 0.5; l[0][1] = 0.5; return l; })();
-/** Noyau d'étalement : ellipse uniforme (demi-axes a radial, b tangentiel, en ″) orientée vers le centre, lissée. */
-function noyau(a, b, angle) {
-  const KR = Math.ceil(Math.max(a, b, 1) / PX + 3 * SIGMA / PX), KW = 2 * KR + 1, K = new Float32Array(KW * KW);
-  const ca = Math.cos(angle), sa = Math.sin(angle), n = 13, ech = [];
-  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-    const u = (i + 0.5) / n * 2 - 1, w = (j + 0.5) / n * 2 - 1;
-    if (u * u + w * w <= 1) ech.push([(u * a * ca - w * b * sa) / PX, (u * a * sa + w * b * ca) / PX]);
-  }
-  const s2 = 2 * (SIGMA / PX) ** 2;
-  let somme = 0;
-  for (let y = -KR; y <= KR; y++) for (let x = -KR; x <= KR; x++) {
-    let val = 0;
-    for (const [ex, ey] of ech) { const dx = x - ex, dy = y - ey; val += Math.exp(-(dx * dx + dy * dy) / s2); }
-    K[(y + KR) * KW + x + KR] = val; somme += val;
-  }
-  for (let q = 0; q < K.length; q++) K[q] /= somme;
-  return { K, KR, KW };
-}
-function imageChamp(a, b, angle) {
-  const { K, KR, KW } = noyau(a, b, angle), acc = [0, 1, 2].map(() => new Float32Array(NI * NI));
-  for (const [fx, fy, br, teinte] of ETOILES) {
-    const cx = Math.round(fx * NI), cy = Math.round(fy * NI);
-    const col = teinte < 0.3 ? [1, 0.86, 0.7] : teinte > 0.75 ? [0.8, 0.88, 1] : [1, 0.97, 0.92];
-    for (let y = -KR; y <= KR; y++) { const py = cy + y; if (py < 0 || py >= NI) continue;
-      for (let x = -KR; x <= KR; x++) { const px = cx + x; if (px < 0 || px >= NI) continue;
-        const k = K[(y + KR) * KW + x + KR] * br; for (let c = 0; c < 3; c++) acc[c][py * NI + px] += k * col[c]; } }
-  }
-  const cv = document.createElement("canvas"); cv.width = cv.height = NI;
-  const ctx = cv.getContext("2d"), img = ctx.createImageData(NI, NI);
-  for (let q = 0; q < NI * NI; q++) {
-    for (let c = 0; c < 3; c++) img.data[q * 4 + c] = 255 * Math.sqrt(1 - Math.exp(-60 * acc[c][q]));
-    img.data[q * 4 + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
+// La tache d'une étoile : ellipse uniforme (demi-axes a radial et b tangentiel, en ″) orientée selon « angle ».
+const PUPILLE = pupille(41);
+const tacheEllipse = (a, b, angle) => {
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  return PUPILLE.map(([u, w]) => [u * a * ca - w * b * sa, u * a * sa + w * b * ca]);
+};
+const imageChamp = (a, b, angle) => champEtoiles(tacheEllipse(a, b, angle));
 let vues = null, cleDessin = "";
 function majApercu() {
   const c = CONFIGS[config], [zt, zs] = c.coin(tirage);
