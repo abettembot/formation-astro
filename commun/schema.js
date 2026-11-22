@@ -558,7 +558,7 @@ const MOBILE = 760;
  *  - apercu : { titre } — encart fixe sur le côté de la vue 3D, avec un canvas et une légende
  *             que le schéma dessine (api.apercu = { el, canvas, legende }). Un bouton bascule entre
  *             deux tailles (normale, ×1,5) ; le canvas doit donc lire sa largeur à chaque dessin.
- *             grand:true : sur ordinateur, l'encart s'ouvre toujours agrandi (bouton « Réduire »).
+ *             Sur ordinateur, il s'ouvre agrandi.
  *  - aide : texte d'aide en bas du panneau (remplace le texte par défaut)
  */
 export function createSchema(cfg) {
@@ -625,8 +625,8 @@ export function createSchema(cfg) {
     const fig = document.createElement("figure"); fig.id = "apercu";
     fig.innerHTML = `<div class="tete"><div class="eyebrow">${cfg.apercu.titre}</div><button type="button" class="taille" aria-pressed="false">Agrandir</button></div><canvas class="ecran"></canvas><figcaption></figcaption>`;
     document.body.append(fig);
-    // deux tailles ; le choix est retenu sur cet appareil,
-    // sauf avec apercu.grand : sur ordinateur, l'encart s'ouvre alors toujours agrandi
+    // deux tailles. Sur ordinateur, l'encart s'ouvre toujours agrandi (bouton « Réduire ») ;
+    // sur téléphone, il garde la taille choisie la dernière fois sur cet appareil (petit au départ).
     const btn = fig.querySelector(".taille");
     const taille = (grand, retenir = true) => {
       fig.classList.toggle("grand", grand);
@@ -634,7 +634,7 @@ export function createSchema(cfg) {
       btn.textContent = grand ? "Réduire" : "Agrandir";
       if (retenir) try { localStorage.setItem("apercu-grand", grand ? "1" : "0"); } catch {}
     };
-    if (cfg.apercu.grand && innerWidth > MOBILE) taille(true, false);
+    if (innerWidth > MOBILE) taille(true, false);
     else {
       let pref = false;
       try { pref = localStorage.getItem("apercu-grand") === "1"; } catch {}
