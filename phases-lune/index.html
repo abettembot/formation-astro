@@ -17,7 +17,7 @@
 </head>
 <body>
 <script type="module">
-import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, textureHalo, legende, css } from "../commun/schema.js";
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, textureHalo, legende, css, alea, textures } from "../commun/schema.js";
 
 // ---------- Échelle et constantes ----------
 // Schéma NON proportionnel. Terre à l'échelle 1 unité = 4 000 km (rayon 1,6) ;
@@ -147,77 +147,8 @@ S.lumieres.contre.intensity = 0;
 S.lumieres.ambiance.intensity = 0.25; // à peine de quoi deviner les faces de nuit
 S.scene.environment = null;          // pas d'éclairage d'ambiance venu de partout : la face de nuit reste sombre
 
-// ---------- Textures dessinées (aucune image à télécharger) ----------
-function alea(graine) { let x = graine; return () => (x = (x * 16807) % 2147483647) / 2147483647; }
-function canvasTexture(w, h, dessin) {
-  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
-  dessin(cv.getContext("2d"), w, h);
-  return cv;
-}
-const versTexture = (cv) => { const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
-// coordonnées équirectangulaires : longitude −180…180, latitude −90…90
-const ux = (lon, w) => (0.5 + lon / 360) * w, vy = (lat, h) => (90 - lat) / 180 * h;
-
-const cvTerre = canvasTexture(1024, 512, (ctx, w, h) => {
-  const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, "#2a5d8f"); g.addColorStop(0.5, "#1c4a7e"); g.addColorStop(1, "#2a5d8f");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
-  const r = alea(11);
-  // continents schématiques : [longitude, latitude, étendue en longitude, en latitude, nombre de taches]
-  const CONT = [[-100, 48, 28, 14, 70], [-75, 62, 25, 8, 30], [-42, 73, 10, 6, 18], [-60, -15, 14, 22, 60], [15, 52, 18, 8, 40],
-    [20, 5, 18, 22, 70], [90, 52, 50, 13, 110], [80, 22, 12, 8, 25], [105, 15, 10, 8, 20], [135, -25, 15, 9, 35]];
-  for (const [lon, lat, dl, db, n] of CONT) {
-    for (let i = 0; i < n; i++) {
-      const lo = lon + (r() - 0.5) * 2 * dl, la = lat + (r() - 0.5) * 2 * db, rad = (3 + r() * 6) / 180 * h;
-      ctx.fillStyle = la > 55 ? "#7d8a6a" : la < 25 && la > -25 && r() < 0.5 ? "#a8915e" : r() < 0.5 ? "#4f7a3c" : "#638a48";
-      for (const dx of [0, -w, w]) { ctx.beginPath(); ctx.ellipse(ux(lo, w) + dx, vy(la, h), rad / Math.max(0.35, Math.cos(la * DEG)), rad, 0, 0, 2 * Math.PI); ctx.fill(); }
-    }
-  }
-  // calottes polaires
-  for (const [y0, y1] of [[0, 0.1], [1, 0.92]]) {
-    const gg = ctx.createLinearGradient(0, y0 * h, 0, y1 * h);
-    gg.addColorStop(0, "#f2f5f8"); gg.addColorStop(0.7, "#e6ecf2"); gg.addColorStop(1, "rgba(230,236,242,0)");
-    ctx.fillStyle = gg; ctx.fillRect(0, Math.min(y0, y1) * h, w, Math.abs(y1 - y0) * h);
-  }
-});
-
-// Mers lunaires de la face visible : [latitude, longitude, rayon en degrés]
-const MERS = [[33, -16, 11], [28, 17, 8], [8, 31, 9], [17, 59, 5], [18, -57, 15], [-21, -17, 8], [-8, 51, 7],
-  [56, 0, 4], [-15, 35, 4], [-24, -39, 4], [3, -20, 6], [40, -30, 6]];
-const cvLune = canvasTexture(1024, 512, (ctx, w, h) => {
-  ctx.fillStyle = "#a4a39e"; ctx.fillRect(0, 0, w, h);
-  const r = alea(5);
-  for (let i = 0; i < 900; i++) { // grain et petits cratères
-    const x = r() * w, y = r() * h, rad = 1 + r() * r() * 9;
-    ctx.fillStyle = r() < 0.5 ? "rgba(70,70,68,0.18)" : "rgba(230,230,225,0.16)";
-    ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.fill();
-  }
-  ctx.fillStyle = "rgba(68,68,70,0.55)";
-  for (const [la, lo, rd] of MERS) {
-    for (let k = 0; k < 6; k++) { // contour irrégulier
-      const a = r() * 2 * Math.PI, d = rd * 0.35 * r();
-      const la2 = la + Math.sin(a) * d, lo2 = lo + Math.cos(a) * d, rr = rd * (0.65 + r() * 0.35) / 180 * h;
-      ctx.beginPath(); ctx.ellipse(ux(lo2, w), vy(la2, h), rr / Math.cos(la2 * DEG), rr, 0, 0, 2 * Math.PI); ctx.fill();
-    }
-  }
-});
-/** Face visible de la Lune (projection vue de la Terre, nord en haut), pour l'encart. */
-const FACE = (() => {
-  const N = 256, src = cvLune.getContext("2d").getImageData(0, 0, cvLune.width, cvLune.height).data;
-  const cv = document.createElement("canvas"); cv.width = cv.height = N;
-  const ctx = cv.getContext("2d"), img = ctx.createImageData(N, N);
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const x = (i + 0.5) / N * 2 - 1, y = 1 - (j + 0.5) / N * 2, q = x * x + y * y;
-    if (q > 1) continue;
-    const z = Math.sqrt(1 - q), lat = Math.asin(y), lon = Math.atan2(x, z);
-    const u = Math.floor((0.5 + lon / (2 * Math.PI)) * cvLune.width), v = Math.floor((0.5 - lat / Math.PI) * cvLune.height);
-    const s = (v * cvLune.width + u) * 4, k = (j * N + i) * 4, assomb = 0.82 + 0.18 * z;
-    img.data[k] = src[s] * assomb; img.data[k + 1] = src[s + 1] * assomb; img.data[k + 2] = src[s + 2] * assomb;
-    img.data[k + 3] = 255 * Math.min(1, (1 - Math.sqrt(q)) * N / 2); // bord adouci
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-})();
+// ---------- Textures dessinées (communes, dans schema.js) ----------
+const FACE = textures.faceLune();
 
 // ---------- Soleil ----------
 const soleil = S.part("soleil", "Soleil", {
@@ -240,7 +171,7 @@ const pTerre = S.part("terre", "Terre", {
   texte: "Vue ici depuis le dessus du pôle Nord. Elle tourne sur elle-même en 24 heures, dans le sens inverse des aiguilles d'une montre : d'ouest en est. La moitié tournée vers le Soleil est dans le jour, l'autre dans la nuit. Cette rotation fait se lever et se coucher la Lune, comme le Soleil.",
   chiffres: "Diamètre : 12 742 km · un tour en 24 h par rapport au Soleil · axe incliné de 23,4° (non représenté)",
 });
-S.add(pTerre, mesh(new THREE.SphereGeometry(R_TERRE, 64, 32), M.astre(versTexture(cvTerre))));
+S.add(pTerre, mesh(new THREE.SphereGeometry(R_TERRE, 64, 32), M.astre(textures.terre())));
 S.label("Terre", () => new THREE.Vector3(0, 0, -R_TERRE - 0.1), { partId: "terre" });
 
 const obs = S.part("observateur", "Observateur", {
@@ -270,7 +201,7 @@ const pLune = S.part("lune", "Lune", {
   texte: "Elle tourne autour de la Terre dans le même sens que la Terre tourne sur elle-même. Elle tourne aussi sur elle-même en un tour d'orbite : elle nous montre donc toujours la même face, avec ses taches sombres, les mers. Son orbite est inclinée de 5° : le plus souvent, elle passe au-dessus ou au-dessous de l'ombre de la Terre, d'où l'absence d'éclipse à chaque pleine lune.",
   chiffres: "Diamètre : 3 474 km · distance : 384 400 km · un tour en 27,3 j par rapport aux étoiles · 29,5 j entre deux nouvelles lunes",
 });
-S.add(pLune, mesh(new THREE.SphereGeometry(R_LUNE, 48, 24), M.astre(versTexture(cvLune))));
+S.add(pLune, mesh(new THREE.SphereGeometry(R_LUNE, 48, 24), M.astre(textures.lune())));
 S.label("Lune", () => lune.position.clone().add(new THREE.Vector3(0, 0, -R_LUNE - 0.1)), { partId: "lune" });
 
 // les deux moitiés : éclairée (vers le Soleil) et visible (vers la Terre)

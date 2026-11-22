@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Éclipse de Soleil</title>
+<meta name="description" content="Schéma 3D interactif des éclipses de Soleil : ombre, antiombre et pénombre de la Lune, éclipses partielle, totale et annulaire, couronne solaire et grains de Baily vus par l'observateur.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, mesh, textureHalo, legende, alea, textures, troncCone, vider } from "../commun/schema.js";
+
+// ---------- Échelle et constantes ----------
+// Schéma NON proportionnel. Terre à l'échelle 1 unité = 4 000 km (rayon 1,6) ;
+// Lune grossie (vrai rayon : 0,43), distance Terre-Lune très raccourcie, Soleil symbolique.
+// Les rayons du Soleil arrivent parallèles, de −X vers +X. Les cônes d'ombre ont pour demi-angle
+// THETA, le rayon apparent du Soleil, très exagéré (0,1 rad au lieu de 0,0047 rad) : l'ombre
+// de la Lune garde ainsi sa propriété clé, une longueur voisine de la distance Terre-Lune.
+const DEG = Math.PI / 180;
+const R_TERRE = 1.6, R_LUNE = 0.6, THETA = 0.1, L_OMBRE = R_LUNE / THETA;
+const X_SOLEIL = -19, R_SOLEIL = 3.2, X_RAYONS = X_SOLEIL + R_SOLEIL + 0.4, X_FIN = 7;
+const MIN_PAR_RAYON = 32;   // minutes pour que la Lune avance d'un rayon solaire dans le ciel
+const AMP = 0.03;           // profondeur des vallées du bord lunaire dans l'encart (fraction du rayon), très exagérée
+const DUREE = 30;           // secondes pour un déroulement complet avec « Temps qui passe »
+
+// Les trois cas. d : distance Terre-Lune (centre à centre) · haut : hauteur de la Lune au-dessus du plan
+// de l'orbite terrestre · lat : latitude de l'observateur. Lune/Soleil vus du sol : 1,06 (totale), 0,93 (annulaire).
+const TYPES = {
+  partielle: { nom: "Partielle", d: 7.6, haut: 1.85, lat: 47 },
+  totale: { nom: "Totale", d: R_TERRE + R_LUNE / (THETA * 1.06), haut: 0, lat: 0 },
+  annulaire: { nom: "Annulaire", d: R_TERRE + R_LUNE / (THETA * 0.93), haut: 0, lat: 0 },
+};
+const sim = { type: "totale", u: 0.3, anim: null, pause: 0 };
+const T = () => TYPES[sim.type];
+
+/** Ce que voit l'observateur, en rayons solaires : k (taille Lune/Soleil), b (décalage vers le haut),
+ *  c1 et c2 (écart des centres au 1er et au 2e contact), et le calage du curseur (noeuds). */
+function geometrie(t = T()) {
+  const P = new THREE.Vector3(-R_TERRE * Math.cos(t.lat * DEG), R_TERRE * Math.sin(t.lat * DEG), 0);
+  const e = (P.x + t.d) * THETA;            // un rayon solaire, en unités, à la distance de la Lune
+  const k = R_LUNE / e, b = (t.haut - P.y) / e;
+  const c1 = Math.sqrt((1 + k) ** 2 - b * b);
+  const c2 = Math.abs(b) < Math.abs(k - 1) ? Math.sqrt((k - 1) ** 2 - b * b) : null;
+  // curseur → écart (v = 0 au maximum, 1 aux extrémités). Le temps est ralenti autour des 2e et 3e contacts.
+  const noeuds = c2 === null ? [[0, 0], [0.8, c1], [1, c1 + 0.25]]
+    : [[0, 0], [0.08, Math.max(0.005, c2 - 0.035)], [0.22, c2 + 0.045], [0.8, c1], [1, c1 + 0.25]];
+  // écart → temps (en rayons solaires parcourus) : les vallées du bord lunaire sont exagérées
+  // dans l'encart, on ramène donc la durée des grains de Baily à quelques secondes, comme en vrai.
+  const temps = c2 === null ? [[0, 0], [99, 99]]
+    : k > 1 ? [[0, 0], [c2 - AMP * k, c2 - 0.002], [c2 + 0.015, c2 + 0.002], [99, 99]]
+    : [[0, 0], [c2, c2], [c2 + AMP * k + 0.006, c2 + 0.003], [99, 99]];
+  return { P, e, k, b, c1, c2, noeuds, temps };
+}
+let G = geometrie();
+const interp = (N, v) => { for (let i = 1; i < N.length; i++) if (v <= N[i][0]) { const [a0, b0] = N[i - 1], [a1, b1] = N[i]; return b0 + (b1 - b0) * (v - a0) / (a1 - a0); } return N.at(-1)[1]; };
+const inverse = (N, x) => { for (let i = 1; i < N.length; i++) if (x <= N[i][1]) { const [a0, b0] = N[i - 1], [a1, b1] = N[i]; return a0 + (a1 - a0) * (x - b0) / (b1 - b0); } return 1; };
+/** Écart horizontal Lune-Soleil (rayons solaires) ; positif : Lune à droite, à l'ouest. */
+const xDe = (u) => Math.sign(0.5 - u) * interp(G.noeuds, Math.abs(2 * u - 1));
+const uDe = (x, apres) => { const v = inverse(G.noeuds, Math.abs(x)); return apres ? (1 + v) / 2 : (1 - v) / 2; };
+
+/** Part du disque solaire cachée par un disque de rayon k dont le centre est à la distance dist. */
+function couverture(k, dist) {
+  if (dist >= 1 + k) return 0;
+  if (dist <= Math.abs(1 - k)) return Math.min(1, k * k);
+  const a = Math.acos((dist * dist + 1 - k * k) / (2 * dist)), c = Math.acos((dist * dist + k * k - 1) / (2 * dist * k));
+  return (a + k * k * c - 0.5 * Math.sqrt((-dist + 1 + k) * (dist + 1 - k) * (dist - 1 + k) * (dist + 1 + k))) / Math.PI;
+}
+function etape(x, u) {
+  const dist = Math.hypot(x, G.b), k = G.k;
+  if (dist >= 1 + k) return u < 0.5 ? "avant" : "apres";
+  if (G.c2 !== null) {
+    if (k > 1) { if (dist <= k - 1 - AMP * k) return "totalite"; if (dist <= k - 1 + 0.015) return "baily"; }
+    else { if (dist <= 1 - k) return "anneau"; if (dist <= 1 - k + AMP * k + 0.006) return "baily"; }
+  }
+  return "partielle";
+}
+const ETAPES = {
+  avant: ["Avant l'éclipse", "La Lune s'approche du Soleil, invisible dans sa lumière. Au 1er contact, elle commence à mordre son bord ouest (à droite)."],
+  partielle: ["Phase partielle", "La Lune masque une partie du Soleil. Même réduit à un fin croissant, il reste assez lumineux pour brûler la rétine : protection obligatoire."],
+  bailyAnneau: ["Grains de Baily", "L'anneau se ferme ou s'ouvre : là où les bords se touchent, la lumière ne passe plus que par les vallées du bord de la Lune, en perles brillantes."],
+  baily: ["Grains de Baily", "La lumière ne passe plus que par les vallées du bord de la Lune : le croissant se brise en perles. Le dernier grain brille comme le diamant d'une bague."],
+  totalite: ["Totalité", "Le Soleil est entièrement caché. La couronne apparaît, le ciel s'assombrit, les planètes et étoiles brillantes se montrent. Seul moment où l'on peut regarder sans filtre."],
+  anneau: ["Phase annulaire", "La Lune, trop loin, paraît plus petite que le Soleil : un anneau lumineux reste visible. Le ciel s'assombrit à peine, la couronne reste invisible. Protection obligatoire."],
+  apres: ["Éclipse terminée", "La Lune a quitté le disque du Soleil au 4e contact. L'éclipse complète a duré 2 à 3 heures."],
+};
+const fmt1 = (v) => v.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmt2 = (v) => v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmtTemps(u) {
+  const x = xDe(u), a = interp(G.temps, Math.abs(x)) * MIN_PAR_RAYON, sg = x > 0 ? "−" : "+";
+  if (a < 0.05) return "Maximum";
+  if (a >= 60) return `${sg} ${Math.floor(a / 60)} h ${String(Math.round(a % 60)).padStart(2, "0")}`;
+  if (a >= 10) return `${sg} ${Math.round(a)} min`;
+  return `${sg} ${Math.floor(a)} min ${String(Math.round((a % 1) * 60) % 60).padStart(2, "0")} s`;
+}
+
+let pilote = false; // vrai quand le script recale le curseur (onInput ne doit rien changer)
+const S = createSchema({
+  surtitre: "Support de formation · Mécanique céleste",
+  titre: "Éclipse de Soleil",
+  sousTitre: "La Lune passe devant le Soleil · nouvelle lune",
+  distanceMax: 90,
+  apercu: { titre: "Vu par l'observateur" },
+  commandes: [
+    { type: "raccourcis", id: "types", label: "Type d'éclipse", boutons: Object.entries(TYPES).map(([id, t]) => ({ id, label: t.nom, onClick: () => choisirType(id) })) },
+    { type: "curseur", id: "deroule", label: "Déroulement", min: 0, max: 1000, pas: 1, valeur: sim.u * 1000,
+      format: (v) => fmtTemps(v / 1000), onInput: (v) => { if (!pilote) { sim.u = v / 1000; sim.anim = null; } } },
+    { type: "raccourcis", id: "etapes", label: "Aller à l'instant", boutons: [
+      { id: "c1", label: "1er contact", onClick: () => allerA(uDe(G.c1, false)) },
+      { id: "c2", label: "2e contact", onClick: () => allerA(uDe(G.c2, false)) },
+      { id: "max", label: "Maximum", onClick: () => allerA(0.5) },
+      { id: "c3", label: "3e contact", onClick: () => allerA(uDe(G.c2, true)) },
+      { id: "c4", label: "4e contact", onClick: () => allerA(uDe(G.c1, true)) },
+    ] },
+    { type: "bascule", id: "temps", label: "Temps qui passe", actif: false },
+    { type: "bascule", id: "rayons", label: "Rayons", actif: true },
+    { type: "bascule", id: "cones", label: "Cônes d'ombre", actif: true },
+    { type: "bascule", id: "orbite", label: "Orbite", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [4, 7, 15], cible: [-6, 0, 0] },
+    { id: "dessus", label: "Dessus", pos: [-6, 34, 0.01], cible: [-6, 0, 0] },
+    { id: "cote", label: "De côté", pos: [-3.5, 0.6, 24], cible: [-3.5, 0.5, 0] },
+    { id: "terre", label: "Ombre sur la Terre", pos: [-5.6, 2.2, 2], cible: [-1.2, 0.1, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Le principe</div>
+    <p>Une éclipse de Soleil se produit quand la Lune passe exactement entre le Soleil et la Terre, toujours à la nouvelle lune. Elle projette alors son ombre sur la Terre. Coïncidence remarquable : le Soleil est 400 fois plus grand que la Lune, mais aussi 400 fois plus loin. Vus de la Terre, les deux disques ont presque la même taille.</p>
+    ${legende([
+      { couleur: COULEURS.corail, texte: "Ombre : la Lune cache tout le Soleil. Là où elle touche la Terre, l'éclipse est totale." },
+      { couleur: COULEURS.orange, texte: "Antiombre : quand la Lune est trop loin, l'ombre n'atteint pas le sol. Au-delà de sa pointe, un anneau de Soleil entoure la Lune : l'éclipse est annulaire." },
+      { couleur: 0x8b9ab0, texte: "Pénombre : la Lune ne cache qu'une partie du Soleil. L'éclipse est partielle." },
+    ])}
+    <p>Choisissez le type d'éclipse, puis faites avancer le curseur « Déroulement » ou activez « Temps qui passe ». L'encart montre le Soleil tel que le voit l'observateur. Autour du 2e et du 3e contact, le temps est ralenti : les grains de Baily ne durent que quelques secondes.</p>
+    <div class="eyebrow">Les mots de l'éclipse</div>
+    <dl class="glossaire">
+      <dt>Les quatre contacts</dt>
+      <dd>1er contact : la Lune touche le bord du Soleil, l'éclipse commence. 2e contact : début de la totalité (ou de l'anneau). 3e contact : sa fin. 4e contact : la Lune quitte le Soleil.</dd>
+      <dt>Éclipse partielle</dt>
+      <dd>La Lune ne masque qu'une partie du Soleil. C'est ce que voient la plupart des observateurs, dans la pénombre, même lors d'une éclipse totale.</dd>
+      <dt>Éclipse totale</dt>
+      <dd>La Lune, assez proche de la Terre, cache tout le Soleil. Il fait sombre comme au crépuscule, la température baisse, les étoiles brillantes apparaissent. La totalité dure au plus 7 min 30 s.</dd>
+      <dt>Éclipse annulaire</dt>
+      <dd>La Lune, plus loin de la Terre, paraît un peu plus petite que le Soleil : il reste un anneau lumineux, « l'anneau de feu ». La couronne reste invisible, noyée dans sa lumière. L'anneau peut durer plus de 12 minutes.</dd>
+      <dt>Grains de Baily</dt>
+      <dd>Le bord de la Lune n'est pas lisse : il porte des montagnes et des vallées. Juste avant et juste après la totalité (ou l'anneau), la lumière ne passe plus que par les vallées : le croissant se brise en perles lumineuses, pendant quelques secondes. Francis Baily les a décrits en 1836.</dd>
+      <dt>Anneau de diamant</dt>
+      <dd>Le dernier grain, ou le premier, très brillant, entouré de la couronne naissante : on dirait une bague sertie d'un diamant.</dd>
+      <dt>Couronne</dt>
+      <dd>L'atmosphère extérieure du Soleil, un gaz à plus d'un million de degrés. Un million de fois moins lumineuse que le disque, elle n'apparaît que pendant la totalité : une auréole nacrée, avec des jets qui suivent le champ magnétique du Soleil.</dd>
+      <dt>Chromosphère et protubérances</dt>
+      <dd>Une fine couche rose au bord du Soleil, et de petites flammes de gaz qui en jaillissent. On les voit quelques secondes au début et à la fin de la totalité.</dd>
+      <dt>Sécurité</dt>
+      <dd>Jamais à l'œil nu, aux jumelles ou au télescope sans protection : lunettes d'éclipse aux normes (ISO 12312-2) ou filtre solaire placé devant l'instrument. Seule exception : pendant la totalité, et seulement elle.</dd>
+    </dl>
+    <p class="spec">Schéma non proportionnel : la Lune est en réalité à 30 diamètres terrestres et ses cônes d'ombre sont bien plus effilés. Dans l'encart, le relief du bord lunaire est exagéré et le temps est ralenti autour de la totalité.</p>`,
+});
+
+// ---------- Éclairage : une seule source, le Soleil, à gauche ----------
+S.lumieres.principale.position.set(-1, 0, 0);
+S.lumieres.principale.intensity = 3.2;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.3;
+S.scene.environment = null;
+
+// ---------- Soleil ----------
+const soleil = S.part("soleil", "Soleil", {
+  ancre: [X_SOLEIL, R_SOLEIL + 0.2, 0],
+  texte: "Il est 400 fois plus grand que la Lune, mais aussi environ 400 fois plus loin : dans le ciel, les deux disques ont presque la même taille. C'est cette coïncidence qui rend possibles les éclipses totales. Ici, il est dessiné beaucoup trop près et trop petit.",
+  chiffres: "Diamètre : 1 392 000 km · distance : 147 à 152 millions de km · diamètre apparent : 31,5′ à 32,5′",
+});
+S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd98a), X_SOLEIL, 0, 0));
+{
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: textureHalo(), color: COULEURS.ambre, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.position.set(X_SOLEIL, 0, 0); halo.scale.setScalar(R_SOLEIL * 4.2);
+  S.scene.add(halo);
+}
+
+// ---------- Terre, avec l'ombre de la Lune à sa surface ----------
+const terre = new THREE.Group();
+S.scene.add(terre);
+const pTerre = S.part("terre", "Terre", {
+  parent: terre, etiquette: false,
+  texte: "La tache d'ombre de la Lune glisse sur la Terre d'ouest en est, poussée par le mouvement de la Lune sur son orbite. Elle trace une bande étroite, la bande de totalité (ou d'annularité). En un lieu donné, une éclipse totale ne revient en moyenne que tous les 375 ans.",
+  chiffres: "Diamètre : 12 742 km · 2 à 5 éclipses de Soleil par an sur toute la Terre · prochaine totale en France métropolitaine : 3 septembre 2081",
+});
+{
+  const sphere = mesh(new THREE.SphereGeometry(R_TERRE, 64, 32), M.astre(textures.terre()));
+  sphere.rotation.y = Math.PI - 5 * DEG; // l'Europe et l'Afrique face au Soleil
+  S.add(pTerre, sphere);
+}
+const ombreSol = new THREE.Mesh(new THREE.SphereGeometry(R_TERRE * 1.004, 96, 48),
+  M.ombre({ rayon: R_LUNE, penteOmbre: THETA, pentePenombre: THETA, opacite: 0.93, opacitePenombre: 0.62, opaciteAnti: 0.6 }));
+terre.add(ombreSol);
+S.label("Terre", () => new THREE.Vector3(0, R_TERRE + 0.1, 0), { partId: "terre" });
+
+// ---------- Observateur ----------
+const obsG = new THREE.Group();
+S.scene.add(obsG);
+const obs = S.part("observateur", "Observateur", {
+  parent: obsG, etiquette: false,
+  texte: "Ce qu'il voit, dans l'encart, dépend de l'endroit où il se trouve : dans l'ombre, l'éclipse est totale ; dans l'antiombre, annulaire ; dans la pénombre, partielle ; hors de la pénombre, il ne voit rien. Pour l'éclipse partielle, il est placé en France ; pour les autres, au centre de la bande.",
+  chiffres: "Protection : lunettes ISO 12312-2 ou filtre solaire · à l'œil nu seulement pendant la totalité",
+});
+{ // petit bonhomme debout, la tête vers son zénith (+X local)
+  const mat = M.lumineux(0xf6f9fd), k = 0.8;
+  const piece = (geo, x, z, ry = 0) => { const m = mesh(axeX(geo), mat, x * k, 0, z * k); m.rotation.y = ry; m.scale.setScalar(k); S.add(obs, m); };
+  for (const s of [-1, 1]) {
+    piece(new THREE.CylinderGeometry(0.035, 0.035, 0.36, 8), 0.17, s * 0.06, s * 0.18);
+    piece(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8), 0.44, s * 0.11, s * 0.55);
+  }
+  piece(new THREE.CylinderGeometry(0.06, 0.05, 0.3, 10), 0.48, 0);
+  S.add(obs, mesh(new THREE.SphereGeometry(0.1 * k, 16, 12), mat, 0.72 * k, 0, 0));
+}
+const placerObservateur = () => { obsG.position.copy(G.P); obsG.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), G.P.clone().normalize()); };
+S.label("Observateur", () => G.P.clone().multiplyScalar(1 + 0.75 / R_TERRE), { partId: "observateur" });
+
+// ---------- Lune ----------
+const lune = new THREE.Group();
+S.scene.add(lune);
+const pLune = S.part("lune", "Lune", {
+  parent: lune, etiquette: false,
+  texte: "Elle ne passe devant le Soleil qu'à la nouvelle lune, et pas chaque mois : son orbite est inclinée de 5°, elle passe le plus souvent au-dessus ou au-dessous du Soleil. Sa distance varie aussi : proche, elle paraît plus grande que le Soleil (éclipse totale possible) ; lointaine, plus petite (éclipse annulaire).",
+  chiffres: "Diamètre : 3 474 km · distance : 356 500 à 406 700 km · diamètre apparent : 29,4′ à 33,5′ · montagnes du bord : quelques km",
+});
+S.add(pLune, mesh(new THREE.SphereGeometry(R_LUNE, 48, 24), M.astre(textures.lune())));
+S.label("Lune", () => lune.position.clone().add(new THREE.Vector3(0, R_LUNE + 0.1, 0)), { partId: "lune" });
+
+// ---------- Cônes d'ombre, de pénombre et d'antiombre (ils suivent la Lune) ----------
+const cones = new THREE.Group();
+S.scene.add(cones);
+const fiche = (id, nom, texte, chiffres) => S.part(id, nom, { parent: cones, etiquette: false, texte, chiffres });
+const pOmbre = fiche("ombre", "Ombre",
+  "La région où la Lune cache tout le Soleil. Ce cône est long d'environ 374 000 km, presque exactement la distance Terre-Lune ! Selon la distance de la Lune, sa pointe atteint le sol (éclipse totale) ou s'arrête avant (éclipse annulaire). Au sol, la tache d'ombre ne mesure au plus que 270 km de large.",
+  "Longueur : 367 000 à 380 000 km · tache au sol : jusqu'à 270 km · vitesse au sol : au moins 1 700 km/h");
+const pAnti = fiche("antiombre", "Antiombre",
+  "Le prolongement du cône d'ombre, au-delà de sa pointe. On y voit la Lune entière devant le Soleil, entourée d'un anneau lumineux : c'est l'éclipse annulaire. Elle se produit quand la Lune est trop loin pour que son ombre atteigne la Terre.",
+  "Bande d'annularité : jusqu'à environ 370 km de large · anneau visible jusqu'à 12 min 30 s");
+const pPen = fiche("penombre", "Pénombre",
+  "La région où la Lune ne cache qu'une partie du Soleil : on y voit une éclipse partielle. Elle couvre une grande partie de la Terre. Plus on est près de l'ombre, plus le Soleil est entamé.",
+  "Diamètre au sol : environ 7 000 km · éclipse partielle visible sur un continent entier");
+/** L'ombre s'arrête avant le sol : éclipse annulaire. */
+const antiombre = () => L_OMBRE < T().d - R_TERRE && T().haut === 0;
+function construireCones() {
+  for (const p of [pOmbre, pAnti, pPen]) vider(p.group);
+  const fin = T().d, pointe = Math.min(L_OMBRE, fin); // jusqu'au centre de la Terre (la suite est cachée dedans)
+  pPen.group.add(troncCone(R_LUNE, R_LUNE + THETA * fin, 0, fin, 0x8b9ab0, 0.07, 0.4));
+  pOmbre.group.add(troncCone(R_LUNE, R_LUNE - THETA * pointe, 0, pointe, COULEURS.corail, 0.24, 0.8));
+  if (antiombre()) pAnti.group.add(troncCone(0, THETA * (fin - L_OMBRE), L_OMBRE, fin, COULEURS.orange, 0.2, 0.7));
+}
+const surCone = (x, y) => () => cones.position.clone().add(new THREE.Vector3(x, y, 0));
+S.label("Ombre", surCone(L_OMBRE * 0.32, 0.05), { partId: "ombre", visible: () => S.state.cones });
+S.label("Pénombre", () => { const s = T().d * 0.62; return surCone(s, R_LUNE + THETA * s + 0.05)(); }, { partId: "penombre", visible: () => S.state.cones });
+S.label("Antiombre", () => cones.position.clone().add(new THREE.Vector3(L_OMBRE - 0.6, -0.75, 0)),
+  { partId: "antiombre", visible: () => S.state.cones && antiombre() });
+
+// ---------- Orbite de la Lune (inclinée quand la Lune passe au-dessus du plan de l'orbite terrestre) ----------
+const orbite = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.3, gapSize: 0.25, transparent: true, opacity: 0.45, depthWrite: false }));
+S.scene.add(orbite);
+function construireOrbite() {
+  const { d, haut } = T(), ro = Math.hypot(d, haut), i = Math.atan2(haut, d), pts = [];
+  for (let n = 0; n <= 160; n++) {
+    const a = n / 160 * 2 * Math.PI;
+    pts.push(new THREE.Vector3(-ro * Math.cos(i) * Math.cos(a), ro * Math.sin(i) * Math.cos(a), ro * Math.sin(a)));
+  }
+  orbite.geometry.dispose();
+  orbite.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+  orbite.computeLineDistances();
+}
+S.label("Orbite de la Lune", () => { const { d, haut } = T(), ro = Math.hypot(d, haut), a = 50 * DEG, i = Math.atan2(haut, d);
+  return new THREE.Vector3(-ro * Math.cos(i) * Math.cos(a), ro * Math.sin(i) * Math.cos(a), ro * Math.sin(a)); },
+  { visible: () => S.state.orbite });
+
+// ---------- Rayons du Soleil, dans le plan horizontal qui passe par la Lune ----------
+const ZR = Array.from({ length: 23 }, (_, i) => -5.5 + i * 0.5);
+const NP = 5;
+const rayons = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(ZR.length * 6), 3)),
+  new THREE.LineBasicMaterial({ color: COULEURS.etoile, transparent: true, opacity: 0.16, depthWrite: false }));
+const grains = new THREE.Points(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(ZR.length * NP * 3), 3)),
+  new THREE.PointsMaterial({ size: 0.4, map: textureHalo(), color: COULEURS.ambre, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+rayons.frustumCulled = grains.frustumCulled = false;
+S.scene.add(rayons, grains);
+S.label("Rayons du Soleil", () => new THREE.Vector3(X_RAYONS + 2.2, lune.position.y, -5.5), { lumiere: true, visible: () => S.state.rayons });
+/** Abscisse où le rayon (y, z) rencontre la Lune ou la Terre (rien au-delà). */
+function finRayon(y, z) {
+  let x = X_FIN;
+  for (const [c, r] of [[lune.position, R_LUNE], [terre.position, R_TERRE]]) {
+    const q = (y - c.y) ** 2 + (z - c.z) ** 2;
+    if (q < r * r) x = Math.min(x, c.x - Math.sqrt(r * r - q));
+  }
+  return x;
+}
+
+// ---------- Encart : le Soleil vu par l'observateur ----------
+const ap = S.apercu;
+// Profil du bord lunaire : 1 = bord moyen, moins = vallée. Quelques vallées profondes là où
+// se forment les derniers et premiers grains (bords est et ouest).
+const PROFIL = (() => {
+  const N = 720, r = alea(7), v = [];
+  for (let i = 0; i < 30; i++) v.push([r() * 360, 0.4 + r() * 1.8, 0.25 + r() * 0.75]);
+  v.push([176, 1.6, 1], [184, 0.8, 0.8], [4, 1.4, 1], [357, 0.9, 0.7]);
+  return Float32Array.from({ length: N }, (_, i) => {
+    const a = i / N * 360; let p = 0;
+    for (const [c, w, prof] of v) { const dd = ((a - c + 540) % 360) - 180; p += prof * Math.exp(-((dd / w) ** 2)); }
+    return 1 - AMP * Math.min(1, p);
+  });
+})();
+function cheminLune(ctx, x, y, r) {
+  ctx.beginPath();
+  PROFIL.forEach((p, i) => { const a = i / PROFIL.length * 2 * Math.PI; ctx.lineTo(x + r * p * Math.cos(a), y - r * p * Math.sin(a)); });
+  ctx.closePath();
+}
+// Couronne : halo nacré et jets, plus longs vers l'équateur solaire (dessinée une fois par taille)
+let couronne = null;
+function dessinCouronne(R) {
+  const n = Math.ceil(R * 7), cv = document.createElement("canvas"); cv.width = cv.height = n;
+  const ctx = cv.getContext("2d"), c = n / 2, r = alea(13);
+  const g = ctx.createRadialGradient(c, c, R * 0.95, c, c, R * 3.3);
+  g.addColorStop(0, "rgba(250,248,255,0.95)"); g.addColorStop(0.06, "rgba(235,240,255,0.55)");
+  g.addColorStop(0.3, "rgba(210,222,250,0.14)"); g.addColorStop(1, "rgba(200,215,250,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, n, n);
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < 90; i++) {
+    const a = r() * 2 * Math.PI, eq = Math.abs(Math.cos(a));
+    const L = R * (0.3 + r() * (0.5 + 1.7 * eq * eq)), w = R * (0.04 + r() * 0.12);
+    ctx.save(); ctx.translate(c, c); ctx.rotate(-a);
+    const gl = ctx.createLinearGradient(R, 0, R + L, 0);
+    gl.addColorStop(0, `rgba(240,244,255,${0.16 + r() * 0.22})`); gl.addColorStop(1, "rgba(240,244,255,0)");
+    ctx.fillStyle = gl; ctx.beginPath();
+    ctx.moveTo(R * 0.98, -w); ctx.quadraticCurveTo(R + L * 0.5, -w * 0.4, R + L, 0); ctx.quadraticCurveTo(R + L * 0.5, w * 0.4, R * 0.98, w);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+  return { cv, R };
+}
+const PROTUB = (() => { const r = alea(21); return Array.from({ length: 7 }, () => [r() * 2 * Math.PI, 0.04 + r() * 0.07, 0.03 + r() * 0.05]); })();
+const ETOILES = (() => { const r = alea(3); return Array.from({ length: 30 }, () => [r(), r(), 0.4 + r() * 1.1]); })();
+const melange = (a, b, t) => `rgb(${[16, 8, 0].map((s) => Math.round(((a >> s) & 255) * (1 - t) + ((b >> s) & 255) * t)).join(",")})`;
+const borne = (v) => Math.min(1, Math.max(0, v));
+const photo = document.createElement("canvas");
+let legendePrec = "";
+function dessinerApercu(x) {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.8);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = photo.width = Math.round(W * dpr); cv.height = photo.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const cx = W / 2, cy = H / 2, Rs = W * 0.27, Rm = Rs * G.k, mx = cx + x * Rs, my = cy - G.b * Rs;
+  const cache = couverture(G.k, Math.hypot(x, G.b)), f = 1 - cache;  // f : part du Soleil encore visible
+  const L = Math.pow(borne(f / 0.3), 0.6);                             // clarté du ciel
+  const ac = G.k > 1 ? Math.pow(borne(1 - f / 0.003), 2) : 0;                       // couronne (éclipse totale seulement)
+  // ciel, et lueur orangée sur tout l'horizon pendant la totalité
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, melange(0x070d1c, 0x2c5b8e, L)); g.addColorStop(1, melange(0x1d2440, 0x86b1d8, L));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  if (L < 0.5) {
+    const gh = ctx.createLinearGradient(0, H * 0.7, 0, H);
+    gh.addColorStop(0, "rgba(255,154,74,0)"); gh.addColorStop(1, `rgba(255,154,74,${(0.5 - L) * 0.6})`);
+    ctx.fillStyle = gh; ctx.fillRect(0, H * 0.7, W, H * 0.3);
+  }
+  if (L < 0.35) {
+    ctx.fillStyle = `rgba(230,236,248,${(0.35 - L) / 0.35 * 0.9})`;
+    for (const [a, b, s] of ETOILES) if (Math.hypot(a * W - cx, b * H - cy) > Rs * 2.4) ctx.fillRect(a * W, b * H, s, s);
+  }
+  // couronne, chromosphère et protubérances (cachées ensuite par la Lune là où elle passe devant)
+  if (ac > 0) {
+    if (!couronne || couronne.R !== Math.round(Rs * dpr)) couronne = dessinCouronne(Math.round(Rs * dpr));
+    const n = couronne.cv.width / dpr;
+    ctx.globalAlpha = ac; ctx.drawImage(couronne.cv, cx - n / 2, cy - n / 2, n, n);
+    ctx.fillStyle = "#ff5a7e";
+    ctx.beginPath(); ctx.arc(cx, cy, Rs * 1.012, 0, 2 * Math.PI); ctx.fill();
+    for (const [a, h, w] of PROTUB) {
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(-a);
+      ctx.beginPath(); ctx.ellipse(Rs * (1 + h / 2), 0, Rs * h / 2 + 1, Rs * w / 2, 0, 0, 2 * Math.PI); ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+  // Lune : silhouette discrète sur le ciel de jour, noire devant le Soleil
+  cheminLune(ctx, mx, my, Rm);
+  ctx.fillStyle = `rgba(3,5,10,${Math.max(ac, 0.1 + 0.9 * (1 - L))})`; ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, Rs, 0, 2 * Math.PI); ctx.clip();
+  cheminLune(ctx, mx, my, Rm); ctx.fillStyle = "#040609"; ctx.fill(); ctx.restore();
+  // photosphère moins la Lune, avec son éblouissement : grains de Baily et anneau de diamant
+  const pc = photo.getContext("2d");
+  pc.setTransform(dpr, 0, 0, dpr, 0, 0); pc.clearRect(0, 0, W, H);
+  const gs = pc.createRadialGradient(cx, cy, 0, cx, cy, Rs);
+  gs.addColorStop(0, "#fffbea"); gs.addColorStop(0.7, "#ffeab2"); gs.addColorStop(0.93, "#ffd07c"); gs.addColorStop(1, "#f5a54a");
+  pc.fillStyle = gs; pc.beginPath(); pc.arc(cx, cy, Rs, 0, 2 * Math.PI); pc.fill();
+  pc.globalCompositeOperation = "destination-out"; cheminLune(pc, mx, my, Rm); pc.fill(); pc.globalCompositeOperation = "source-over";
+  const eclat = 1 - borne(f * 15);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.shadowColor = "rgba(255,238,200,0.95)"; ctx.shadowBlur = dpr * W * (0.025 + 0.07 * eclat);
+  ctx.drawImage(photo, 0, 0);
+  ctx.globalCompositeOperation = "lighter"; // les grains, minuscules, éblouissent : on renforce leur éclat
+  for (let i = Math.round(eclat * 4); i > 0; i--) ctx.drawImage(photo, 0, 0);
+  ctx.restore();
+  // repères
+  ctx.font = "9.5px Arial"; ctx.fillStyle = L > 0.6 ? "rgba(7,11,20,0.6)" : "rgba(196,208,224,0.7)"; ctx.textBaseline = "bottom";
+  ctx.textAlign = "left"; ctx.fillText("Est", 5, H - 4);
+  ctx.textAlign = "right"; ctx.fillText("Ouest", W - 5, H - 4);
+  // légende
+  const et = etape(x, sim.u), [nom, desc] = ETAPES[et === "baily" && G.k < 1 ? "bailyAnneau" : et];
+  const html = `<h2>${nom}</h2><p class="spec">${fmtTemps(sim.u)} · Soleil caché à ${fmt1(cache * 100)} % · Lune/Soleil : ${fmt2(G.k)}</p><p>${desc}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Commandes ----------
+function choisirType(id) {
+  sim.type = id; G = geometrie();
+  construireCones(); construireOrbite(); placerObservateur();
+  for (const t in TYPES) document.getElementById("r-" + t).setAttribute("aria-pressed", String(t === id));
+  for (const c of ["c2", "c3"]) document.getElementById("r-" + c).hidden = G.c2 === null;
+  delete affiche.deroule; // le libellé du curseur dépend du type
+}
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+function allerA(u) { sim.anim = { u0: sim.u, du: u - sim.u, t: 0 }; sim.pause = 0; }
+const affiche = {};
+function recaler(id, v) { // met le curseur à jour sans boucle (seulement si la valeur affichée change)
+  const r = Math.round(v);
+  if (affiche[id] === r) return;
+  affiche[id] = r; pilote = true; S.regler(id, v); pilote = false;
+}
+
+// ---------- Animation ----------
+let tPrec = 0;
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (sim.anim) {
+    sim.anim.t = S.reduced ? 1 : Math.min(1, sim.anim.t + dt / 1.2);
+    sim.u = sim.anim.u0 + sim.anim.du * ease(sim.anim.t);
+    if (sim.anim.t >= 1) sim.anim = null;
+  } else if (S.state.temps) {
+    if (sim.u < 1) sim.u = Math.min(1, sim.u + dtt / DUREE);
+    else if ((sim.pause += dtt) > 1.5) { sim.u = 0; sim.pause = 0; }
+  }
+  recaler("deroule", sim.u * 1000);
+
+  const x = xDe(sim.u), t = T();
+  lune.position.set(-t.d, t.haut, G.P.z - x * G.e);
+  cones.position.copy(lune.position);
+  cones.visible = S.state.cones;
+  ombreSol.material.uniforms.centre.value.copy(lune.position);
+  orbite.visible = S.state.orbite;
+
+  // rayons et grains de lumière, arrêtés par la Lune et la Terre
+  rayons.visible = grains.visible = S.state.rayons;
+  if (S.state.rayons) {
+    const pr = rayons.geometry.attributes.position, pg = grains.geometry.attributes.position, long = X_FIN - X_RAYONS, y = lune.position.y;
+    ZR.forEach((z, i) => {
+      const fin = finRayon(y, z);
+      pr.setXYZ(2 * i, X_RAYONS, y, z); pr.setXYZ(2 * i + 1, fin, y, z);
+      for (let k = 0; k < NP; k++) {
+        const xg = X_RAYONS + (((time * 0.22 + k / NP + i * 0.37) % 1) + 1) % 1 * long;
+        pg.setXYZ(i * NP + k, xg, xg < fin ? y : -1000, z);
+      }
+    });
+    pr.needsUpdate = pg.needsUpdate = true;
+  }
+  dessinerApercu(x);
+});
+
+choisirType(sim.type);
+S.start();
+</script>
+</body>
+</html>

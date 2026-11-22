@@ -36,6 +36,136 @@ export const materiaux = {
   astre: (map) => new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0, envMapIntensity: 0 }),
   // objet lumineux par lui-même (Soleil, repère toujours visible) : insensible à l'éclairage
   lumineux: (couleur, opacite = 1) => new THREE.MeshBasicMaterial({ color: couleur, transparent: opacite < 1, opacity: opacite, side: THREE.DoubleSide, toneMapped: false, depthWrite: opacite >= 1 }),
+  // ombre portée par un astre sphérique (Lune, Terre) sur un autre, éclairés par des rayons parallèles.
+  // Se pose sur une sphère à peine plus grande que l'astre qui reçoit l'ombre. Le schéma met à jour
+  // uniforms.centre (centre de l'astre qui fait de l'ombre) à chaque image. Options :
+  //  rayon (de l'astre qui fait de l'ombre), direction (sens des rayons, +X par défaut),
+  //  penteOmbre / pentePenombre (rétrécissement de l'ombre / élargissement de la pénombre par unité de distance),
+  //  couleur, opacite (ombre) · couleurPenombre, opacitePenombre · opaciteAnti (au-delà de la pointe de l'ombre)
+  //  couleurBord, largeurBord (liseré coloré au bord intérieur de l'ombre, 0 = aucun)
+  ombre: (o = {}) => new THREE.ShaderMaterial({
+    uniforms: {
+      centre: { value: new THREE.Vector3() },
+      direction: { value: (o.direction || new THREE.Vector3(1, 0, 0)).clone().normalize() },
+      rayon: { value: o.rayon ?? 1 },
+      penteOmbre: { value: o.penteOmbre ?? 0.05 },
+      pentePenombre: { value: o.pentePenombre ?? 0.05 },
+      couleur: { value: new THREE.Color(o.couleur ?? 0x000000) },
+      opacite: { value: o.opacite ?? 0.9 },
+      couleurPenombre: { value: new THREE.Color(o.couleurPenombre ?? 0x000000) },
+      opacitePenombre: { value: o.opacitePenombre ?? 0.6 },
+      opaciteAnti: { value: o.opaciteAnti ?? 0.6 },
+      couleurBord: { value: new THREE.Color(o.couleurBord ?? 0x000000) },
+      largeurBord: { value: o.largeurBord ?? 0 },
+    },
+    vertexShader: `varying vec3 vMonde;
+      void main() { vec4 m = modelMatrix * vec4(position, 1.0); vMonde = m.xyz; gl_Position = projectionMatrix * viewMatrix * m; }`,
+    fragmentShader: `uniform vec3 centre, direction, couleur, couleurPenombre, couleurBord;
+      uniform float rayon, penteOmbre, pentePenombre, opacite, opacitePenombre, opaciteAnti, largeurBord;
+      varying vec3 vMonde;
+      void main() {
+        vec3 d = vMonde - centre;
+        float s = dot(d, direction);
+        if (s <= 0.0) discard;
+        float rho = length(d - s * direction);
+        float ro = rayon - s * penteOmbre, ra = abs(ro), rp = rayon + s * pentePenombre;
+        float f = fwidth(rho) * 1.5 + 1e-4;
+        float dans = 1.0 - smoothstep(ra - f, ra + f, rho);
+        float t = clamp((rho - ra) / max(rp - ra, 1e-4), 0.0, 1.0);
+        float aP = opacitePenombre * pow(1.0 - t, 1.5);
+        vec3 cO = ro >= 0.0 ? couleur : couleurPenombre;
+        if (largeurBord > 0.0 && ro > 0.0) cO = mix(cO, couleurBord, smoothstep(ra - largeurBord, ra, rho));
+        float a = mix(aP, ro >= 0.0 ? opacite : opaciteAnti, dans);
+        if (a < 0.003) discard;
+        gl_FragColor = vec4(mix(couleurPenombre, cO, dans), a);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, toneMapped: false,
+  }),
+};
+
+// ---------- Textures d'astres dessinées (aucune image à télécharger) ----------
+/** Suite pseudo-aléatoire reproductible (même graine = même dessin). */
+export function alea(graine) { let x = graine; return () => (x = (x * 16807) % 2147483647) / 2147483647; }
+const DEG = Math.PI / 180;
+function canvasDessin(w, h, dessin) {
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  dessin(cv.getContext("2d"), w, h);
+  return cv;
+}
+const versTexture = (cv) => { const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
+// coordonnées équirectangulaires : longitude −180…180, latitude −90…90
+const ux = (lon, w) => (0.5 + lon / 360) * w, vy = (lat, h) => (90 - lat) / 180 * h;
+let _cvTerre, _cvLune, _face;
+function cvTerre() {
+  return _cvTerre ??= canvasDessin(1024, 512, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, "#2a5d8f"); g.addColorStop(0.5, "#1c4a7e"); g.addColorStop(1, "#2a5d8f");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    const r = alea(11);
+    // continents schématiques : [longitude, latitude, étendue en longitude, en latitude, nombre de taches]
+    const CONT = [[-100, 48, 28, 14, 70], [-75, 62, 25, 8, 30], [-42, 73, 10, 6, 18], [-60, -15, 14, 22, 60], [15, 52, 18, 8, 40],
+      [20, 5, 18, 22, 70], [90, 52, 50, 13, 110], [80, 22, 12, 8, 25], [105, 15, 10, 8, 20], [135, -25, 15, 9, 35]];
+    for (const [lon, lat, dl, db, n] of CONT) {
+      for (let i = 0; i < n; i++) {
+        const lo = lon + (r() - 0.5) * 2 * dl, la = lat + (r() - 0.5) * 2 * db, rad = (3 + r() * 6) / 180 * h;
+        ctx.fillStyle = la > 55 ? "#7d8a6a" : la < 25 && la > -25 && r() < 0.5 ? "#a8915e" : r() < 0.5 ? "#4f7a3c" : "#638a48";
+        for (const dx of [0, -w, w]) { ctx.beginPath(); ctx.ellipse(ux(lo, w) + dx, vy(la, h), rad / Math.max(0.35, Math.cos(la * DEG)), rad, 0, 0, 2 * Math.PI); ctx.fill(); }
+      }
+    }
+    // calottes polaires
+    for (const [y0, y1] of [[0, 0.1], [1, 0.92]]) {
+      const gg = ctx.createLinearGradient(0, y0 * h, 0, y1 * h);
+      gg.addColorStop(0, "#f2f5f8"); gg.addColorStop(0.7, "#e6ecf2"); gg.addColorStop(1, "rgba(230,236,242,0)");
+      ctx.fillStyle = gg; ctx.fillRect(0, Math.min(y0, y1) * h, w, Math.abs(y1 - y0) * h);
+    }
+  });
+}
+// Mers lunaires de la face visible : [latitude, longitude, rayon en degrés]
+const MERS = [[33, -16, 11], [28, 17, 8], [8, 31, 9], [17, 59, 5], [18, -57, 15], [-21, -17, 8], [-8, 51, 7],
+  [56, 0, 4], [-15, 35, 4], [-24, -39, 4], [3, -20, 6], [40, -30, 6]];
+function cvLune() {
+  return _cvLune ??= canvasDessin(1024, 512, (ctx, w, h) => {
+    ctx.fillStyle = "#a4a39e"; ctx.fillRect(0, 0, w, h);
+    const r = alea(5);
+    for (let i = 0; i < 900; i++) { // grain et petits cratères
+      const x = r() * w, y = r() * h, rad = 1 + r() * r() * 9;
+      ctx.fillStyle = r() < 0.5 ? "rgba(70,70,68,0.18)" : "rgba(230,230,225,0.16)";
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.fill();
+    }
+    ctx.fillStyle = "rgba(68,68,70,0.55)";
+    for (const [la, lo, rd] of MERS) {
+      for (let k = 0; k < 6; k++) { // contour irrégulier
+        const a = r() * 2 * Math.PI, d = rd * 0.35 * r();
+        const la2 = la + Math.sin(a) * d, lo2 = lo + Math.cos(a) * d, rr = rd * (0.65 + r() * 0.35) / 180 * h;
+        ctx.beginPath(); ctx.ellipse(ux(lo2, w), vy(la2, h), rr / Math.cos(la2 * DEG), rr, 0, 0, 2 * Math.PI); ctx.fill();
+      }
+    }
+  });
+}
+export const textures = {
+  /** Terre schématique (océans, continents, calottes) : texture pour une sphère. */
+  terre: () => versTexture(cvTerre()),
+  /** Lune avec ses mers : texture pour une sphère. Face visible (longitude 0) côté +X local : tourner la sphère pour la présenter à la Terre. */
+  lune: () => versTexture(cvLune()),
+  /** Face visible de la Lune vue de la Terre, nord en haut : canvas carré de 256 px (bord adouci) pour les dessins 2D. */
+  faceLune() {
+    if (_face) return _face;
+    const N = 256, src = cvLune(), px = src.getContext("2d").getImageData(0, 0, src.width, src.height).data;
+    const cv = document.createElement("canvas"); cv.width = cv.height = N;
+    const ctx = cv.getContext("2d"), img = ctx.createImageData(N, N);
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const x = (i + 0.5) / N * 2 - 1, y = 1 - (j + 0.5) / N * 2, q = x * x + y * y;
+      if (q > 1) continue;
+      const z = Math.sqrt(1 - q), lat = Math.asin(y), lon = Math.atan2(x, z);
+      const u = Math.floor((0.5 + lon / (2 * Math.PI)) * src.width), v = Math.floor((0.5 - lat / Math.PI) * src.height);
+      const s = (v * src.width + u) * 4, k = (j * N + i) * 4, assomb = 0.82 + 0.18 * z;
+      img.data[k] = px[s] * assomb; img.data[k + 1] = px[s + 1] * assomb; img.data[k + 2] = px[s + 2] * assomb;
+      img.data[k + 3] = 255 * Math.min(1, (1 - Math.sqrt(q)) * N / 2); // bord adouci
+    }
+    ctx.putImageData(img, 0, 0);
+    return (_face = cv);
+  },
 };
 
 // ---------- Aides géométriques ----------
@@ -57,6 +187,21 @@ export function textureHalo() {
   _halo = new THREE.CanvasTexture(cv); _halo.colorSpace = THREE.SRGBColorSpace;
   return _halo;
 }
+/** Tronc de cône d'axe X (cône d'ombre, faisceau) : rayon r0 à l'abscisse s0, r1 à l'abscisse s1.
+ *  Surface semi-transparente soulignée de 4 génératrices. Renvoie un groupe. */
+export function troncCone(r0, r1, s0, s1, couleur, opRemplissage = 0.1, opBord = 0.5) {
+  const h = s1 - s0, grp = new THREE.Group(), pts = [];
+  grp.add(mesh(axeX(new THREE.CylinderGeometry(r1, r0, h, 64, 1, true)), materiaux.lumineux(couleur, opRemplissage), s0 + h / 2, 0, 0));
+  for (let i = 0; i < 4; i++) {
+    const c = Math.cos(i * Math.PI / 2), s = Math.sin(i * Math.PI / 2);
+    pts.push(new THREE.Vector3(s0, r0 * c, r0 * s), new THREE.Vector3(s1, r1 * c, r1 * s));
+  }
+  grp.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: opBord, depthWrite: false })));
+  return grp;
+}
+/** Vide un groupe en libérant géométries et matériaux (avant de le reconstruire). */
+export function vider(g) { g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); g.clear(); }
 /** Légende colorée (liste d'étapes) pour la fiche d'introduction. */
 export function legende(items) {
   return `<ol class="legend">${items.map((it) => `<li><span class="sw" style="background:${css(it.couleur)}"></span><span>${it.texte}</span></li>`).join("")}</ol>`;
