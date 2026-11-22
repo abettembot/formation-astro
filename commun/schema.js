@@ -39,6 +39,11 @@ export const materiaux = {
   // sol d'un paysage (herbe sombre), éclairé par le Soleil du schéma
   sol: () => new THREE.MeshStandardMaterial({ color: 0x34462f, roughness: 1, metalness: 0, envMapIntensity: 0.3 }),
   lentille: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
+  // silicium d'un capteur (photodiodes) : gris bleuté, translucide pour laisser voir les charges à l'intérieur
+  silicium: () => new THREE.MeshStandardMaterial({ color: 0x5a6478, roughness: 0.3, metalness: 0.4, transparent: true, opacity: 0.4, depthWrite: false }),
+  // filtre coloré (matrice de Bayer, filtre d'imagerie) : couleur vive, à peine translucide.
+  // Sur un InstancedMesh, garder le blanc par défaut et colorer chaque instance (setColorAt).
+  filtre: (couleur = 0xffffff) => new THREE.MeshStandardMaterial({ color: couleur, roughness: 0.25, metalness: 0, transparent: true, opacity: 0.85 }),
   // astre éclairé par une seule source (planète, Lune) : mat. Pour une face de nuit vraiment sombre,
   // le schéma met aussi scene.environment à null (l'environnement éclaire sinon tout l'objet).
   astre: (map) => new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0, envMapIntensity: 0 }),
@@ -727,7 +732,11 @@ export function createSchema(cfg) {
       };
       parts.push(p);
       if (opts.etiquette !== false) {
-        api.label(nom, () => p.group.localToWorld(p.ancre.clone()), { partId: id });
+        // l'étiquette disparaît quand l'élément est masqué (lui ou un groupe parent)
+        api.label(nom, () => p.group.localToWorld(p.ancre.clone()), { partId: id, visible: () => {
+          for (let o = p.group; o; o = o.parent) if (!o.visible) return false;
+          return true;
+        } });
       }
       return p;
     },

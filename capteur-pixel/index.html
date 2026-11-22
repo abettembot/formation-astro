@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Capteur et pixel</title>
+<meta name="description" content="Schéma 3D interactif d'un capteur photo : microlentilles, matrice de Bayer, photodiodes, lecture, et échantillonnage en secondes d'arc par pixel.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, css, materiaux as M, mesh, textureHalo, legende } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 2 µm ----------
+// Le capteur est construit en micromètres dans un groupe réduit de moitié (racine).
+// Échantillonnage (″ par pixel) = 206,265 × pixel (µm) ÷ focale (mm).
+const ARC = 206.265;
+const LARGEUR = 45;                 // largeur de la portion de capteur montrée (µm)
+const Y_CIRC = -4.2, H_CIRC = 1.7;  // circuit de lecture (centre, épaisseur)
+const Y_SI_BAS = -3.1, Y_SI_HAUT = 0; // silicium des photodiodes
+const Y_FIL = 0.52, H_FIL = 0.8;    // filtres colorés (centre, épaisseur)
+const Y_LEN = 0.95;                 // base des microlentilles
+const Y_HAUT = 17;                  // départ des photons
+const POSE = 5, LECTURE = 1.6, CYCLE = POSE + LECTURE + 0.6; // cycle de l'animation (s)
+
+const INSTRUMENTS = {
+  obj135: { nom: "Objectif photo 135 mm", bouton: "Objectif 135 mm", D: 48, F: 135 },
+  l72:  { nom: "Lunette 72/420", bouton: "Lunette 72/420", D: 72, F: 420 },
+  l80:  { nom: "Lunette 80/480", bouton: "Lunette 80/480", D: 80, F: 480, red: 0.8 },
+  n200: { nom: "Newton 200/1000", bouton: "Newton 200/1000", D: 200, F: 1000 },
+  c8:   { nom: "Schmidt-Cassegrain C8", bouton: "C8 203/2032", D: 203, F: 2032, red: 0.63 },
+};
+const CAPTEURS = {
+  p29:  { nom: "IMX585 (caméra planétaire)", bouton: "2,9 µm · planétaire", pix: 2.9, def: "3840 × 2160 pixels (8 Mpx)" },
+  p376: { nom: "IMX571 (APS-C)", bouton: "3,76 µm · APS-C", pix: 3.76, def: "6248 × 4176 pixels (26 Mpx)" },
+  p463: { nom: "IMX294 (4/3)", bouton: "4,63 µm · 4/3", pix: 4.63, def: "4144 × 2822 pixels (11,7 Mpx)" },
+  p59:  { nom: "hybride plein format", bouton: "5,9 µm · plein format", pix: 5.9, def: "6000 × 4000 pixels (24 Mpx)" },
+};
+// part de la lumière de l'étoile dans le rouge, le vert et le bleu (teintes approchées)
+const ETOILES = {
+  rigel:      { nom: "Rigel", bouton: "Rigel (bleue)", rvb: [0.62, 0.8, 1] },
+  vega:       { nom: "Véga", bouton: "Véga (blanche)", rvb: [0.92, 0.97, 1] },
+  arcturus:   { nom: "Arcturus", bouton: "Arcturus (orange)", rvb: [1, 0.76, 0.5] },
+  betelgeuse: { nom: "Bételgeuse", bouton: "Bételgeuse (rouge)", rvb: [1, 0.6, 0.34] },
+};
+const COUL_CANAL = [COULEURS.rouge, COULEURS.vert, COULEURS.bleu];
+const NOM_CANAL = ["rouge", "vert", "bleu"];
+const st = { inst: "l80", capteur: "p376", etoile: "arcturus" };
+
+const v = (x, d = 1) => x.toFixed(d).replace(".", ",");
+const canal = (i, j) => (i % 2 === 0 && j % 2 === 0 ? 0 : i % 2 === 1 && j % 2 === 1 ? 2 : 1); // motif RGGB
+
+// ---------- Optique : échantillonnage et tache de l'étoile ----------
+function optique() {
+  const inst = INSTRUMENTS[st.inst], k = CAPTEURS[st.capteur];
+  const red = S.state.reducteur && inst.red ? inst.red : 1;
+  const F = inst.F * red, P = k.pix;
+  const ech = ARC * P / F;                          // ″ par pixel
+  const diff = 116.8 / inst.D;                       // largeur de la tache de diffraction (1,03 λ/D à 550 nm), ″
+  const turb = S.state.seeing;
+  const fwhm = Math.hypot(turb, diff);               // largeur totale de l'étoile (à mi-hauteur), ″
+  const fwhmUm = fwhm * F / ARC;                     // la même sur le capteur, µm
+  const N = 2 * Math.round(LARGEUR / P / 2);         // pixels montrés par côté (nombre pair : motif de Bayer complet)
+  return { inst, k, red, F, P, ech, diff, turb, fwhm, fwhmUm, sigma: fwhmUm / 2.3548, N, cx: 0.4 * P, cz: -0.35 * P, npx: fwhm / ech };
+}
+function erf(x) {
+  const s = Math.sign(x); x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x));
+}
+const Phi = (u) => 0.5 * (1 + erf(u / Math.SQRT2));
+const centre = (i, o) => (i - o.N / 2 + 0.5) * o.P;   // centre du pixel i (x ou z), µm
+
+/** Signal de chaque pixel en fin de pose : part de la tache gaussienne tombée sur le pixel,
+ *  multipliée par la part de lumière de la couleur de son filtre (ou par toute la lumière, sans filtre). */
+function signaux(o, bayer) {
+  const w = ETOILES[st.etoile].rvb, sMono = (w[0] + w[1] + w[2]) / 3;
+  const s = new Float32Array(o.N * o.N);
+  for (let j = 0; j < o.N; j++) {
+    const z0 = centre(j, o) - o.P / 2, fz = Phi((z0 + o.P - o.cz) / o.sigma) - Phi((z0 - o.cz) / o.sigma);
+    for (let i = 0; i < o.N; i++) {
+      const x0 = centre(i, o) - o.P / 2, fx = Phi((x0 + o.P - o.cx) / o.sigma) - Phi((x0 - o.cx) / o.sigma);
+      s[j * o.N + i] = fx * fz * (bayer ? w[canal(i, j)] / 3 : sMono);
+    }
+  }
+  return s;
+}
+
+// ---------- Schéma ----------
+const S = createSchema({
+  surtitre: "Support de formation · Astrophotographie",
+  titre: "Capteur et pixel",
+  sousTitre: "Exemple : capteur IMX571 · pixel 3,76 µm",
+  eclate: true,
+  distanceMin: 2,
+  commandes: [
+    { type: "raccourcis", id: "insts", label: "Instrument", boutons: Object.entries(INSTRUMENTS).map(([id, o]) => ({ id: "in-" + id, label: o.bouton, onClick: () => choisir("inst", id) })) },
+    { type: "raccourcis", id: "capteurs", label: "Taille des pixels", boutons: Object.entries(CAPTEURS).map(([id, o]) => ({ id: "ca-" + id, label: o.bouton, onClick: () => choisir("capteur", id) })) },
+    { type: "raccourcis", id: "etoiles", label: "Étoile photographiée", boutons: Object.entries(ETOILES).map(([id, o]) => ({ id: "et-" + id, label: o.bouton, onClick: () => choisir("etoile", id) })) },
+    { type: "curseur", id: "seeing", label: "Turbulence", min: 1, max: 5, pas: 0.5, valeur: 2.5, format: (x) => v(x) + "″", onInput: () => maj() },
+    { type: "bascule", id: "reducteur", label: "Réducteur", actif: false, onChange: () => maj() },
+    { type: "bascule", id: "bayer", label: "Matrice de Bayer", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "microlentilles", label: "Microlentilles", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "photons", label: "Photons", actif: true },
+    { type: "bascule", id: "coupe", label: "Pixels en coupe", actif: true, onChange: () => placer() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [22, 19, 29], cible: [0, -0.6, 0] },
+    { id: "dessus", label: "Dessus", pos: [0.01, 40, 0.6], cible: [0, 0, 0] },
+    { id: "coupe", label: "En coupe", pos: [2.5, 0.4, 9.5], cible: [0.8, -0.9, -1], fov: 30 },
+    { id: "photosite", label: "Un photosite", pos: [3.6, 1.3, 5.4], cible: [0.94, -0.5, -0.94], fov: 36 },
+  ],
+  apercu: { titre: "Image de l'étoile" },
+  intro: () => {
+    const o = optique();
+    return `
+    <div class="eyebrow">Du photon au pixel</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "La lumière de l'étoile arrive en une petite tache floue : la turbulence de l'air et la diffraction l'étalent." },
+      { couleur: COULEURS.ambre, texte: "Chaque microlentille rabat la lumière vers le centre de son pixel." },
+      { couleur: COULEURS.orange, texte: "Le filtre coloré ne laisse passer qu'une couleur : rouge, vert ou bleu (matrice de Bayer)." },
+      { couleur: COULEURS.corail, texte: "Dans le silicium, chaque photon libère un électron. Le pixel les accumule pendant la pose, puis l'électronique les compte." },
+    ])}
+    <p class="spec">Échantillonnage = 206 × pixel (µm) ÷ focale (mm). Ici : 206 × ${v(o.P, 2)} ÷ ${Math.round(o.F)} = ${v(o.ech, 2)}″ par pixel.</p>
+    <p>Un pixel ne voit pas les couleurs : il mesure une quantité de lumière. Pour une image fine sans gaspiller de lumière, l'étoile doit s'étaler sur 2 à 3 pixels.</p>`;
+  },
+});
+
+const racine = new THREE.Group();
+racine.scale.setScalar(0.5);
+S.scene.add(racine);
+
+// ---------- Éléments ----------
+const lentilles = S.part("lentilles", "Microlentilles", {
+  parent: racine, eclate: [0, 11, 0],
+  texte: "Une minuscule lentille posée sur chaque pixel. Elle rabat vers la zone sensible la lumière qui tomberait sinon sur les bords, entre deux pixels. Sur les capteurs anciens, éclairés par l'avant, les fils électriques masquaient une partie du pixel : les microlentilles y étaient indispensables. Éteignez-les : les photons qui tombent près des bords sont perdus.",
+  chiffres: "Une microlentille par pixel · diamètre = pas du pixel · hauteur ≈ 1 µm",
+});
+const filtres = S.part("filtres", "Matrice de Bayer", {
+  parent: racine, eclate: [0, 5.5, 0],
+  texte: "Un filtre coloré sur chaque pixel : rouge, vert ou bleu, rangés en carrés de 2 × 2 (un rouge, deux verts, un bleu). Chaque pixel ne mesure que la lumière de sa couleur : environ deux tiers de la lumière sont arrêtés. Le logiciel reconstitue ensuite les trois couleurs de chaque pixel à partir de ses voisins : c'est le dématriçage.",
+  chiffres: "Motif RGGB · 50 % de pixels verts, 25 % rouges, 25 % bleus",
+  extra: () => `<p>Il y a deux fois plus de verts parce que l'œil est surtout sensible au vert, couleur qui porte l'essentiel des détails.</p>
+    <p>Une caméra <strong>monochrome</strong> n'a pas ces filtres : tous ses pixels reçoivent toute la lumière. On obtient la couleur en faisant trois séries de poses derrière des filtres rouge, vert et bleu placés dans une roue à filtres. C'est plus long, mais plus sensible et plus fin. Bouton « Matrice de Bayer » : comparez.</p>`,
+});
+const photodiodes = S.part("photodiodes", "Photodiodes", {
+  parent: racine,
+  texte: "La partie sensible du pixel, creusée dans le silicium. Chaque photon absorbé libère un électron, qui reste piégé dans le pixel pendant toute la pose : le pixel se remplit comme un seau sous la pluie. Il ne voit pas les couleurs, seulement une quantité de lumière. Quand le puits est plein, le pixel sature : le centre de l'étoile devient un disque blanc uniforme.",
+  chiffres: "",
+});
+const circuit = S.part("circuit", "Circuit de lecture", {
+  parent: racine, eclate: [0, -6, 0],
+  texte: "À la fin de la pose, les pixels sont lus ligne par ligne : un amplificateur transforme la charge en tension, puis un convertisseur la change en nombre. Ces nombres forment le fichier brut (RAW ou FITS). Sur ce capteur « rétroéclairé », les circuits sont placés sous le silicium et ne gênent plus la lumière. La lecture ajoute un peu de bruit : le bruit de lecture.",
+  chiffres: "Conversion sur 16 bits : 65 536 niveaux · bruit de lecture ≈ 1 à 3 électrons",
+});
+
+const o3 = new THREE.Object3D();
+let iLen, iFil, iPui, iCha, iTra, murs;
+let O = null, signal = null, signalBayer = null; // optique courante, signal final par pixel (0…1)
+
+function construire() {
+  const o = O, N = o.N, P = o.P, n = N * N, cote = N * P;
+  for (const p of [lentilles, filtres, photodiodes, circuit]) S.viderElement(p);
+  // microlentilles : calottes aplaties
+  const rL = P * 0.49, gL = new THREE.SphereGeometry(rL, 28, 8, 0, 2 * Math.PI, 0, Math.PI / 2);
+  gL.scale(1, 0.26 * P / rL, 1);
+  const mL = M.lentille(); mL.opacity = 0.5;
+  iLen = S.add(lentilles, new THREE.InstancedMesh(gL, mL, n));
+  // filtres colorés
+  iFil = S.add(filtres, new THREE.InstancedMesh(new THREE.BoxGeometry(P - 0.08, H_FIL, P - 0.08), M.filtre(), n));
+  const c = new THREE.Color();
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) iFil.setColorAt(j * N + i, c.setHex(COUL_CANAL[canal(i, j)]));
+  // photodiodes (puits translucides), murs d'isolation, charges accumulées
+  const hSi = Y_SI_HAUT - Y_SI_BAS;
+  iPui = S.add(photodiodes, new THREE.InstancedMesh(new THREE.BoxGeometry(P - 0.24, hSi, P - 0.24), M.silicium(), n));
+  murs = new THREE.Group();
+  const mMur = M.noir();
+  for (let k = 0; k <= N; k++) {
+    const u = -cote / 2 + k * P;
+    const yM = (Y_SI_BAS + Y_SI_HAUT) / 2;
+    const mur = (m, avant) => { m.userData.avant = avant; murs.add(m); };
+    mur(mesh(new THREE.BoxGeometry(cote + 0.2, hSi, 0.2), mMur, 0, yM, u), u > -0.01); // le mur du milieu est retiré aussi : la coupe reste visible
+    for (const sens of [-1, 1]) mur(mesh(new THREE.BoxGeometry(0.2, hSi, cote / 2 + 0.1), mMur, u, yM, sens * (cote / 4 + 0.05)), sens > 0);
+  }
+  S.add(photodiodes, murs);
+  iCha = S.add(photodiodes, new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), M.lumineux(COULEURS.ambre, 0.75), n));
+  iCha.frustumCulled = false;
+  // circuit de lecture : bloc, pistes métalliques, un transistor par pixel
+  S.add(circuit, mesh(new THREE.BoxGeometry(cote + 0.6, H_CIRC, cote + 0.6), M.noir(), 0, Y_CIRC, 0));
+  const mAlu = M.alu(), yPiste = Y_CIRC + H_CIRC / 2 + 0.08;
+  for (let k = 0; k < N; k++) {
+    S.add(circuit, mesh(new THREE.BoxGeometry(cote, 0.14, 0.32), mAlu, 0, yPiste, centre(k, o) - 0.3 * P));
+    S.add(circuit, mesh(new THREE.BoxGeometry(0.32, 0.1, cote), mAlu, centre(k, o) + 0.3 * P, yPiste - 0.04, 0));
+  }
+  iTra = S.add(circuit, new THREE.InstancedMesh(new THREE.BoxGeometry(0.9, 0.3, 0.9), mAlu, n));
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    o3.position.set(centre(i, o) - 0.12 * P, yPiste + 0.1, centre(j, o) + 0.12 * P); o3.scale.set(1, 1, 1); o3.updateMatrix();
+    iTra.setMatrixAt(j * N + i, o3.matrix);
+  }
+  // ancres des étiquettes
+  const b = cote / 2;
+  lentilles.ancre.set(-b + P / 2, Y_LEN + 0.3 * P, -b + P / 2);
+  filtres.ancre.set(-b, Y_FIL + H_FIL / 2, -b / 2);
+  photodiodes.ancre.set(-b + 1.5 * P, Y_SI_HAUT, 0);
+  circuit.ancre.set(-b, Y_CIRC - H_CIRC / 2, b / 2);
+  placer();
+}
+
+/** Place les lentilles, filtres et puits. En mode « coupe », la moitié avant du capteur est retirée
+ *  (sauf le circuit) : on voit l'empilement de chaque pixel en coupe, au milieu du capteur. */
+function placer() {
+  const o = O, N = o.N, P = o.P;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const k = j * N + i, x = centre(i, o), z = centre(j, o), cache = S.state.coupe && z > 0;
+    o3.scale.setScalar(cache ? 1e-4 : 1);
+    o3.position.set(x, Y_LEN, z); o3.updateMatrix(); iLen.setMatrixAt(k, o3.matrix);
+    o3.position.set(x, Y_FIL, z); o3.updateMatrix(); iFil.setMatrixAt(k, o3.matrix);
+    o3.position.set(x, (Y_SI_BAS + Y_SI_HAUT) / 2, z); o3.updateMatrix(); iPui.setMatrixAt(k, o3.matrix);
+  }
+  for (const m of murs.children) m.visible = !(S.state.coupe && m.userData.avant);
+  for (const m of [iLen, iFil, iPui]) { m.instanceMatrix.needsUpdate = true; m.boundingSphere = null; m.boundingBox = null; }
+}
+
+// ---------- Tache de l'étoile au-dessus du capteur ----------
+const tache = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ map: textureHalo(), transparent: true, opacity: 0.4, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+const anneau = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(
+  Array.from({ length: 64 }, (_, i) => new THREE.Vector3(Math.cos(i / 64 * 2 * Math.PI), 0, Math.sin(i / 64 * 2 * Math.PI)))),
+  new THREE.LineBasicMaterial({ color: COULEURS.etoile, transparent: true, opacity: 0.8, depthWrite: false }));
+racine.add(tache, anneau);
+const yTache = () => Y_LEN + 0.26 * O.P + 0.35 + lentilles.group.position.y;
+S.label("Tache de l'étoile", () => racine.localToWorld(new THREE.Vector3(O.cx, yTache(), O.cz - O.fwhmUm / 2)),
+  { lumiere: true, visible: () => S.state.photons });
+const lblPas = S.label("", () => racine.localToWorld(new THREE.Vector3(centre(O.N - 2, O), Y_SI_BAS, O.N * O.P / 2 + 0.6)), { lumiere: true });
+const lblEtat = S.label("", () => racine.localToWorld(new THREE.Vector3(O.cx, Y_HAUT + 2 + lentilles.group.position.y, O.cz)), { lumiere: true, visible: () => S.state.anim && !S.reduced });
+
+// ---------- Photons ----------
+const MAXPH = 420;
+const gPh = new THREE.BufferGeometry();
+gPh.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAXPH * 3), 3));
+gPh.setAttribute("color", new THREE.BufferAttribute(new Float32Array(MAXPH * 3), 3));
+const points = new THREE.Points(gPh, new THREE.PointsMaterial({ size: 0.42, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+points.frustumCulled = false;
+racine.add(points);
+const photons = [];
+const gauss = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+function nouveauPhoton() {
+  const o = O, w = ETOILES[st.etoile].rvb, cote = o.N * o.P;
+  const x = o.cx + gauss() * o.sigma, z = o.cz + gauss() * o.sigma;
+  if (Math.abs(x) > cote / 2 - 0.05 || Math.abs(z) > cote / 2 - 0.05) return;
+  let r = Math.random() * (w[0] + w[1] + w[2]), c = 0;
+  while (c < 2 && r > w[c]) { r -= w[c]; c++; }
+  const i = Math.floor(x / o.P + o.N / 2), j = Math.floor(z / o.P + o.N / 2);
+  const px = centre(i, o), pz = centre(j, o);
+  const dL = lentilles.group.position.y, dF = filtres.group.position.y, dS = photodiodes.group.position.y;
+  const yL = Y_LEN + 0.26 * o.P + dL, yF = Y_FIL + H_FIL / 2 + dF;
+  const lent = S.state.microlentilles, bayer = S.state.bayer;
+  const xt = lent ? px + (x - px) * 0.25 : x, zt = lent ? pz + (z - pz) * 0.25 : z;
+  const pts = [[x, Y_HAUT + dL, z], [x, yL, z]];
+  if (bayer) pts.push([xt, yF, zt]);
+  const passe = !bayer || canal(i, j) === c;
+  const bord = Math.max(Math.abs(xt - px), Math.abs(zt - pz)) > 0.36 * o.P; // tombe sur l'isolation, entre deux pixels
+  if (passe) pts.push(bord ? [xt, Y_SI_HAUT + dS + 0.05, zt] : [xt, Y_SI_BAS + 1.1 + dS, zt]);
+  const lens = []; let total = 0;
+  for (let k = 0; k < pts.length - 1; k++) { const l = Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1], pts[k + 1][2] - pts[k][2]); lens.push(l); total += l; }
+  photons.push({ pts, lens, total, s: 0, col: new THREE.Color(COUL_CANAL[c]) });
+}
+
+// ---------- Animation : pose, puis lecture ligne par ligne ----------
+let tPrec = 0, aNaitre = 0, etat = "";
+S.onFrame(({ time }) => {
+  if (!O) return;
+  let d = time - tPrec; tPrec = time;
+  if (d < 0 || d > 0.2) d = 0;
+  const fige = S.reduced || !S.state.anim; // animation arrêtée : on montre la fin de la pose
+  const cyc = time % CYCLE, enPose = cyc < POSE;
+  // photons
+  if (S.state.photons && enPose && !fige) {
+    aNaitre += d * 110;
+    while (aNaitre >= 1) { aNaitre--; if (photons.length < MAXPH) nouveauPhoton(); }
+  }
+  const P3 = gPh.attributes.position, C3 = gPh.attributes.color;
+  let k = 0;
+  for (let q = photons.length - 1; q >= 0; q--) {
+    const p = photons[q];
+    p.s += d * 24;
+    if (p.s >= p.total || !S.state.photons) { photons.splice(q, 1); continue; }
+    let s = p.s, i = 0;
+    while (i < p.lens.length - 1 && s > p.lens[i]) { s -= p.lens[i]; i++; }
+    const a = p.pts[i], b = p.pts[i + 1], f = Math.min(1, s / Math.max(p.lens[i], 1e-9));
+    P3.setXYZ(k, a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f);
+    C3.setXYZ(k, p.col.r, p.col.g, p.col.b);
+    k++;
+  }
+  gPh.setDrawRange(0, k);
+  P3.needsUpdate = true; C3.needsUpdate = true;
+  // charges : elles montent pendant la pose ; à la lecture, chaque ligne se vide à son tour
+  const N = O.N, hMax = Y_SI_HAUT - Y_SI_BAS - 0.4, cote = O.P - 0.9;
+  const facteur = fige ? 1 : enPose ? cyc / POSE : 1;
+  for (let j = 0; j < N; j++) {
+    const lue = !fige && !enPose && cyc > POSE + (j / N) * LECTURE;
+    for (let i = 0; i < N; i++) {
+      const h = lue || (S.state.coupe && centre(j, O) > 0) ? 0 : signal[j * N + i] * facteur * hMax;
+      o3.scale.set(h > 0.02 ? cote : 1e-4, Math.max(h, 1e-4), h > 0.02 ? cote : 1e-4);
+      o3.position.set(centre(i, O), Y_SI_BAS + 0.2 + h / 2, centre(j, O));
+      o3.updateMatrix(); iCha.setMatrixAt(j * N + i, o3.matrix);
+    }
+  }
+  iCha.instanceMatrix.needsUpdate = true; iCha.boundingSphere = null;
+  const e = fige ? "" : enPose ? `Pose : les électrons s'accumulent (${Math.ceil(cyc)} s)` : cyc < POSE + LECTURE ? "Lecture ligne par ligne" : "Lecture terminée : nouvelle pose";
+  if (e !== etat) { etat = e; lblEtat.el.textContent = e; }
+  // tache de l'étoile
+  const yT = yTache();
+  tache.visible = anneau.visible = S.state.photons;
+  tache.material.color.setRGB(...ETOILES[st.etoile].rvb);
+  tache.position.set(O.cx, yT, O.cz); tache.scale.setScalar(O.fwhmUm * 1.9);
+  anneau.position.set(O.cx, yT + 0.02, O.cz); anneau.scale.setScalar(O.fwhmUm / 2);
+});
+
+// ---------- Encart : lumière reçue, fichier brut, image dématricée ----------
+function imageCanvas(n, remplir) {
+  const cv = document.createElement("canvas"); cv.width = cv.height = n;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(n, n);
+  for (let q = 0; q < n * n; q++) { const [r, g, b] = remplir(q % n, Math.floor(q / n)); img.data.set([r * 255, g * 255, b * 255, 255], q * 4); }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+const GAMMA = 0.55;
+function dessinerApercu() {
+  const ap = S.apercu, o = O, N = o.N, w = ETOILES[st.etoile].rvb, bayer = S.state.bayer;
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (W) {
+    // 1. la lumière qui arrive : tache continue
+    const SUB = 8, n1 = N * SUB, mw = Math.max(...w);
+    const recue = imageCanvas(n1, (x, y) => {
+      const dx = ((x + 0.5) / SUB - N / 2) * o.P - o.cx, dz = ((y + 0.5) / SUB - N / 2) * o.P - o.cz;
+      const I = Math.pow(Math.exp(-(dx * dx + dz * dz) / (2 * o.sigma * o.sigma)), GAMMA);
+      return [I * w[0] / mw, I * w[1] / mw, I * w[2] / mw];
+    });
+    // 2. le fichier brut : un nombre par pixel, sans couleur
+    const max = Math.max(...signal) || 1;
+    const brut = imageCanvas(N, (i, j) => { const g = Math.pow(signal[j * N + i] / max, GAMMA); return [g, g, g]; });
+    // 3. dématriçage bilinéaire : chaque couleur manquante est la moyenne des voisins de cette couleur
+    let dem = null;
+    if (bayer) {
+      const rvb = new Float32Array(N * N * 3);
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+        const somme = [0, 0, 0], nb = [0, 0, 0];
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          const x = i + di, y = j + dj;
+          if (x < 0 || y < 0 || x >= N || y >= N) continue;
+          const c = canal(x, y); somme[c] += signal[y * N + x]; nb[c]++;
+        }
+        for (let c = 0; c < 3; c++) rvb[(j * N + i) * 3 + c] = nb[c] ? somme[c] / nb[c] : 0;
+      }
+      const mx = Math.max(...rvb) || 1;
+      dem = imageCanvas(N, (i, j) => [0, 1, 2].map((c) => Math.pow(rvb[(j * N + i) * 3 + c] / mx, GAMMA)));
+    }
+    const vues = bayer
+      ? [{ img: recue, titre: "Lumière reçue" }, { img: brut, titre: "Fichier brut" }, { img: dem, titre: "Après dématriçage" }]
+      : [{ img: recue, titre: "Lumière reçue" }, { img: brut, titre: "Image monochrome" }];
+    const gap = 8, lab = 18, nb = vues.length, s = Math.floor((W - gap * (nb - 1)) / nb), H = s + lab;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    vues.forEach((vu, k) => {
+      const x0 = k * (s + gap);
+      ctx.imageSmoothingEnabled = k === 0;
+      ctx.drawImage(vu.img, x0, 0, s, s);
+      // grille des pixels
+      ctx.strokeStyle = k === 0 ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.07)"; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let q = 1; q < N; q++) { const u = Math.round(q * s / N) + 0.5; ctx.moveTo(x0 + u, 0); ctx.lineTo(x0 + u, s); ctx.moveTo(x0, u); ctx.lineTo(x0 + s, u); }
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.strokeRect(x0 + 0.5, 0.5, s - 1, s - 1);
+      ctx.font = "11.5px Arial"; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
+      ctx.fillText(vu.titre, x0 + s / 2, s + 13);
+    });
+  }
+  // légende : réglages, chiffres, verdict
+  const red = o.red < 1 ? ` + réducteur ×${v(o.red, 2)}` : "";
+  const f = o.npx;
+  let verdict;
+  if (f < 1.5) verdict = `<strong>Sous-échantillonné.</strong> L'étoile tient sur à peine ${v(f)} pixel : elle paraît carrée et les détails les plus fins sont perdus. C'est acceptable en grand champ. Sinon, il faut une focale plus longue ou des pixels plus petits.`;
+  else if (f <= 3.5) verdict = `<strong>Bien échantillonné.</strong> L'étoile s'étale sur ${v(f)} pixels : elle reste ronde et nette, sans gaspiller de lumière.`;
+  else verdict = `<strong>Suréchantillonné.</strong> L'étoile s'étale sur ${v(f)} pixels. Sa lumière est diluée : chaque pixel en reçoit moins, l'image est plus bruitée, sans gagner de détails. Solutions : un réducteur, des pixels plus gros, ou regrouper les pixels 2 par 2 (binning). En planétaire, on recherche au contraire ce suréchantillonnage, avec des poses très courtes qui figent la turbulence.`;
+  const noteBayer = bayer ? `<p>Capteur couleur : le rouge et le bleu ne sont mesurés qu'un pixel sur quatre, le vert un sur deux. Le dématriçage devine le reste à partir des voisins${o.npx < 2.5 ? ", d'où des franges colorées autour d'une étoile aussi petite" : ""}.</p>` : `<p>Sans filtres, chaque pixel reçoit toute la lumière : l'image est plus fine et plus lumineuse, mais sans couleur.</p>`;
+  ap.legende.innerHTML = `<h2>${o.inst.nom}${red} · ${o.k.nom}</h2>
+    <p class="spec">Focale ${Math.round(o.F)} mm · pixel ${v(o.P, 2)} µm → ${v(o.ech, 2)}″ par pixel · étoile de ${v(o.fwhm)}″ (turbulence ${v(o.turb)}″, diffraction ${v(o.diff)}″)</p>
+    <p>${verdict}</p>${noteBayer}`;
+}
+
+// ---------- Choix ----------
+function presse(prefixe, table, actif) { for (const k in table) document.getElementById(`r-${prefixe}-${k}`).setAttribute("aria-pressed", String(k === actif)); }
+function choisir(cle, val) { st[cle] = val; maj(); }
+let cleGeo = "";
+function maj() {
+  presse("in", INSTRUMENTS, st.inst); presse("ca", CAPTEURS, st.capteur); presse("et", ETOILES, st.etoile);
+  O = optique();
+  signal = signaux(O, S.state.bayer);
+  const max = Math.max(...signal) || 1;
+  for (let q = 0; q < signal.length; q++) signal[q] = signal[q] / max * (S.state.microlentilles ? 0.85 : 0.6);
+  const cle = O.N + "/" + O.P;
+  if (cle !== cleGeo) { cleGeo = cle; photons.length = 0; construire(); }
+  filtres.group.visible = S.state.bayer;
+  lentilles.group.visible = S.state.microlentilles;
+  lblPas.el.textContent = `1 pixel = ${v(O.P, 2)} µm`;
+  const k = O.k;
+  photodiodes.chiffres = `Pixel de ${v(O.P, 2)} µm · ${k.def}` + (st.capteur === "p376" ? " · rendement ≈ 80 % (8 photons sur 10 comptés) · puits plein ≈ 50 000 électrons" : "");
+  S.notice(S.state.reducteur && !O.inst.red ? `Pas de réducteur courant pour ${O.inst.nom.toLowerCase()} : seuls la lunette 80/480 (×0,8) et le C8 (×0,63) en ont un.` : null);
+  dessinerApercu();
+  S.refreshInfo();
+}
+
+let largeur = 0;
+S.onFrame(() => { // l'encart change de taille (bouton Agrandir) : on le redessine
+  const W = S.apercu.canvas.clientWidth;
+  if (W !== largeur) { largeur = W; dessinerApercu(); }
+});
+
+maj();
+S.start();
+</script>
+</body>
+</html>
