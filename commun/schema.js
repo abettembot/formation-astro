@@ -561,6 +561,8 @@ const MOBILE = 760;
  *             que le schéma dessine (api.apercu = { el, canvas, legende }). Un bouton bascule entre
  *             deux tailles (normale, ×1,5) ; le canvas doit donc lire sa largeur à chaque dessin.
  *             Sur ordinateur, il s'ouvre agrandi.
+ *             Plusieurs encarts : passer un tableau [{ titre }, { titre }] ; ils s'empilent dans une
+ *             colonne et api.apercus les donne dans l'ordre (api.apercu reste le premier).
  *  - aide : texte d'aide en bas du panneau (remplace le texte par défaut)
  */
 export function createSchema(cfg) {
@@ -621,30 +623,35 @@ export function createSchema(cfg) {
   brand.title = "Repères-Astro";
   brand.innerHTML = `<img src="${new URL("images/logo-reperes-astro.png", import.meta.url)}" alt="Repères-Astro.fr" width="323" height="100">`;
   document.body.append(stage, labelsEl, panel, notice, brand);
-  // encart d'aperçu (optionnel), dessiné par le schéma
-  let apercu = null;
+  // encarts d'aperçu (optionnels), dessinés par le schéma, empilés dans une colonne sur le côté
+  const apercus = [];
   if (cfg.apercu) {
-    const fig = document.createElement("figure"); fig.id = "apercu";
-    fig.innerHTML = `<div class="tete"><div class="eyebrow">${cfg.apercu.titre}</div><button type="button" class="taille" aria-pressed="false">Agrandir</button></div><canvas class="ecran"></canvas><figcaption></figcaption>`;
-    document.body.append(fig);
-    // deux tailles. Sur ordinateur, l'encart s'ouvre toujours agrandi (bouton « Réduire ») ;
-    // sur téléphone, il garde la taille choisie la dernière fois sur cet appareil (petit au départ).
-    const btn = fig.querySelector(".taille");
-    const taille = (grand, retenir = true) => {
-      fig.classList.toggle("grand", grand);
-      btn.setAttribute("aria-pressed", String(grand));
-      btn.textContent = grand ? "Réduire" : "Agrandir";
-      if (retenir) try { localStorage.setItem("apercu-grand", grand ? "1" : "0"); } catch {}
-    };
-    if (innerWidth > MOBILE) taille(true, false);
-    else {
-      let pref = false;
-      try { pref = localStorage.getItem("apercu-grand") === "1"; } catch {}
-      taille(pref, false);
+    const colonne = document.createElement("div"); colonne.id = "apercus";
+    document.body.append(colonne);
+    for (const a of [].concat(cfg.apercu)) {
+      const fig = document.createElement("figure"); fig.className = "apercu";
+      fig.innerHTML = `<div class="tete"><div class="eyebrow">${a.titre}</div><button type="button" class="taille" aria-pressed="false">Agrandir</button></div><canvas class="ecran"></canvas><figcaption></figcaption>`;
+      colonne.append(fig);
+      // deux tailles. Sur ordinateur, l'encart s'ouvre toujours agrandi (bouton « Réduire ») ;
+      // sur téléphone, il garde la taille choisie la dernière fois sur cet appareil (petit au départ).
+      const btn = fig.querySelector(".taille");
+      const taille = (grand, retenir = true) => {
+        fig.classList.toggle("grand", grand);
+        btn.setAttribute("aria-pressed", String(grand));
+        btn.textContent = grand ? "Réduire" : "Agrandir";
+        if (retenir) try { localStorage.setItem("apercu-grand", grand ? "1" : "0"); } catch {}
+      };
+      if (innerWidth > MOBILE) taille(true, false);
+      else {
+        let pref = false;
+        try { pref = localStorage.getItem("apercu-grand") === "1"; } catch {}
+        taille(pref, false);
+      }
+      btn.addEventListener("click", () => taille(!fig.classList.contains("grand")));
+      apercus.push({ el: fig, canvas: fig.querySelector("canvas"), legende: fig.querySelector("figcaption") });
     }
-    btn.addEventListener("click", () => taille(!fig.classList.contains("grand")));
-    apercu = { el: fig, canvas: fig.querySelector("canvas"), legende: fig.querySelector("figcaption") };
   }
+  const apercu = apercus[0] || null;
 
   // ---------- Rendu ----------
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -698,7 +705,7 @@ export function createSchema(cfg) {
   let pickSale = true; // liste des meshes cliquables à recalculer (pièce ajoutée ou reconstruite)
 
   const api = {
-    THREE, scene, camera, renderer, controls, state, parts, ciel, apercu,
+    THREE, scene, camera, renderer, controls, state, parts, ciel, apercu, apercus,
     lumieres: { ambiance, principale: key, contre: rim },
     get time() { return time; },
     get explode() { return ease(state.explode); },

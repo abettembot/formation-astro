@@ -25,7 +25,7 @@ import { createSchema, THREE, COULEURS, materiaux as M, mesh, legende, css, fais
 // Repère local : sol = plan XZ, zénith = +Y, nord = −Z, sud = +Z, est = +X, ouest = −X.
 const DEG = Math.PI / 180;
 const R_DOME = 10, R_SOL = 11.5;
-const LAT_CLUB = 49 + 38 / 60 + 55 / 3600;   // 49° 38′ 55″ N
+const LAT_CLUB = 49 + 38 / 60 + 55 / 3600;   // Rouvroy, commune du club : 49° 38′ 55″ N
 const ANNEE = 2025, J2000 = Date.UTC(2000, 0, 1, 12);
 const EPS = 23.44;                            // inclinaison de l'axe de la Terre (degrés)
 
@@ -82,7 +82,7 @@ const JOURS = [
 ];
 const LIEUX = [
   { id: "equateur", label: "Équateur", lat: 0 },
-  { id: "club", label: "Le club", lat: LAT_CLUB },
+  { id: "rouvroy", label: "Rouvroy", lat: LAT_CLUB },
   { id: "polaire", label: "Cercle polaire", lat: 66.56 },
   { id: "pole", label: "Pôle Nord", lat: 90 },
   { id: "sydney", label: "Sydney", lat: -33.87 },
@@ -95,9 +95,9 @@ let pilote = false, arcsSales = true;
 const S = createSchema({
   surtitre: "Support de formation · Ciel",
   titre: "Saisons et trajectoire du Soleil",
-  sousTitre: "Exemple : latitude du club, 49° 39′ N",
+  sousTitre: "Exemple : Rouvroy, latitude 49° 39′ N",
   distanceMax: 70,
-  apercu: { titre: "Vue de l'espace" },
+  apercu: [{ titre: "Vue de l'espace" }, { titre: "Rayons sur le sol" }],
   commandes: [
     { type: "curseur", id: "date", label: "Date", min: 0, max: 364, pas: 1, valeur: sim.j,
       format: (v) => fmtDate(v, "short"), onInput: (v) => { if (!pilote) { sim.j = v; arcsSales = true; } } },
@@ -108,7 +108,7 @@ const S = createSchema({
     { type: "raccourcis", id: "jours", label: "Aller au", boutons: JOURS.map((d) => ({ id: d.id, label: d.label, onClick: () => { regler("date", d.j); } })) },
     { type: "raccourcis", id: "lieux", label: "Lieu", boutons: LIEUX.map((l) => ({ id: l.id, label: l.label, onClick: () => { regler("lat", l.lat); } })) },
     { type: "bascule", id: "trajets", label: "Trajectoires", actif: true },
-    { type: "bascule", id: "faisceau", label: "Faisceau", actif: true },
+    { type: "bascule", id: "faisceau", label: "Faisceau", actif: false },
     { type: "bascule", id: "ombre", label: "Ombre", actif: true },
     { type: "bascule", id: "reperes", label: "Repères", actif: true },
   ],
@@ -123,12 +123,12 @@ const S = createSchema({
     <div class="eyebrow">Ce qu'on voit dans le ciel</div>
     <p>Chaque jour, le Soleil se lève à l'est, monte vers le sud, puis se couche à l'ouest. Mais sa course change au fil de l'année :</p>
     ${legende([
-      { couleur: COULEURS.etoile, texte: "En hiver (21 décembre), il se lève au sud-est, reste bas et se couche tôt au sud-ouest : au club, 17° de hauteur à midi et 8 h de jour." },
+      { couleur: COULEURS.etoile, texte: "En hiver (21 décembre), il se lève au sud-est, reste bas et se couche tôt au sud-ouest : à Rouvroy, 17° de hauteur à midi et 8 h de jour." },
       { couleur: COULEURS.ambre, texte: "Aux équinoxes (20 mars, 22 septembre), il se lève plein est et se couche plein ouest : 12 h de jour partout sur Terre." },
       { couleur: COULEURS.corail, texte: "En été (21 juin), il se lève au nord-est, monte haut et se couche tard au nord-ouest : 64° à midi et plus de 16 h de jour." },
     ])}
     <div class="eyebrow">L'explication</div>
-    <p>L'axe de la Terre est incliné de 23,4° et pointe toujours vers l'étoile Polaire. En juin, l'hémisphère Nord penche vers le Soleil : le Soleil monte haut et reste longtemps dans le ciel. En décembre, il penche à l'opposé. Un Soleil bas étale sa lumière sur une plus grande surface de sol (bascule « Faisceau ») et brille moins longtemps : il fait plus froid.</p>
+    <p>L'axe de la Terre est incliné de 23,4° et pointe toujours vers l'étoile Polaire. En juin, l'hémisphère Nord penche vers le Soleil : le Soleil monte haut et reste longtemps dans le ciel. En décembre, il penche à l'opposé. Un Soleil bas arrive de biais : ses rayons sont moins serrés sur le sol, qui en reçoit moins par mètre carré (encart « Rayons sur le sol »). Il brille aussi moins longtemps : il fait plus froid.</p>
     <p class="spec">Ce n'est pas la distance au Soleil qui fait les saisons : la Terre en est même au plus près début janvier, en plein hiver chez nous.</p>`,
 });
 
@@ -187,7 +187,7 @@ S.label("Zénith", () => new THREE.Vector3(0, R_DOME + 0.3, 0), { visible: () =>
 const polaire = S.part("polaire", "Axe du monde", {
   etiquette: false,
   texte: "Le prolongement de l'axe de rotation de la Terre. Dans l'hémisphère Nord, il pointe vers l'étoile Polaire, à une hauteur égale à la latitude du lieu. Le Soleil, comme les étoiles, tourne chaque jour autour de cet axe : ses trajectoires sont des cercles parallèles, perpendiculaires à l'axe.",
-  chiffres: "Hauteur du pôle céleste = latitude · au club : 49,6° au-dessus de l'horizon nord",
+  chiffres: "Hauteur du pôle céleste = latitude · à Rouvroy : 49,6° au-dessus de l'horizon nord",
 });
 const axe = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3)),
   new THREE.LineDashedMaterial({ color: COULEURS.etoile, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.6, depthWrite: false }));
@@ -218,7 +218,7 @@ const _bout = new THREE.Vector3();
 const obs = S.part("observateur", "Observateur", {
   etiquette: false,
   texte: "Il regarde vers le sud. Dans l'hémisphère Nord, hors des tropiques, c'est de ce côté que le Soleil culmine à midi. La hauteur du Soleil à midi vaut 90° moins la latitude, plus ou moins 23,4° selon la saison.",
-  chiffres: "Au club, à midi : 64° le 21 juin · 40° aux équinoxes · 17° le 21 décembre",
+  chiffres: "À Rouvroy, à midi : 64° le 21 juin · 40° aux équinoxes · 17° le 21 décembre",
 });
 {
   const mat = () => M.peinture(), X = -1.9, Z = -1.4;
@@ -306,7 +306,7 @@ let jourCourant = {};
 const pFaisceau = S.part("faisceau", "Faisceau de lumière", {
   etiquette: false,
   texte: "Un faisceau de lumière solaire de 1 m² de section. Quand le Soleil est haut, il éclaire une petite tache de sol, qui reçoit beaucoup d'énergie par mètre carré. Quand le Soleil est bas, la même lumière s'étale sur une grande surface : chaque mètre carré reçoit moins d'énergie et chauffe moins. C'est la première raison du froid de l'hiver ; la seconde, ce sont des journées plus courtes.",
-  chiffres: "Surface éclairée = 1 m² ÷ sinus de la hauteur du Soleil · au club, à midi : 1,1 m² le 21 juin, 3,4 m² le 21 décembre",
+  chiffres: "Surface éclairée = 1 m² ÷ sinus de la hauteur du Soleil · à Rouvroy, à midi : 1,1 m² le 21 juin, 3,4 m² le 21 décembre",
 });
 const P0 = new THREE.Vector3(3.4, 0, 2.6), DEMI = 0.5, LONG_F = 7.5;
 const fGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(30 * 3), 3));
@@ -374,7 +374,7 @@ function saison(lam, lat) {
 function dessinerApercu(sj, jr, h) {
   const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
   if (!W) return;
-  const H = Math.round(W * 0.66);
+  const H = Math.round(W * 0.52);
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
   }
@@ -382,7 +382,7 @@ function dessinerApercu(sj, jr, h) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#04070e"); g.addColorStop(1, "#0c1528");
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  const cx = W / 2, cy = H * 0.52, R = W * 0.34;
+  const cx = W / 2, cy = H * 0.54, R = W * 0.3;
   const X = (p, q) => cx + q * R, Y = (p, q, n = 0) => cy - projU(p, q, n) * R;
   // orbite
   ctx.strokeStyle = "rgba(139,154,176,0.45)"; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
@@ -454,6 +454,93 @@ function dessinerApercu(sj, jr, h) {
   if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
 }
 
+// ---------- Encart : les rayons du Soleil sur un morceau de sol, vu de profil ----------
+// Les rayons arrivent toujours horizontaux, depuis la gauche ; c'est le sol qui s'incline.
+// L'angle entre les rayons et le sol est la hauteur du Soleil : plus il est grand, plus le sol
+// fait face au Soleil et plus il intercepte de rayons.
+const ap2 = S.apercus[1];
+const N_RAYONS = 16, MARGE = 0.08, LONG_SOL = 0.8; // en fraction de la hauteur du dessin
+let legende2Prec = "";
+/** Nombre de rayons interceptés par le morceau de sol quand le Soleil est à hDeg degrés. */
+function compterRayons(hDeg) {
+  if (hDeg <= 0.2) return 0;
+  const demi = LONG_SOL / 2 * Math.sin(hDeg * DEG), pas = (1 - 2 * MARGE) / N_RAYONS;
+  let n = 0;
+  for (let i = 0; i < N_RAYONS; i++) if (Math.abs(MARGE + (i + 0.5) * pas - 0.5) <= demi) n++;
+  return n;
+}
+function dessinerRayons(h, jr, time) {
+  const cv = ap2.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.48);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#04070e"); g.addColorStop(1, "#0c1528");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const haut = Math.max(0, h), a = haut * DEG;
+  const marge = H * MARGE, pas = (H - 2 * marge) / N_RAYONS;
+  const C = { x: W * 0.64, y: H / 2 }, L = H * LONG_SOL;                 // morceau de sol : centre et longueur
+  const d = { x: Math.cos(a), y: -Math.sin(a) };                      // monte vers la droite, face au Soleil
+  const A = { x: C.x - d.x * L / 2, y: C.y - d.y * L / 2 }, B = { x: C.x + d.x * L / 2, y: C.y + d.y * L / 2 };
+  const x0 = W * 0.1;
+  // Soleil, à gauche
+  const gs = ctx.createRadialGradient(0, H / 2, 0, 0, H / 2, W * 0.12);
+  gs.addColorStop(0, "rgba(255,217,138,0.9)"); gs.addColorStop(1, "rgba(255,200,97,0)");
+  ctx.fillStyle = gs; ctx.fillRect(0, 0, W * 0.12, H);
+  // rayons : ceux qui touchent le sol s'y arrêtent, les autres passent à côté
+  let n = 0;
+  const cAmbre = css(COULEURS.ambre);
+  for (let i = 0; i < N_RAYONS; i++) {
+    const y = marge + (i + 0.5) * pas;
+    let xf = W, touche = false;
+    if (haut > 0.2) {
+      const t = (C.y - y) / Math.sin(a);
+      if (Math.abs(t) <= L / 2) { xf = C.x + t * Math.cos(a); touche = true; n++; }
+    }
+    ctx.strokeStyle = touche ? cAmbre : "rgba(246,231,176,0.16)"; ctx.lineWidth = touche ? 1.6 : 1;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(xf, y); ctx.stroke();
+    // grains de lumière qui avancent le long du rayon
+    const long = xf - x0;
+    ctx.fillStyle = touche ? "rgba(255,226,160,0.95)" : "rgba(246,231,176,0.25)";
+    for (let k = 0; k < 3; k++) {
+      const x = x0 + mod(time * W * 0.35 + k * long / 3 + i * 17, long);
+      ctx.beginPath(); ctx.arc(x, y, touche ? 2 : 1.4, 0, 2 * Math.PI); ctx.fill();
+    }
+    if (touche) { ctx.fillStyle = css(COULEURS.orange); ctx.beginPath(); ctx.arc(xf, y, 2.6, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  // le morceau de sol : surface claire face au Soleil, terre derrière
+  const e = 7, nx = d.y, ny = -d.x;                                  // normale tournée vers le Soleil ; la terre est de l'autre côté
+  ctx.fillStyle = "#3e2f22";
+  ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(B.x - nx * e, B.y - ny * e); ctx.lineTo(A.x - nx * e, A.y - ny * e); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#7da86a"; ctx.lineWidth = 3; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+  // angle entre les rayons et le sol
+  if (haut > 3) {
+    const r = Math.min(34, L * 0.3);
+    ctx.strokeStyle = "rgba(196,208,224,0.7)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(A.x, A.y, r, -a, 0); ctx.stroke();
+    ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(A.x + r * 1.3, A.y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#c4d0e0"; ctx.font = "10.5px Arial"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText(fmt(haut, 0) + "°", A.x + r + 4, A.y - r * Math.sin(a / 2) - 2);
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  // légende
+  const midi = compterRayons(jr.midi);
+  let texte;
+  if (haut <= 0.2) texte = "Le Soleil est couché : le sol ne reçoit plus aucun rayon et se refroidit.";
+  else if (haut > 45) texte = "Le Soleil est haut : le sol lui fait presque face et ses rayons sont serrés. Chaque mètre carré reçoit beaucoup d'énergie : il chauffe.";
+  else if (haut > 20) texte = "Le Soleil est à mi-hauteur : le sol reçoit ses rayons de biais, un peu moins serrés.";
+  else texte = "Le Soleil est bas : le sol est presque de profil et ne reçoit que quelques rayons. Chaque mètre carré reçoit peu d'énergie : il chauffe peu.";
+  const html = `<h2>${n} rayon${n > 1 ? "s" : ""} sur ce morceau de sol</h2>
+    <p class="spec">Soleil à ${fmt(haut, 1)}° · ${fmt(Math.sin(a) * 100)} % de l'énergie d'un sol face au Soleil · à midi ce jour-là : ${midi} rayon${midi > 1 ? "s" : ""}</p>
+    <p>${texte}</p>`;
+  if (html !== legende2Prec) { ap2.legende.innerHTML = html; legende2Prec = html; }
+}
+
 // ---------- Animation ----------
 const u = new THREE.Vector3();
 let tPrec = 0;
@@ -522,6 +609,7 @@ S.onFrame(({ time }) => {
   for (const l of LIEUX) document.getElementById("r-" + l.id).setAttribute("aria-pressed", String(Math.abs(l.lat - sim.lat) < 0.3));
 
   dessinerApercu(sj, jr, h);
+  dessinerRayons(h, jr, time);
 });
 
 S.start();

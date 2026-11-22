@@ -160,29 +160,34 @@ dl.glossaire dd { margin: 2px 0 0; line-height: 1.5; }
   padding: 8px 12px; border-radius: 4px;
 }
 
-/* Encart d'aperçu sur le côté de la vue 3D (option apercu de createSchema) */
-#apercu {
-  position: fixed; margin: 0;
+/* Encarts d'aperçu sur le côté de la vue 3D (option apercu de createSchema), empilés en colonne */
+#apercus {
+  position: fixed;
   top: max(16px, env(safe-area-inset-top, 0px));
   right: max(16px, env(safe-area-inset-right, 0px));
-  width: 260px; max-height: calc(100% - 80px); overflow-y: auto;
+  max-height: calc(100% - 80px); overflow-y: auto;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
+}
+.apercu {
+  margin: 0; flex: none;
+  width: 260px;
   display: flex; flex-direction: column; gap: 10px;
   padding: 14px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   backdrop-filter: blur(8px);
 }
-#apercu.grand { width: 390px; }
-#apercu .tete { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-#apercu .eyebrow { margin: 0; }
-#apercu .taille {
+.apercu.grand { width: 390px; }
+.apercu .tete { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.apercu .eyebrow { margin: 0; }
+.apercu .taille {
   font: 400 11.5px/1 var(--font-body); color: var(--ink-strong);
   background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 4px;
   padding: 5px 8px; cursor: pointer; flex: none;
 }
-#apercu .taille:hover { border-color: var(--ink-dim); }
-#apercu figcaption { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; }
-#apercu h2 { font: 400 19px/1.2 var(--font-title); color: var(--title); margin: 0; }
-#apercu p { margin: 0; }
+.apercu .taille:hover { border-color: var(--ink-dim); }
+.apercu figcaption { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; }
+.apercu h2 { font: 400 19px/1.2 var(--font-title); color: var(--title); margin: 0; }
+.apercu p { margin: 0; }
 
 @media (max-width: 760px) {
   #panel {
@@ -197,13 +202,14 @@ dl.glossaire dd { margin: 2px 0 0; line-height: 1.5; }
   body.schema > .brand { bottom: auto; top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); height: 32px; }
   #notice { top: max(60px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); max-width: calc(100% - 24px); }
   .lbl { font-size: 10.5px; padding: 3px 5px; }
-  #apercu { right: auto; left: max(12px, env(safe-area-inset-left, 0px)); top: max(12px, env(safe-area-inset-top, 0px)); width: 150px; padding: 8px; gap: 6px; }
-  #apercu.grand { width: 225px; }
-  #apercu .tete { flex-direction: column; align-items: flex-start; gap: 4px; }
-  #apercu .taille { font-size: 10.5px; padding: 4px 6px; }
-  #apercu .eyebrow { font-size: 9px; letter-spacing: .18em; }
-  #apercu h2 { font-size: 14px; }
-  #apercu figcaption p { display: none; }
+  #apercus { right: auto; left: max(12px, env(safe-area-inset-left, 0px)); top: max(12px, env(safe-area-inset-top, 0px)); max-height: 52%; align-items: flex-start; gap: 8px; }
+  .apercu { width: 150px; padding: 8px; gap: 6px; }
+  .apercu.grand { width: 225px; }
+  .apercu .tete { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .apercu .taille { font-size: 10.5px; padding: 4px 6px; }
+  .apercu .eyebrow { font-size: 9px; letter-spacing: .18em; }
+  .apercu h2 { font-size: 14px; }
+  .apercu figcaption p { display: none; }
 }
 
 /* =====================================================================
