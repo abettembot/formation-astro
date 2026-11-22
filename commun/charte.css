@@ -289,4 +289,10 @@ body.accueil { min-height: 100vh; font-size: 15px; line-height: 1.55; }
 .accueil footer .brand { height: 28px; opacity: .7; }
 .accueil footer a { color: var(--ink); }
 
+/* Catalogue intégré sur reperes-astro.fr (integration/, dans une iframe) : fond transparent, sans marges hautes */
+body.integre { min-height: 0; background: transparent; overflow: hidden; }
+.integre .catalogue { padding-block: 4px 8px; }
+.integre .wrap { max-width: none; padding-left: 0; padding-right: 0; }
+.integre .card { background: rgba(14, 24, 48, .78); }
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catalogue des supports · intégration</title>
+<meta name="description" content="Catalogue des supports pédagogiques, à intégrer sur reperes-astro.fr. Généré automatiquement à partir de la page d'accueil.">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="../commun/charte.css">
+</head>
+<body class="accueil integre">
+<!--
+  Catalogue à intégrer sur reperes-astro.fr (via integration.js, dans une iframe).
+  Rien à maintenir ici : le contenu est lu à chaque affichage dans ../index.html
+  (sommaire + rubriques + cartes), les liens sont rendus absolus vers GitHub Pages.
+-->
+<main class="catalogue">
+  <div class="wrap" id="catalogue">
+    <p class="intro">Chargement du catalogue…</p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const racine = new URL('../', location.href);           // https://abettembot.github.io/formation-astro/
+  const zone = document.getElementById('catalogue');
+  const dansIframe = window.parent !== window;
+  const envoyer = (msg) => { if (dansIframe) window.parent.postMessage({ source: 'reperes-catalogue', ...msg }, '*'); };
+
+  fetch(new URL('index.html', racine), { cache: 'no-cache' })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then((html) => {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const wrap = doc.querySelector('main.catalogue .wrap');
+      // L'en-tête « Programme / Les supports disponibles » fait doublon avec le titre de la page WordPress.
+      wrap.querySelectorAll(':scope > .eyebrow, :scope > h2').forEach((el) => el.remove());
+      // Liens et images : chemins relatifs de l'accueil -> adresses absolues sur GitHub Pages.
+      wrap.querySelectorAll('[href]').forEach((el) => {
+        const h = el.getAttribute('href');
+        if (h.startsWith('#')) return;
+        el.href = new URL(h, racine).href;
+        el.target = '_blank';
+        el.rel = 'noopener';
+      });
+      wrap.querySelectorAll('[src]').forEach((el) => { el.src = new URL(el.getAttribute('src'), racine).href; });
+      zone.replaceChildren(...wrap.childNodes);
+    })
+    .catch(() => {
+      zone.innerHTML = '<p class="intro">Le catalogue n’a pas pu être chargé. <a href="' + racine.href + '" target="_blank" rel="noopener">Voir les supports pédagogiques</a>.</p>';
+    });
+
+  // Sommaire : dans l'iframe, c'est la page WordPress qui doit défiler, pas l'iframe.
+  zone.addEventListener('click', (e) => {
+    const lien = e.target.closest('a[href^="#"]');
+    if (!lien) return;
+    const cible = document.querySelector(lien.getAttribute('href'));
+    if (!cible) return;
+    e.preventDefault();
+    if (dansIframe) envoyer({ defiler: cible.getBoundingClientRect().top + window.scrollY });
+    else cible.scrollIntoView({ behavior: 'smooth' });
+  });
+
+  // Hauteur réelle du contenu, transmise à la page parente pour ajuster l'iframe.
+  let derniere = 0;
+  const signaler = () => {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (h !== derniere) { derniere = h; envoyer({ hauteur: h }); }
+  };
+  new ResizeObserver(signaler).observe(document.documentElement);
+  window.addEventListener('load', signaler);
+})();
+</script>
+</body>
+</html>

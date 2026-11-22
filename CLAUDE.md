@@ -32,6 +32,7 @@ Si un support est modifié de façon notable, mettre sa carte (et sa vignette si
 - `index.html` : accueil (couverture + catalogue des supports).
 - `<nom-du-schema>/index.html` : un dossier par schéma (nom en minuscules avec tirets). Modèle de référence : `telescope-newton/index.html`.
 - `.nojekyll` : désactive Jekyll sur GitHub Pages.
+- `integration/` : le catalogue intégré sur reperes-astro.fr (page WordPress « Supports pédagogiques »). L'administrateur y a collé une seule ligne, `<script src="https://abettembot.github.io/formation-astro/integration/integration.js"></script>`, qui crée une iframe vers `integration/`. Cette page relit `index.html` à chaque affichage (contenu de `main.catalogue .wrap`, liens rendus absolus) : rien à y maintenir. Garder cette structure de l'accueil, ou adapter `integration/index.html` si elle change.
 
 ## Créer un nouveau schéma
 1. Copier l'en-tête `<head>` du télescope à l'identique (charset, viewport, lien `../commun/charte.css`, import map Three.js `three@0.186.1`), en changeant seulement `<title>` et `description`.
