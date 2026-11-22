@@ -31,6 +31,11 @@ export const materiaux = {
   alu: () => new THREE.MeshStandardMaterial({ color: 0xb9c0ca, roughness: 0.3, metalness: 0.85 }),
   caoutchouc: () => new THREE.MeshStandardMaterial({ color: 0x121214, roughness: 0.95 }),
   lentille: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
+  // astre éclairé par une seule source (planète, Lune) : mat. Pour une face de nuit vraiment sombre,
+  // le schéma met aussi scene.environment à null (l'environnement éclaire sinon tout l'objet).
+  astre: (map) => new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0, envMapIntensity: 0 }),
+  // objet lumineux par lui-même (Soleil, repère toujours visible) : insensible à l'éclairage
+  lumineux: (couleur, opacite = 1) => new THREE.MeshBasicMaterial({ color: couleur, transparent: opacite < 1, opacity: opacite, side: THREE.DoubleSide, toneMapped: false, depthWrite: opacite >= 1 }),
 };
 
 // ---------- Aides géométriques ----------
@@ -70,8 +75,14 @@ const MOBILE = 760;
  *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue)
  *  - eclate : true pour afficher le curseur « Vue éclatée »
  *  - commandes : [{ type:"bascule", id, label, actif, onChange(v) }
- *                 | { type:"curseur", id, label, min, max, pas, valeur, format(v), onInput(v) }]
+ *                 | { type:"curseur", id, label, min, max, pas, valeur, format(v), onInput(v) }
+ *                 | { type:"raccourcis", id, label, boutons:[{ id, label, onClick() }] }]
+ *                 Un bouton de raccourci a l'id HTML « r-<id> » (aria-pressed réglable par le schéma).
  *  - intro : () => HTML de la fiche affichée quand rien n'est sélectionné
+ *  - apercu : { titre } — encart fixe sur le côté de la vue 3D, avec un canvas et une légende
+ *             que le schéma dessine (api.apercu = { el, canvas, legende }). Un bouton bascule entre
+ *             deux tailles (normale, ×1,5) ; le canvas doit donc lire sa largeur à chaque dessin.
+ *  - aide : texte d'aide en bas du panneau (remplace le texte par défaut)
  */
 export function createSchema(cfg) {
   document.body.classList.add("schema");
@@ -86,6 +97,7 @@ export function createSchema(cfg) {
     { type: "bascule", id: "labels", label: "Étiquettes", actif: true },
     { type: "bascule", id: "anim", label: "Animation", actif: true }];
   const curseurs = commandes.filter((c) => c.type === "curseur");
+  const raccourcis = commandes.filter((c) => c.type === "raccourcis");
   panel.innerHTML = `
     <header>
       <a class="home" href="../">← Tous les supports</a>
@@ -107,6 +119,11 @@ export function createSchema(cfg) {
         <input id="c-${c.id}" type="range" min="${c.min}" max="${c.max}" step="${c.pas ?? 1}" value="${c.valeur}">
         <output id="o-${c.id}"></output>
       </div>`).join("")}
+      ${raccourcis.map((c) => `
+      <div class="raccourcis" role="group" aria-label="${c.label}">
+        <span class="lib">${c.label}</span>
+        <div class="toggles">${c.boutons.map((b) => `<button id="r-${b.id}" type="button" aria-pressed="false">${b.label}</button>`).join("")}</div>
+      </div>`).join("")}
       <div class="toggles">
         ${bascules.map((b) => `<button id="t-${b.id}" type="button" aria-pressed="${!!b.actif}">${b.label}</button>`).join("")}
       </div>
@@ -115,7 +132,7 @@ export function createSchema(cfg) {
       </div>
     </section>
     <section class="group" id="info" aria-live="polite"></section>
-    <p class="hint">Glisser : tourner · Molette ou pincer : zoomer · Clic droit ou deux doigts : déplacer · Cliquer un élément : l'expliquer</p>`;
+    <p class="hint">${cfg.aide ?? "Glisser : tourner · Molette ou pincer : zoomer · Clic droit ou deux doigts : déplacer · Cliquer un élément : l'expliquer"}</p>`;
   // logo de l'association, discret dans un coin de la vue 3D
   const brand = document.createElement("a");
   brand.className = "brand";
@@ -124,6 +141,26 @@ export function createSchema(cfg) {
   brand.title = "Repères-Astro";
   brand.innerHTML = `<img src="${new URL("images/logo-reperes-astro.png", import.meta.url)}" alt="Repères-Astro.fr" width="323" height="100">`;
   document.body.append(stage, labelsEl, panel, notice, brand);
+  // encart d'aperçu (optionnel), dessiné par le schéma
+  let apercu = null;
+  if (cfg.apercu) {
+    const fig = document.createElement("figure"); fig.id = "apercu";
+    fig.innerHTML = `<div class="tete"><div class="eyebrow">${cfg.apercu.titre}</div><button type="button" class="taille" aria-pressed="false">Agrandir</button></div><canvas class="ecran"></canvas><figcaption></figcaption>`;
+    document.body.append(fig);
+    // deux tailles ; le choix est retenu sur cet appareil
+    const btn = fig.querySelector(".taille");
+    const taille = (grand) => {
+      fig.classList.toggle("grand", grand);
+      btn.setAttribute("aria-pressed", String(grand));
+      btn.textContent = grand ? "Réduire" : "Agrandir";
+      try { localStorage.setItem("apercu-grand", grand ? "1" : "0"); } catch {}
+    };
+    let pref = false;
+    try { pref = localStorage.getItem("apercu-grand") === "1"; } catch {}
+    taille(pref);
+    btn.addEventListener("click", () => taille(!fig.classList.contains("grand")));
+    apercu = { el: fig, canvas: fig.querySelector("canvas"), legende: fig.querySelector("figcaption") };
+  }
 
   // ---------- Rendu ----------
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -144,7 +181,8 @@ export function createSchema(cfg) {
   controls.minDistance = cfg.distanceMin ?? 4;
   controls.maxDistance = cfg.distanceMax ?? 60;
 
-  scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x1a1410, 0.7));
+  // éclairage par défaut (exposé en api.lumieres : un schéma peut le régler)
+  const ambiance = new THREE.HemisphereLight(0xbcd0ff, 0x1a1410, 0.7); scene.add(ambiance);
   const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(6, 10, 8); scene.add(key);
   const rim = new THREE.DirectionalLight(0x8fb3ff, 0.8); rim.position.set(-8, 3, -6); scene.add(rim);
 
@@ -175,7 +213,8 @@ export function createSchema(cfg) {
   let time = 0;
 
   const api = {
-    THREE, scene, camera, renderer, controls, state, parts, ciel,
+    THREE, scene, camera, renderer, controls, state, parts, ciel, apercu,
+    lumieres: { ambiance, principale: key, contre: rim },
     get time() { return time; },
     get explode() { return ease(state.explode); },
     reduced,
@@ -283,6 +322,7 @@ export function createSchema(cfg) {
       b.onChange && b.onChange(state[b.id]);
     });
   }
+  for (const c of raccourcis) for (const b of c.boutons) panel.querySelector(`#r-${b.id}`).addEventListener("click", () => b.onClick());
   for (const c of curseurs) {
     const input = panel.querySelector(`#c-${c.id}`), out = panel.querySelector(`#o-${c.id}`);
     const upd = () => { state[c.id] = +input.value; out.textContent = c.format ? c.format(state[c.id]) : input.value; c.onInput && c.onInput(state[c.id]); };

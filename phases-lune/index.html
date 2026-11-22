@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phases de la Lune</title>
+<meta name="description" content="Schéma 3D interactif des phases de la Lune : Soleil, Terre et Lune vus de dessus, la Lune vue par un observateur terrestre, et le vocabulaire des phases (croissant, quartier, gibbeuse).">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, textureHalo, legende, css } from "../commun/schema.js";
+
+// ---------- Échelle et constantes ----------
+// Schéma NON proportionnel. Terre à l'échelle 1 unité = 4 000 km (rayon 1,6) ;
+// Lune grossie (vrai rayon : 0,43), orbite très raccourcie (vraie distance : 96 unités),
+// Soleil symbolique, beaucoup trop près et trop petit.
+// Repère vu de dessus, depuis le pôle Nord : +X à droite, −Z en haut. Les angles sont comptés
+// depuis +X dans le sens inverse des aiguilles d'une montre (sens de rotation de la Terre
+// et de révolution de la Lune). Le Soleil est à gauche (angle 180°).
+const DEG = Math.PI / 180;
+const LUNAISON = 29.53;              // jours entre deux nouvelles lunes
+const R_TERRE = 1.6, R_LUNE = 0.6, R_ORBITE = 8;
+const X_SOLEIL = -19, R_SOLEIL = 3.2;
+const X_RAYONS = X_SOLEIL + R_SOLEIL + 0.4, X_FIN = 13.5;
+const VITESSE = 4;                   // heures simulées par seconde (« Temps qui passe »)
+
+// ---------- État : âge de la Lune (jours) et heure solaire de l'observateur ----------
+const sim = { age: 7.4, heure: 20, anim: null };
+const wrap = (a) => ((((a + 180) % 360) + 360) % 360) - 180;         // → [−180, 180[
+const mod = (v, m) => ((v % m) + m) % m;
+const elongation = () => (sim.age / LUNAISON) * 360;                    // 0 = nouvelle lune, 180 = pleine
+const angleLune = () => 180 + elongation();                             // en degrés
+const angleObs = () => 180 + (sim.heure - 12) * 15;                     // midi : face au Soleil
+const dir = (aDeg, r = 1, out = new THREE.Vector3()) => out.set(Math.cos(aDeg * DEG) * r, 0, -Math.sin(aDeg * DEG) * r);
+/** Écart d'un astre au zénith de l'observateur (degrés), positif vers l'est. Hauteur = 90 − |écart|. */
+const ecart = (aDeg) => wrap(aDeg - angleObs());
+
+// ---------- Les phases ----------
+const PHASES = [
+  { id: "nl", nom: "Nouvelle lune", age: 0, heure: 12,
+    desc: "La Lune passe entre la Terre et le Soleil : sa moitié éclairée nous tourne le dos. Elle se lève et se couche avec le Soleil, on ne la voit pas." },
+  { id: "pc", nom: "Premier croissant", age: 4, heure: 19.5,
+    desc: "Un fin croissant éclairé à droite, bas à l'ouest juste après le coucher du Soleil. On devine souvent le reste du disque : c'est la lumière cendrée." },
+  { id: "pq", nom: "Premier quartier", age: 7.38, heure: 20,
+    desc: "La moitié droite du disque est éclairée. La Lune est à 90° du Soleil : haute au coucher du Soleil, elle se couche vers minuit." },
+  { id: "gc", nom: "Gibbeuse croissante", age: 11, heure: 22,
+    desc: "Plus de la moitié du disque est éclairée, et cette partie grandit. Visible dès l'après-midi et une bonne partie de la nuit." },
+  { id: "pl", nom: "Pleine lune", age: 14.77, heure: 0,
+    desc: "La Lune est à l'opposé du Soleil : toute sa face visible est éclairée. Elle se lève au coucher du Soleil et reste visible toute la nuit." },
+  { id: "gd", nom: "Gibbeuse décroissante", age: 18.5, heure: 3,
+    desc: "Plus de la moitié est éclairée, mais la partie éclairée diminue, à gauche désormais. La Lune se lève dans la soirée et reste visible jusqu'au matin." },
+  { id: "dq", nom: "Dernier quartier", age: 22.15, heure: 5,
+    desc: "La moitié gauche est éclairée. La Lune se lève vers minuit et est haute au lever du Soleil : on la voit aussi le matin, en plein jour." },
+  { id: "dc", nom: "Dernier croissant", age: 25.5, heure: 5,
+    desc: "Un fin croissant éclairé à gauche, bas à l'est juste avant le lever du Soleil." },
+];
+function phaseDe(E) {
+  if (E < 6 || E >= 354) return PHASES[0];
+  return PHASES[[84, 96, 174, 186, 264, 276, 354].findIndex((b) => E < b) + 1];
+}
+function allerA(p) {
+  const dAge = mod(p.age - sim.age + LUNAISON / 2, LUNAISON) - LUNAISON / 2;
+  const dH = mod(p.heure - sim.heure + 12, 24) - 12;
+  sim.anim = { age: sim.age, heure: sim.heure, dAge, dH, t: 0 };
+}
+const fmtHeure = (v) => { const m = Math.round(mod(v, 24) * 60) % 1440; return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmt1 = (v) => v.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+let pilote = false; // vrai quand le script recale les curseurs (onInput ne doit rien changer)
+const S = createSchema({
+  surtitre: "Support de formation · Mécanique céleste",
+  titre: "Phases de la Lune",
+  sousTitre: "Lunaison de 29,5 jours · vue de l'hémisphère Nord",
+  distanceMax: 140,
+  aide: "Glisser la Lune ou la Terre : les déplacer · Glisser ailleurs : tourner la vue · Molette ou pincer : zoomer · Cliquer un élément : l'expliquer",
+  apercu: { titre: "Vu par l'observateur" },
+  commandes: [
+    { type: "curseur", id: "age", label: "Âge de la Lune", min: 0, max: 29.5, pas: 0.1, valeur: sim.age,
+      format: (v) => fmt1(v) + " j", onInput: (v) => { if (!pilote) { sim.age = v; sim.anim = null; } } },
+    { type: "curseur", id: "heure", label: "Heure", min: 0, max: 24, pas: 0.25, valeur: sim.heure,
+      format: fmtHeure, onInput: (v) => { if (!pilote) { sim.heure = v; sim.anim = null; } } },
+    { type: "raccourcis", id: "phases", label: "Aller à la phase", boutons: PHASES.map((p) => ({ id: p.id, label: p.nom, onClick: () => allerA(p) })) },
+    { type: "bascule", id: "temps", label: "Temps qui passe", actif: false },
+    { type: "bascule", id: "rayons", label: "Rayons", actif: true },
+    { type: "bascule", id: "moities", label: "Moitiés", actif: true },
+    { type: "bascule", id: "horizon", label: "Horizon", actif: true },
+    { type: "bascule", id: "noms", label: "Noms des phases", actif: true },
+  ],
+  vues: [
+    // sur téléphone (écran en hauteur), on monte assez haut pour voir toute l'orbite en largeur
+    { id: "dessus", label: "Dessus", exacte: true,
+      pos: () => innerWidth < 760 ? [0, Math.max(60, 25 / (0.69 * innerWidth / (innerHeight * 1.4))), 0.01] : [1.5, 46, 0.01],
+      cible: () => innerWidth < 760 ? [0, 0, 0] : [1.5, 0, 0] },
+    { id: "iso", label: "3/4", pos: [9, 15, 21], cible: [-4, -1, 0] },
+    { id: "proche", label: "Terre et Lune", pos: [2, 27, 0.01], cible: [2, 0, 0] },
+    // depuis la surface de la Terre, face à la Lune : on voit sa phase en 3D
+    { id: "terre", label: "Depuis la Terre", fov: 28, exacte: true, suivre: true,
+      pos: () => dir(angleLune(), R_TERRE + 0.2), cible: () => dir(angleLune(), R_ORBITE) },
+  ],
+  intro: () => `
+    <div class="eyebrow">Le principe</div>
+    <p>La Lune ne produit pas de lumière : elle renvoie celle du Soleil, qui éclaire toujours une moitié de la Lune. En 29,5 jours, la Lune fait le tour de la Terre. Selon sa position, nous voyons une part plus ou moins grande de sa moitié éclairée : ce sont les phases.</p>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "Arc clair : la moitié de la Lune éclairée par le Soleil. Elle est toujours tournée vers le Soleil." },
+      { couleur: COULEURS.corail, texte: "Arc corail : la moitié tournée vers la Terre, la seule que nous voyons." },
+      { couleur: COULEURS.ambre, texte: "Ce que nous voyons éclairé, c'est la partie commune aux deux moitiés. Comparez avec l'encart « Vu par l'observateur »." },
+    ])}
+    <p>Glissez la Lune sur son orbite, ou utilisez les raccourcis de phase. Faites tourner la Terre (curseur « Heure ») : la Lune se lève et se couche comme le Soleil, et n'est visible que lorsqu'elle est au-dessus de l'horizon de l'observateur. Le point de vue « Depuis la Terre » montre la Lune en 3D telle qu'on la voit d'ici.</p>
+    <div class="eyebrow">Les mots des phases</div>
+    <dl class="glossaire">
+      <dt>Lunaison</dt>
+      <dd>Le cycle complet des phases, d'une nouvelle lune à la suivante : 29,5 jours. L'âge de la Lune compte les jours depuis la dernière nouvelle lune.</dd>
+      <dt>Croissante, décroissante</dt>
+      <dd>Croissante : la partie éclairée grandit, de la nouvelle lune à la pleine lune. Décroissante : elle diminue ensuite, jusqu'à la nouvelle lune suivante.</dd>
+      <dt>Croissant</dt>
+      <dd>Moins de la moitié du disque est éclairée : on voit un arc lumineux, plus ou moins fin.</dd>
+      <dt>Quartier, ou « demi-lune »</dt>
+      <dd>La moitié du disque est éclairée. On voit bien un demi-disque, mais on parle de quartier car la Lune a parcouru un quart (premier quartier) ou trois quarts (dernier quartier) de son tour.</dd>
+      <dt>Gibbeuse</dt>
+      <dd>Plus de la moitié du disque est éclairée, sans qu'il soit plein. Du latin <i>gibbus</i>, « bossu » : la Lune paraît bombée.</dd>
+      <dt>Terminateur</dt>
+      <dd>La limite entre la partie éclairée et la partie sombre. Les reliefs y font de longues ombres : c'est là qu'on voit le mieux les cratères au télescope.</dd>
+      <dt>Lumière cendrée</dt>
+      <dd>La faible lueur de la partie sombre, bien visible autour d'un fin croissant. C'est la lumière du Soleil renvoyée par la Terre vers la Lune.</dd>
+      <dt>« La Lune est menteuse »</dt>
+      <dd>Dans l'hémisphère Nord, la Lune croissante est éclairée à droite et dessine un D, comme « décroît » ; la Lune décroissante dessine un C, comme « croît ».</dd>
+      <dt>Montante, descendante</dt>
+      <dd>À ne pas confondre avec croissante et décroissante : ces mots décrivent la hauteur de la Lune dans le ciel au fil du mois, pas sa phase.</dd>
+    </dl>
+    <p class="spec">Schéma non proportionnel : la Lune est en réalité à 30 diamètres terrestres, le Soleil 390 fois plus loin. L'observateur est placé dans le plan de l'orbite.</p>`,
+});
+
+// ---------- Éclairage : une seule source, le Soleil, à gauche ----------
+// Ses rayons arrivent parallèles : une lumière directionnelle venant de −X.
+S.lumieres.principale.position.set(-1, 0, 0);
+S.lumieres.principale.intensity = 3.2;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.25; // à peine de quoi deviner les faces de nuit
+S.scene.environment = null;          // pas d'éclairage d'ambiance venu de partout : la face de nuit reste sombre
+
+// ---------- Textures dessinées (aucune image à télécharger) ----------
+function alea(graine) { let x = graine; return () => (x = (x * 16807) % 2147483647) / 2147483647; }
+function canvasTexture(w, h, dessin) {
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  dessin(cv.getContext("2d"), w, h);
+  return cv;
+}
+const versTexture = (cv) => { const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
+// coordonnées équirectangulaires : longitude −180…180, latitude −90…90
+const ux = (lon, w) => (0.5 + lon / 360) * w, vy = (lat, h) => (90 - lat) / 180 * h;
+
+const cvTerre = canvasTexture(1024, 512, (ctx, w, h) => {
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, "#2a5d8f"); g.addColorStop(0.5, "#1c4a7e"); g.addColorStop(1, "#2a5d8f");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  const r = alea(11);
+  // continents schématiques : [longitude, latitude, étendue en longitude, en latitude, nombre de taches]
+  const CONT = [[-100, 48, 28, 14, 70], [-75, 62, 25, 8, 30], [-42, 73, 10, 6, 18], [-60, -15, 14, 22, 60], [15, 52, 18, 8, 40],
+    [20, 5, 18, 22, 70], [90, 52, 50, 13, 110], [80, 22, 12, 8, 25], [105, 15, 10, 8, 20], [135, -25, 15, 9, 35]];
+  for (const [lon, lat, dl, db, n] of CONT) {
+    for (let i = 0; i < n; i++) {
+      const lo = lon + (r() - 0.5) * 2 * dl, la = lat + (r() - 0.5) * 2 * db, rad = (3 + r() * 6) / 180 * h;
+      ctx.fillStyle = la > 55 ? "#7d8a6a" : la < 25 && la > -25 && r() < 0.5 ? "#a8915e" : r() < 0.5 ? "#4f7a3c" : "#638a48";
+      for (const dx of [0, -w, w]) { ctx.beginPath(); ctx.ellipse(ux(lo, w) + dx, vy(la, h), rad / Math.max(0.35, Math.cos(la * DEG)), rad, 0, 0, 2 * Math.PI); ctx.fill(); }
+    }
+  }
+  // calottes polaires
+  for (const [y0, y1] of [[0, 0.1], [1, 0.92]]) {
+    const gg = ctx.createLinearGradient(0, y0 * h, 0, y1 * h);
+    gg.addColorStop(0, "#f2f5f8"); gg.addColorStop(0.7, "#e6ecf2"); gg.addColorStop(1, "rgba(230,236,242,0)");
+    ctx.fillStyle = gg; ctx.fillRect(0, Math.min(y0, y1) * h, w, Math.abs(y1 - y0) * h);
+  }
+});
+
+// Mers lunaires de la face visible : [latitude, longitude, rayon en degrés]
+const MERS = [[33, -16, 11], [28, 17, 8], [8, 31, 9], [17, 59, 5], [18, -57, 15], [-21, -17, 8], [-8, 51, 7],
+  [56, 0, 4], [-15, 35, 4], [-24, -39, 4], [3, -20, 6], [40, -30, 6]];
+const cvLune = canvasTexture(1024, 512, (ctx, w, h) => {
+  ctx.fillStyle = "#a4a39e"; ctx.fillRect(0, 0, w, h);
+  const r = alea(5);
+  for (let i = 0; i < 900; i++) { // grain et petits cratères
+    const x = r() * w, y = r() * h, rad = 1 + r() * r() * 9;
+    ctx.fillStyle = r() < 0.5 ? "rgba(70,70,68,0.18)" : "rgba(230,230,225,0.16)";
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.fill();
+  }
+  ctx.fillStyle = "rgba(68,68,70,0.55)";
+  for (const [la, lo, rd] of MERS) {
+    for (let k = 0; k < 6; k++) { // contour irrégulier
+      const a = r() * 2 * Math.PI, d = rd * 0.35 * r();
+      const la2 = la + Math.sin(a) * d, lo2 = lo + Math.cos(a) * d, rr = rd * (0.65 + r() * 0.35) / 180 * h;
+      ctx.beginPath(); ctx.ellipse(ux(lo2, w), vy(la2, h), rr / Math.cos(la2 * DEG), rr, 0, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+});
+/** Face visible de la Lune (projection vue de la Terre, nord en haut), pour l'encart. */
+const FACE = (() => {
+  const N = 256, src = cvLune.getContext("2d").getImageData(0, 0, cvLune.width, cvLune.height).data;
+  const cv = document.createElement("canvas"); cv.width = cv.height = N;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(N, N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const x = (i + 0.5) / N * 2 - 1, y = 1 - (j + 0.5) / N * 2, q = x * x + y * y;
+    if (q > 1) continue;
+    const z = Math.sqrt(1 - q), lat = Math.asin(y), lon = Math.atan2(x, z);
+    const u = Math.floor((0.5 + lon / (2 * Math.PI)) * cvLune.width), v = Math.floor((0.5 - lat / Math.PI) * cvLune.height);
+    const s = (v * cvLune.width + u) * 4, k = (j * N + i) * 4, assomb = 0.82 + 0.18 * z;
+    img.data[k] = src[s] * assomb; img.data[k + 1] = src[s + 1] * assomb; img.data[k + 2] = src[s + 2] * assomb;
+    img.data[k + 3] = 255 * Math.min(1, (1 - Math.sqrt(q)) * N / 2); // bord adouci
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+})();
+
+// ---------- Soleil ----------
+const soleil = S.part("soleil", "Soleil", {
+  ancre: [X_SOLEIL, 0, -R_SOLEIL - 0.2],
+  texte: "Il éclaire toujours la moitié de la Lune tournée vers lui, comme la moitié de la Terre où il fait jour. Il est si loin que ses rayons arrivent pratiquement parallèles. Ici, il est dessiné beaucoup trop près et trop petit.",
+  chiffres: "Distance : 150 millions de km · diamètre : 1,39 million de km · sa lumière met 8 min 20 s pour nous parvenir",
+});
+S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd98a), X_SOLEIL, 0, 0));
+{
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: textureHalo(), color: COULEURS.ambre, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.position.set(X_SOLEIL, 0, 0); halo.scale.setScalar(R_SOLEIL * 4.2);
+  S.scene.add(halo);
+}
+
+// ---------- Terre (tourne sur elle-même) et observateur ----------
+const terre = new THREE.Group();
+S.scene.add(terre);
+const pTerre = S.part("terre", "Terre", {
+  parent: terre, etiquette: false,
+  texte: "Vue ici depuis le dessus du pôle Nord. Elle tourne sur elle-même en 24 heures, dans le sens inverse des aiguilles d'une montre : d'ouest en est. La moitié tournée vers le Soleil est dans le jour, l'autre dans la nuit. Cette rotation fait se lever et se coucher la Lune, comme le Soleil.",
+  chiffres: "Diamètre : 12 742 km · un tour en 24 h par rapport au Soleil · axe incliné de 23,4° (non représenté)",
+});
+S.add(pTerre, mesh(new THREE.SphereGeometry(R_TERRE, 64, 32), M.astre(versTexture(cvTerre))));
+S.label("Terre", () => new THREE.Vector3(0, 0, -R_TERRE - 0.1), { partId: "terre" });
+
+const obs = S.part("observateur", "Observateur", {
+  parent: terre, etiquette: false,
+  texte: "Il ne voit que la moitié du ciel située au-dessus de son horizon (trait gris). Sa place sur la Terre donne l'heure : midi face au Soleil, minuit à l'opposé, 18 h au coucher du Soleil. L'encart montre ce qu'il voit, tourné vers le sud : l'est à gauche, l'ouest à droite.",
+  chiffres: "Heure solaire · 15° de rotation par heure · la Lune passe au sud environ 50 min plus tard chaque jour",
+});
+{ // petit bonhomme debout sur la Terre, la tête vers son zénith (+X local)
+  const mat = M.lumineux(0xf6f9fd), R = R_TERRE;
+  for (const s of [-1, 1]) {
+    const jambe = mesh(axeX(new THREE.CylinderGeometry(0.035, 0.035, 0.36, 8)), mat, R + 0.17, 0, s * 0.06);
+    jambe.rotation.y = s * 0.18; S.add(obs, jambe);
+    const bras = mesh(axeX(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8)), mat, R + 0.44, 0, s * 0.11);
+    bras.rotation.y = s * 0.55; S.add(obs, bras);
+  }
+  S.add(obs, mesh(axeX(new THREE.CylinderGeometry(0.06, 0.05, 0.3, 10)), mat, R + 0.48, 0, 0));
+  S.add(obs, mesh(new THREE.SphereGeometry(0.1, 16, 12), mat, R + 0.72, 0, 0));
+}
+const pointObs = (h = R_TERRE + 0.72) => dir(angleObs(), h);
+S.label("Observateur", () => pointObs(R_TERRE + 0.9), { partId: "observateur" });
+
+// ---------- Lune (révolution et rotation synchrone) ----------
+const lune = new THREE.Group();
+S.scene.add(lune);
+const pLune = S.part("lune", "Lune", {
+  parent: lune, etiquette: false,
+  texte: "Elle tourne autour de la Terre dans le même sens que la Terre tourne sur elle-même. Elle tourne aussi sur elle-même en un tour d'orbite : elle nous montre donc toujours la même face, avec ses taches sombres, les mers. Son orbite est inclinée de 5° : le plus souvent, elle passe au-dessus ou au-dessous de l'ombre de la Terre, d'où l'absence d'éclipse à chaque pleine lune.",
+  chiffres: "Diamètre : 3 474 km · distance : 384 400 km · un tour en 27,3 j par rapport aux étoiles · 29,5 j entre deux nouvelles lunes",
+});
+S.add(pLune, mesh(new THREE.SphereGeometry(R_LUNE, 48, 24), M.astre(versTexture(cvLune))));
+S.label("Lune", () => lune.position.clone().add(new THREE.Vector3(0, 0, -R_LUNE - 0.1)), { partId: "lune" });
+
+// les deux moitiés : éclairée (vers le Soleil) et visible (vers la Terre)
+const anneau = (r1, r2, debut, couleur) => {
+  const g = new THREE.RingGeometry(r1, r2, 48, 1, debut * DEG, Math.PI); g.rotateX(-Math.PI / 2); // plan XZ, angles du repère
+  return mesh(g, M.lumineux(couleur, 0.85));
+};
+const moitieEclairee = anneau(R_LUNE + 0.1, R_LUNE + 0.18, 90, COULEURS.etoile);   // côté −X : vers le Soleil
+const moitieVisible = anneau(R_LUNE + 0.26, R_LUNE + 0.34, -90, COULEURS.corail);  // côté +X local : vers la Terre
+S.scene.add(moitieEclairee); lune.add(moitieVisible);
+
+/** Vue « Depuis la Terre » (champ étroit) : on masque les repères vus par la tranche. */
+const depuisTerre = () => S.camera.fov < 32;
+
+// ---------- Orbite et noms des phases ----------
+const orbite = (() => {
+  const pts = [];
+  for (let i = 0; i <= 128; i++) pts.push(dir(i / 128 * 360, R_ORBITE));
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.3, gapSize: 0.25, transparent: true, opacity: 0.45, depthWrite: false }));
+  l.computeLineDistances(); S.scene.add(l);
+  return l;
+})();
+for (const p of PHASES) {
+  const a = 180 + p.age / LUNAISON * 360, r = R_ORBITE + 1.9 + 1.6 * Math.abs(Math.cos(a * DEG));
+  const L = S.label(p.nom, () => dir(a, r), { visible: () => S.state.noms && !depuisTerre() });
+  L.el.title = "Amener la Lune en " + p.nom.toLowerCase();
+  L.el.addEventListener("click", () => allerA(p));
+}
+
+// ---------- Rayons du Soleil : lignes parallèles et grains de lumière ----------
+const ZR = Array.from({ length: 19 }, (_, i) => -9 + i);
+const NP = 5;
+const rayons = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(ZR.length * 6), 3)),
+  new THREE.LineBasicMaterial({ color: COULEURS.etoile, transparent: true, opacity: 0.16, depthWrite: false }));
+const grains = new THREE.Points(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(ZR.length * NP * 3), 3)),
+  new THREE.PointsMaterial({ size: 0.45, map: textureHalo(), color: COULEURS.ambre, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+rayons.frustumCulled = grains.frustumCulled = false;
+S.scene.add(rayons, grains);
+S.label("Rayons du Soleil", () => new THREE.Vector3(X_RAYONS + 2.2, 0, -9), { lumiere: true, visible: () => S.state.rayons && !depuisTerre() });
+/** Abscisse où le rayon de cote z rencontre la Terre ou la Lune (ombre au-delà). */
+function finRayon(z) {
+  let x = X_FIN;
+  for (const [c, r] of [[terre.position, R_TERRE], [lune.position, R_LUNE]]) {
+    const dz = z - c.z;
+    if (Math.abs(dz) < r) x = Math.min(x, c.x - Math.sqrt(r * r - dz * dz));
+  }
+  return x;
+}
+
+// ---------- Horizon de l'observateur et ligne de visée ----------
+const ligne = (couleur, opacite, n = 2) => {
+  const l = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3)),
+    new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: opacite, depthWrite: false }));
+  l.frustumCulled = false; S.scene.add(l); return l;
+};
+const setLigne = (l, pts) => { const a = l.geometry.attributes.position; pts.forEach((p, i) => a.setXYZ(i, p.x, p.y, p.z)); a.needsUpdate = true; };
+const lHorizon = ligne(0xc4d0e0, 0.5), lVisee = ligne(COULEURS.ambre, 0.6);
+const versEst = () => { const a = angleObs() * DEG; return new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a)); };
+S.label("Est", () => pointObs(R_TERRE).addScaledVector(versEst(), 6.2), { visible: () => S.state.horizon && !depuisTerre() });
+S.label("Ouest", () => pointObs(R_TERRE).addScaledVector(versEst(), -6.2), { visible: () => S.state.horizon && !depuisTerre() });
+
+// ---------- Glisser la Lune ou la Terre avec la souris ou le doigt ----------
+{
+  const cv = S.renderer.domElement, ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  const plan = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), pt = new THREE.Vector3();
+  let glisse = null;
+  const viser = (e) => {
+    const r = cv.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, S.camera);
+  };
+  // phase de capture : passe avant OrbitControls, qu'on désactive pendant le glisser
+  cv.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    viser(e);
+    glisse = ray.intersectObject(lune, true).length ? "lune" : ray.intersectObject(terre, true).length ? "terre" : null;
+    if (!glisse) return;
+    S.controls.enabled = false; sim.anim = null;
+    cv.setPointerCapture(e.pointerId);
+  }, { capture: true });
+  cv.addEventListener("pointermove", (e) => {
+    if (!glisse) return;
+    viser(e);
+    if (!ray.ray.intersectPlane(plan, pt)) return;
+    const a = Math.atan2(-pt.z, pt.x) / DEG;
+    if (glisse === "lune") sim.age = mod(a - 180, 360) / 360 * LUNAISON;
+    else sim.heure = mod((a - 180) / 15 + 12, 24);
+  });
+  const lacher = () => { if (glisse) { glisse = null; S.controls.enabled = true; } };
+  cv.addEventListener("pointerup", lacher);
+  cv.addEventListener("pointercancel", lacher);
+}
+
+// ---------- Encart : la Lune vue par l'observateur ----------
+const ap = S.apercu;
+/** Contour de la partie éclairée d'un disque (E : élongation en degrés ; éclairé à droite si croissante). */
+function cheminPhase(ctx, x, y, r, E) {
+  const k = Math.cos(E * DEG), rx = Math.abs(k) * r;
+  ctx.save(); ctx.translate(x, y); if (E > 180) ctx.scale(-1, 1);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2, false);                                  // bord éclairé
+  if (k > 0) ctx.ellipse(0, 0, rx, r, 0, Math.PI / 2, -Math.PI / 2, true);             // croissant : terminateur côté éclairé
+  else ctx.ellipse(0, 0, rx, r, 0, Math.PI / 2, 3 * Math.PI / 2, false);               // gibbeuse : terminateur côté sombre
+  ctx.restore();
+}
+function dessinerLune(ctx, x, y, r, E, sombre) {
+  ctx.save();
+  if (sombre > 0) { ctx.globalAlpha = sombre; ctx.drawImage(FACE, x - r, y - r, 2 * r, 2 * r); ctx.globalAlpha = 1; } // lumière cendrée
+  cheminPhase(ctx, x, y, r, E); ctx.clip();
+  ctx.drawImage(FACE, x - r, y - r, 2 * r, 2 * r);
+  ctx.restore();
+}
+const melange = (a, b, t) => `rgb(${[16, 8, 0].map((s) => Math.round(((a >> s) & 255) * (1 - t) + ((b >> s) & 255) * t)).join(",")})`;
+const ETOILES = (() => { const r = alea(3); return Array.from({ length: 40 }, () => [r(), r(), 0.3 + r() * 0.9]); })();
+let legendePrec = "";
+function dessinerApercu(E) {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2);
+  const W = cv.clientWidth, Hs = Math.round(W * 0.5), sol = 16, rz = Math.round(W * 0.17), H = Hs + sol + 2 * rz + 30;
+  if (!W) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const oS = ecart(180), oL = ecart(angleLune());
+  const hS = 90 - Math.abs(oS), hL = 90 - Math.abs(oL);
+  const jour = Math.min(1, Math.max(0, (hS + 8) / 20));
+  const aube = Math.max(0, 1 - Math.abs(hS + 2) / 9) * 0.55;
+  // ciel, de la nuit au jour, avec les couleurs du crépuscule côté Soleil
+  const g = ctx.createLinearGradient(0, 0, 0, Hs);
+  g.addColorStop(0, melange(0x04070e, 0x2c5b8e, jour));
+  g.addColorStop(1, melange(0x0c1528, 0x86b1d8, jour));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, Hs);
+  if (aube > 0) {
+    const xs = oS > 0 ? 0 : W, gr = ctx.createRadialGradient(xs, Hs, 0, xs, Hs, W * 0.8);
+    gr.addColorStop(0, `rgba(255,154,74,${aube})`); gr.addColorStop(1, "rgba(255,154,74,0)");
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, W, Hs);
+  }
+  if (jour < 1) {
+    ctx.fillStyle = `rgba(220,228,240,${(1 - jour) * 0.8})`;
+    for (const [x, y, s] of ETOILES) ctx.fillRect(x * W, y * (Hs - 6), s, s);
+  }
+  // trajet des astres dans le ciel, d'est (gauche) en ouest (droite)
+  const pos = (o) => [W / 2 - Math.sin(o * DEG) * (W / 2 - 16), Hs - Math.cos(o * DEG) * (Hs - 16)];
+  ctx.setLineDash([2, 4]); ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.ellipse(W / 2, Hs, W / 2 - 16, Hs - 16, 0, Math.PI, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, Hs); ctx.clip();
+  if (hS > -6) {
+    const [x, y] = pos(oS), rs = W * 0.03, gs = ctx.createRadialGradient(x, y, 0, x, y, rs * 3.7);
+    gs.addColorStop(0, "rgba(255,217,138,0.9)"); gs.addColorStop(0.3, "rgba(255,200,97,0.35)"); gs.addColorStop(1, "rgba(255,200,97,0)");
+    ctx.fillStyle = gs; ctx.fillRect(x - rs * 3.7, y - rs * 3.7, rs * 7.4, rs * 7.4);
+    ctx.fillStyle = "#ffe2a0"; ctx.beginPath(); ctx.arc(x, y, rs, 0, 2 * Math.PI); ctx.fill();
+  }
+  if (hL > -6) { const [x, y] = pos(oL); dessinerLune(ctx, x, y, W * 0.038, E, (1 - jour) * 0.22); }
+  ctx.restore();
+  // sol et points cardinaux (l'observateur regarde vers le sud)
+  ctx.fillStyle = "#03050a"; ctx.fillRect(0, Hs, W, sol);
+  ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.beginPath(); ctx.moveTo(0, Hs + 0.5); ctx.lineTo(W, Hs + 0.5); ctx.stroke();
+  ctx.font = "9.5px Arial"; ctx.fillStyle = "#8b9ab0"; ctx.textBaseline = "middle";
+  ctx.textAlign = "left"; ctx.fillText("Est", 5, Hs + sol / 2 + 1);
+  ctx.textAlign = "center"; ctx.fillText("Sud", W / 2, Hs + sol / 2 + 1);
+  ctx.textAlign = "right"; ctx.fillText("Ouest", W - 5, Hs + sol / 2 + 1);
+  // la Lune en gros plan
+  const cx = W / 2, cy = Hs + sol + 15 + rz;
+  const nouvelle = E < 6 || E > 354, visible = hL > 0 && !nouvelle;
+  dessinerLune(ctx, cx, cy, rz, E, 0.13);
+  ctx.textAlign = "left"; ctx.font = "bold 9px Arial"; ctx.fillStyle = css(COULEURS.accent);
+  ctx.fillText("GROS PLAN", 6, Hs + sol + 12);
+  if (!visible) {
+    ctx.fillStyle = "rgba(7,11,20,0.62)"; ctx.beginPath(); ctx.arc(cx, cy, rz + 1, 0, 2 * Math.PI); ctx.fill();
+    ctx.textAlign = "center"; ctx.font = "11px Arial"; ctx.fillStyle = "#eef3fa";
+    ctx.fillText(nouvelle ? "Invisible" : "Sous l'horizon", cx, cy);
+  }
+  // légende
+  const ph = phaseDe(E), pct = Math.round((1 - Math.cos(E * DEG)) / 2 * 100);
+  let etat;
+  if (nouvelle) etat = "En ce moment : la Lune est dans la direction du Soleil, noyée dans sa lumière.";
+  else if (!visible) etat = "En ce moment : la Lune est sous l'horizon, l'observateur ne la voit pas.";
+  else {
+    const ou = oL > 35 ? "vers l'est" : oL < -35 ? "vers l'ouest" : "haute, vers le sud";
+    const quand = hS > 0 ? "en plein jour" : hS > -8 ? (oS < 0 ? "au crépuscule" : "à l'aube") : "de nuit";
+    etat = `En ce moment : visible ${quand}, ${ou}.`;
+  }
+  const html = `<h2>${ph.nom}</h2><p class="spec">${fmt1(sim.age)} j · ${pct} % éclairée · ${fmtHeure(sim.heure)}</p><p>${ph.desc}</p><p>${etat}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Animation ----------
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const affiche = {};
+function recaler(id, v) { // met le curseur à jour sans boucle (seulement si la valeur affichée change)
+  const r = Math.round(v * 100);
+  if (affiche[id] === r) return;
+  affiche[id] = r; pilote = true; S.regler(id, v); pilote = false;
+}
+let tPrec = 0, phasePrec = null;
+const _a = new THREE.Vector3(), _b = new THREE.Vector3();
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (sim.anim) {
+    sim.anim.t = S.reduced ? 1 : Math.min(1, sim.anim.t + dt / 1.4);
+    const k = ease(sim.anim.t);
+    sim.age = sim.anim.age + sim.anim.dAge * k;
+    sim.heure = sim.anim.heure + sim.anim.dH * k;
+    if (sim.anim.t >= 1) sim.anim = null;
+  } else if (S.state.temps && S.controls.enabled) {
+    sim.heure += dtt * VITESSE;
+    sim.age += dtt * VITESSE / 24;
+  }
+  sim.age = mod(sim.age, LUNAISON); sim.heure = mod(sim.heure, 24);
+  recaler("age", sim.age); recaler("heure", sim.heure);
+
+  // positions
+  terre.rotation.y = angleObs() * DEG;
+  dir(angleLune(), R_ORBITE, lune.position);
+  lune.rotation.y = (angleLune() + 180) * DEG; // même face toujours tournée vers la Terre
+  moitieEclairee.position.copy(lune.position);
+  orbite.visible = !depuisTerre();
+  moitieEclairee.visible = moitieVisible.visible = S.state.moities && !depuisTerre();
+
+  // rayons et grains de lumière, arrêtés par la Terre et la Lune
+  rayons.visible = grains.visible = S.state.rayons && !depuisTerre();
+  if (S.state.rayons) {
+    const pr = rayons.geometry.attributes.position, pg = grains.geometry.attributes.position, long = X_FIN - X_RAYONS;
+    ZR.forEach((z, i) => {
+      const fin = finRayon(z);
+      pr.setXYZ(2 * i, X_RAYONS, 0, z); pr.setXYZ(2 * i + 1, fin, 0, z);
+      for (let k = 0; k < NP; k++) {
+        const x = X_RAYONS + mod(time * 0.22 + k / NP + i * 0.37, 1) * long;
+        pg.setXYZ(i * NP + k, x, x < fin ? 0 : -1000, z);
+      }
+    });
+    pr.needsUpdate = pg.needsUpdate = true;
+  }
+
+  // horizon et visée
+  const E = elongation(), hL = 90 - Math.abs(ecart(angleLune()));
+  lHorizon.visible = S.state.horizon && !depuisTerre();
+  const pied = pointObs(R_TERRE), est = versEst();
+  setLigne(lHorizon, [_a.copy(pied).addScaledVector(est, 6), _b.copy(pied).addScaledVector(est, -6)]);
+  lVisee.visible = S.state.horizon && hL > 0 && !depuisTerre();
+  setLigne(lVisee, [pointObs(), lune.position]);
+
+  // raccourci de la phase en cours
+  const ph = phaseDe(E);
+  if (ph !== phasePrec) {
+    for (const p of PHASES) document.getElementById("r-" + p.id).setAttribute("aria-pressed", String(p === ph));
+    phasePrec = ph;
+  }
+  dessinerApercu(E);
+});
+
+S.start();
+</script>
+</body>
+</html>

@@ -131,6 +131,9 @@ body.schema > .brand:hover { opacity: .95; }
 input[type=range] { width: 100%; accent-color: var(--accent); }
 .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 #panel .toggles button { text-align: left; }
+.raccourcis { display: flex; flex-direction: column; gap: 8px; }
+.raccourcis .lib { font-size: 12.5px; color: var(--ink-dim); }
+#panel .raccourcis button { line-height: 1.25; }
 
 /* Fiche d'information */
 #info h2 { font: 400 20px/1.2 var(--font-title); color: var(--title); margin: 0; }
@@ -143,6 +146,9 @@ ol.legend .sw { width: 14px; height: 3px; border-radius: 2px; margin-top: 8px; }
 .calc strong { font-size: 14px; color: var(--accent-light); font-variant-numeric: tabular-nums; }
 /* Écran de simulation dans une fiche (canvas dessiné par le schéma) */
 .ecran { display: block; width: 100%; border-radius: 4px; background: var(--night); border: 1px solid var(--line); }
+dl.glossaire { margin: 0; display: flex; flex-direction: column; gap: 9px; }
+dl.glossaire dt { color: var(--title); font-weight: 700; font-size: 13px; }
+dl.glossaire dd { margin: 2px 0 0; line-height: 1.5; }
 .hint { font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; margin: auto 0 0; }
 
 /* Bandeau d'avertissement */
@@ -153,6 +159,30 @@ ol.legend .sw { width: 14px; height: 3px; border-radius: 2px; margin-top: 8px; }
   background: var(--panel); border: 1px solid rgba(91, 155, 213, .45);
   padding: 8px 12px; border-radius: 4px;
 }
+
+/* Encart d'aperçu sur le côté de la vue 3D (option apercu de createSchema) */
+#apercu {
+  position: fixed; margin: 0;
+  top: max(16px, env(safe-area-inset-top, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
+  width: 260px; max-height: calc(100% - 80px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+}
+#apercu.grand { width: 390px; }
+#apercu .tete { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#apercu .eyebrow { margin: 0; }
+#apercu .taille {
+  font: 400 11.5px/1 var(--font-body); color: var(--ink-strong);
+  background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 4px;
+  padding: 5px 8px; cursor: pointer; flex: none;
+}
+#apercu .taille:hover { border-color: var(--ink-dim); }
+#apercu figcaption { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; }
+#apercu h2 { font: 400 19px/1.2 var(--font-title); color: var(--title); margin: 0; }
+#apercu p { margin: 0; }
 
 @media (max-width: 760px) {
   #panel {
@@ -167,6 +197,13 @@ ol.legend .sw { width: 14px; height: 3px; border-radius: 2px; margin-top: 8px; }
   body.schema > .brand { bottom: auto; top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); height: 24px; }
   #notice { top: max(48px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); max-width: calc(100% - 24px); }
   .lbl { font-size: 10.5px; padding: 3px 5px; }
+  #apercu { right: auto; left: max(12px, env(safe-area-inset-left, 0px)); top: max(12px, env(safe-area-inset-top, 0px)); width: 150px; padding: 8px; gap: 6px; }
+  #apercu.grand { width: 225px; }
+  #apercu .tete { flex-direction: column; align-items: flex-start; gap: 4px; }
+  #apercu .taille { font-size: 10.5px; padding: 4px 6px; }
+  #apercu .eyebrow { font-size: 9px; letter-spacing: .18em; }
+  #apercu h2 { font-size: 14px; }
+  #apercu figcaption p { display: none; }
 }
 
 /* =====================================================================
