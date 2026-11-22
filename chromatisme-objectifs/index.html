@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chromatisme des objectifs</title>
+<meta name="description" content="Schéma 3D interactif du chromatisme d'un objectif de lunette : lentille simple, doublet achromatique, doublet ED et triplet apochromatique, foyers de chaque couleur et halo vu à l'oculaire.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, css, materiaux as M, axeX, mesh, legende, faisceau, halo, lentille, objectifLunette, vuesRondes } from "../commun/schema.js";
+
+// ---------- Échelle (libre, pour rendre le phénomène visible) ----------
+// Objectif de 80 mm dessiné avec un rayon R = 1 (1 unité = 40 mm en travers).
+// La focale (600 mm) est raccourcie à 8 unités le long de l'axe (1 unité = 75 mm).
+// Les écarts entre les foyers des couleurs sont agrandis : EXAG unité par mm (≈ ×11 par rapport à l'axe).
+const D = 80, F = 600, N = F / D;
+const R = 1, XO = 4, LF = 8, XF = XO - LF;  // objectif, foyer du vert
+const EXAG = 0.15;
+const ARCSEC = 206264.8;
+
+// Écart du foyer de chaque couleur par rapport au vert (mm, + = plus loin de l'objectif), pour F = 600 mm.
+// Lentille simple : verre BK7 (indices réels). Doublets et triplet : spectre secondaire typique de ces formules.
+const ECARTS = {
+  simple: [[436, -9.1], [486, -4.2], [546, 0], [656, 5.1], [700, 6.5]],
+  achro:  [[436, 1.2], [486, 0.3], [546, 0], [656, 0.3], [700, 0.45]],
+  ed:     [[436, 0.3], [486, 0.07], [546, 0], [656, 0.07], [700, 0.1]],
+  apo:    [[436, 0.04], [486, 0.01], [546, 0], [656, 0.01], [700, 0.015]],
+};
+function ecart(type, l) { // interpolation (et prolongement) linéaire du tableau
+  const t = ECARTS[type];
+  let i = 0;
+  while (i < t.length - 2 && l > t[i + 1][0]) i++;
+  const [l0, v0] = t[i], [l1, v1] = t[i + 1];
+  return v0 + (v1 - v0) * (l - l0) / (l1 - l0);
+}
+const RAIES = [
+  { id: "violet", nom: "violet", l: 436, c: COULEURS.violet },
+  { id: "bleu", nom: "bleu", l: 486, c: COULEURS.bleu },
+  { id: "vert", nom: "vert", l: 546, c: COULEURS.vert },
+  { id: "rouge", nom: "rouge", l: 656, c: COULEURS.rouge },
+];
+
+const TYPES = {
+  simple: { nom: "Lentille simple", bouton: "Lentille simple",
+    bilan: "Une seule lentille : chaque couleur a son foyer, sur plus de 15 mm. Aucune mise au point ne rend l'image nette. C'est pourquoi les lunettes du XVIIe siècle étaient démesurément longues : à très long foyer, le défaut gêne moins." },
+  achro: { nom: "Doublet achromatique", bouton: "Achromatique",
+    bilan: "Le rouge et le bleu sont ramenés au même foyer, mais le vert est un peu en avant et surtout le violet reste en arrière : c'est le « spectre secondaire ». Il donne un halo violet autour des objets brillants." },
+  ed: { nom: "Doublet ED", bouton: "ED",
+    bilan: "Le verre ED divise le spectre secondaire par 4 environ. Il ne reste qu'un mince liseré violet autour des étoiles très brillantes. Très bon en visuel, correct en photo." },
+  apo: { nom: "Triplet apochromatique", bouton: "Apochromatique",
+    bilan: "Trois lentilles ramènent toutes les couleurs au même foyer, à quelques centièmes de millimètre près : moins que la tolérance de mise au point. Plus aucune couleur parasite, même en photo." },
+};
+const VERRES = {
+  crown: { texte: "Verre courant, peu dispersif. Lentille convergente : elle fait l'essentiel du travail de mise au foyer, mais à elle seule elle ferait converger le bleu plus près que le rouge.",
+           chiffres: "Verre type BK7 · indice ≈ 1,52 · constringence V ≈ 64 (plus V est grand, moins le verre disperse)" },
+  flint: { texte: "Verre plus dispersif. Lentille divergente : elle disperse les couleurs en sens inverse de la lentille convergente, ce qui ramène le rouge et le bleu au même foyer. La compensation n'est pas parfaite pour les autres couleurs : il reste le « spectre secondaire ».",
+           chiffres: "Verre type F2 · indice ≈ 1,62 · constringence V ≈ 36" },
+  ed:    { texte: "Verre fluoré à très faible dispersion (« Extra-low Dispersion »), proche de la fluorite. Il disperse peu et, surtout, d'une façon mieux assortie à la lentille divergente : le spectre secondaire est divisé par 3 à 5.",
+           chiffres: "Verre type FPL-53 · indice ≈ 1,44 · constringence V ≈ 95" },
+};
+const NOMS_VERRE = { crown: "en crown", flint: "en flint", ed: "en verre ED" };
+const ROLES = { 1: ["Lentille"], 2: ["Lentille avant", "Lentille arrière"], 3: ["Lentille avant", "Lentille du milieu", "Lentille arrière"] };
+
+let type = "achro", plan = 0;
+const PROF = 2 * 0.00055 * N * N; // profondeur de foyer ±2λN² (mm)
+const v = (x, d = 2) => x.toFixed(d).replace(".", ",");
+const signe = (x, d = 2) => (x > 0.004 ? "+" : x < -0.004 ? "−" : "") + v(Math.abs(x), d);
+const flou = (l) => Math.abs(ecart(type, l) - plan) / (2 * N) / F * ARCSEC; // rayon de la tache (″)
+
+const S = createSchema({
+  surtitre: "Support de formation · Optique",
+  titre: "Chromatisme des objectifs",
+  sousTitre: "Exemple : objectif de 80 mm · F = 600 mm · f/7,5",
+  eclate: true,
+  apercu: { titre: "Vu à l'oculaire" },
+  commandes: [
+    { type: "raccourcis", id: "types", label: "Objectif", boutons: Object.entries(TYPES).map(([id, t]) => ({ id, label: t.bouton, onClick: () => choisir(id) })) },
+    { type: "curseur", id: "map", label: "Mise au point", min: -10, max: 10, pas: 0.05, valeur: 0, retour: "Revenir au foyer du vert",
+      format: (x) => `${signe(x)} mm`, onInput: (x) => { plan = x; majPlan(); majApercu(); } },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [6, 5.5, 18], cible: [1.5, 0, 0] },
+    { id: "profil", label: "Profil", pos: [1.5, 0.3, 18], cible: [1.5, 0, 0] },
+    { id: "foyer", label: "Au foyer", pos: [XF - 0.3, 0.55, 2.6], cible: [XF - 0.35, 0, 0], fov: 24, exacte: true },
+    { id: "objectif", label: "Objectif", pos: [XO + 3.2, 1.6, 2.8], cible: [XO, 0, 0] },
+  ],
+  intro: () => {
+    const rb = Math.abs(ecart(type, 656) - ecart(type, 486)), vi = ecart(type, 436);
+    return `
+    <div class="eyebrow">D'où viennent les couleurs</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "La lumière blanche d'une étoile contient toutes les couleurs." },
+      { couleur: COULEURS.violet, texte: "En traversant le verre, les couleurs sont plus ou moins déviées, comme dans un prisme : c'est la dispersion. Le violet et le bleu sont les plus déviés." },
+      { couleur: COULEURS.rouge, texte: "Le rouge, moins dévié, se concentre plus loin : chaque couleur a son propre foyer. C'est le chromatisme." },
+      { couleur: COULEURS.vert, texte: "Un objectif associe plusieurs verres pour ramener les couleurs au même foyer, plus ou moins bien selon sa formule." },
+    ])}
+    <p><strong>${TYPES[type].nom}.</strong> ${TYPES[type].bilan}</p>
+    <p class="spec">Écart rouge–bleu ${v(rb)} mm · violet ${signe(vi)} mm par rapport au vert · tolérance de mise au point à f/7,5 : ±${v(PROF)} mm</p>
+    <p class="spec">Sur le schéma, la focale est raccourcie et les écarts entre foyers sont agrandis environ 11 fois. Essayez « Au foyer » et le curseur « Mise au point ».</p>`;
+  },
+});
+const sousTitre = document.querySelector("#panel header p");
+
+// ---------- Lentilles (jusqu'à 3, reconstruites selon l'objectif) ----------
+const lentilles = [1, 2, 3].map((k) => {
+  const p = S.part("l" + k, "Lentille", { etiquette: false });
+  p.lbl = S.label("Lentille", () => p.group.localToWorld(p.ancre.clone()), { partId: p.id, visible: () => p.group.children.length > 0 });
+  return p;
+});
+
+// ---------- Plan de mise au point (oculaire ou capteur) ----------
+const planPart = S.part("plan", "Plan de mise au point", {
+  ancre: [0, 0.62, 0],
+  texte: "C'est là qu'on place l'oculaire ou le capteur de la caméra. Il n'y a qu'une position possible : si les couleurs n'ont pas le même foyer, certaines sont forcément floues. Déplacez-le avec le curseur « Mise au point ».",
+  chiffres: `Tolérance de mise au point à f/7,5 : ±${v(PROF)} mm (±2 λ N²) · elle diminue vite quand l'objectif est plus ouvert`,
+});
+{
+  const g = new THREE.CircleGeometry(0.5, 48); g.rotateY(Math.PI / 2);
+  S.add(planPart, mesh(g, M.lumineux(COULEURS.etoile, 0.07)));
+  const r = new THREE.RingGeometry(0.49, 0.52, 64); r.rotateY(Math.PI / 2);
+  S.add(planPart, mesh(r, M.lumineux(COULEURS.etoile, 0.45)));
+}
+function majPlan() { // + = plus loin de l'objectif
+  const x = XF - plan * EXAG;
+  planPart.group.children.forEach((o) => (o.position.x = x));
+  planPart.ancre.x = x;
+}
+
+function construire() {
+  const lent = objectifLunette(type, R, XO), n = lent.length;
+  lentilles.forEach((p, i) => {
+    S.viderElement(p);
+    const k = n === 2 ? [0, -1, 1][i] : i; // doublet : lentilles 1 et 3
+    const l = k >= 0 ? lent[k] : null;
+    if (!l) { p.lbl.el.textContent = ""; return; }
+    S.add(p, lentille(R, l.xv, l.t, l.sf, l.sb));
+    const nom = n === 1 ? "Lentille simple" : `${ROLES[n][k]} ${NOMS_VERRE[l.verre]}`;
+    p.nom = nom; p.lbl.el.textContent = nom;
+    p.eclate.set(n === 1 ? 0 : (n - 1) / 2 - k, 0, 0).multiplyScalar(1.1);
+    p.ancre.set(l.xv - l.t / 2, k % 2 ? -R - 0.45 : R + 0.15, 0); // une étiquette sur deux en dessous
+    p.texte = n === 1
+      ? "Une lentille seule agit comme un prisme : elle dévie davantage le bleu que le rouge. Chaque couleur a donc son propre foyer, étalé ici sur plus de 15 mm."
+      : VERRES[l.verre].texte;
+    p.chiffres = VERRES[l.verre].chiffres;
+  });
+  poserRayons();
+}
+
+// ---------- Rayons de chaque couleur ----------
+const lum = faisceau(0.6, 0.32, 96);
+S.scene.add(lum.group);
+const foyers = RAIES.map((r) => { const h = halo(r.c, 0.14); lum.group.add(h); return h; });
+const xFoyer = (l) => XF - ecart(type, l) * EXAG;
+const HAUTEURS = [0.85, 0.45, -0.45, -0.85];
+function poserRayons() {
+  const trajets = [];
+  for (const y of HAUTEURS) for (const r of RAIES) {
+    const A = new THREE.Vector3(XO + 4, y * R, 0), C = new THREE.Vector3(XO, y * R, 0);
+    const P = new THREE.Vector3(xFoyer(r.l), 0, 0);
+    const E = C.clone().lerp(P, (XO - (XF - 2.2)) / (XO - P.x)); // prolongé au-delà du foyer
+    trajets.push({ pts: [A, C, P, E], cols: [COULEURS.etoile, r.c, r.c] });
+  }
+  lum.poser(trajets);
+  RAIES.forEach((r, i) => foyers[i].position.set(xFoyer(r.l), 0, 0));
+}
+// étiquettes des foyers : une par couleur quand ils sont séparés, une seule sinon
+const separe = (r) => Math.abs(ecart(type, r.l)) * EXAG > 0.3;
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière blanche", () => new THREE.Vector3(XO + 3, R + 0.3, 0), { lumiere: true, visible: lightVisible });
+RAIES.forEach((r, i) => S.label(`Foyer ${r.nom}`, () => new THREE.Vector3(xFoyer(r.l), (i % 2 ? -0.35 : 0.3), 0),
+  { lumiere: true, visible: () => lightVisible() && separe(r) }));
+S.label("Foyer", () => new THREE.Vector3(XF, 0.3, 0), { lumiere: true, visible: () => lightVisible() && !separe(RAIES[0]) });
+
+// ---------- Encart « Vu à l'oculaire » : étoile brillante et bord de la Lune ----------
+// Pour chaque longueur d'onde, la lumière hors de son foyer s'étale en un disque de rayon (écart / 2N) ;
+// les couleurs s'additionnent. Mise au point réglée par le curseur (0 = foyer du vert).
+const LAMBDAS = []; for (let l = 420; l <= 680; l += 20) LAMBDAS.push(l);
+function rgbLambda(l) { // couleur approchée d'une longueur d'onde (nm)
+  let r = 0, g = 0, b = 0;
+  if (l < 440) { r = 0.35 + (440 - l) / 60; b = 1; } else if (l < 460) { r = 0.35 * (460 - l) / 20; g = (l - 440) / 50; b = 1; }
+  else if (l < 490) { g = (l - 440) / 50; b = 1; }
+  else if (l < 510) { g = 1; b = (510 - l) / 20; } else if (l < 580) { r = (l - 510) / 70; g = 1; }
+  else if (l < 645) { r = 1; g = (645 - l) / 65; } else r = 1;
+  return [r, g, b];
+}
+const POIDS = (() => { // chaque canal normalisé : la somme des couleurs donne du blanc
+  const w = LAMBDAS.map(rgbLambda), s = [0, 0, 0];
+  for (const c of w) for (let k = 0; k < 3; k++) s[k] += c[k];
+  return w.map((c) => c.map((x, k) => x / s[k]));
+})();
+const NI = 121, CHAMP = 120, PX = CHAMP / NI, LISSE = 1.3; // pixels, champ (″), flou de l'image (diffraction + turbulence, ″)
+function vers(canvasRGB) {
+  const cv = document.createElement("canvas"); cv.width = cv.height = NI;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(NI, NI);
+  for (let q = 0; q < NI * NI; q++) for (let k = 0; k < 3; k++) img.data[q * 4 + k] = 255 * canvasRGB[k][q];
+  for (let q = 0; q < NI * NI; q++) img.data[q * 4 + 3] = 255;
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+function imageEtoileCouleur() {
+  const acc = [0, 1, 2].map(() => new Float32Array(NI * NI)), p = new Float32Array(NI * NI);
+  LAMBDAS.forEach((l, i) => {
+    const rho = flou(l) / PX, s = LISSE / PX;
+    let somme = 0;
+    for (let j = 0; j < NI; j++) for (let k = 0; k < NI; k++) {
+      const r = Math.hypot(k - NI / 2 + 0.5, j - NI / 2 + 0.5);
+      somme += (p[j * NI + k] = 0.5 * (1 - Math.tanh((r - rho) / s)));
+    }
+    for (let c = 0; c < 3; c++) { const w = POIDS[i][c] / somme; if (w) for (let q = 0; q < NI * NI; q++) acc[c][q] += w * p[q]; }
+  });
+  return vers(acc.map((a) => a.map((x) => 1 - Math.exp(-3000 * x)))); // étoile brillante : le cœur sature
+}
+function imageLune() {
+  const acc = [0, 1, 2].map(() => new Float32Array(NI * NI)), RL = 940, cx = -RL; // limbe au centre du champ, Lune à gauche
+  LAMBDAS.forEach((l, i) => {
+    const rho = Math.hypot(flou(l), LISSE);
+    for (let j = 0; j < NI; j++) for (let k = 0; k < NI; k++) {
+      const x = (k - NI / 2 + 0.5) * PX, y = (j - NI / 2 + 0.5) * PX;
+      const u = Math.max(-1, Math.min(1, (RL - Math.hypot(x - cx, y)) / rho));
+      const e = 0.5 + (u * Math.sqrt(1 - u * u) + Math.asin(u)) / Math.PI; // part du disque de flou sur la Lune
+      for (let c = 0; c < 3; c++) acc[c][j * NI + k] += POIDS[i][c] * e;
+    }
+  });
+  return vers(acc.map((a) => a.map((x) => Math.pow(1 - Math.exp(-2.2 * x), 0.8))));
+}
+const TEXTES = {
+  simple: ["Une seule couleur nette à la fois", "Même au mieux, l'étoile est noyée dans un grand halo coloré. Déplacez la mise au point : le centre change de couleur, l'image n'est jamais nette."],
+  achro: ["Halo violet", "Le rouge, le vert et le bleu sont presque au même foyer, mais le violet reste à côté : un halo violet entoure les étoiles brillantes et borde la Lune. L'œil y est peu sensible, un capteur photo beaucoup plus."],
+  ed: ["Halo très faible", "Il ne reste qu'un mince liseré violet autour des étoiles les plus brillantes, souvent invisible à l'œil."],
+  apo: ["Aucune couleur parasite", "Toutes les couleurs sont au même foyer : l'étoile reste blanche et piquée, le bord de la Lune net."],
+};
+let vues = null, cleDessin = "";
+function majApercu() {
+  vues = [{ image: imageEtoileCouleur(), titre: "Étoile brillante" }, { image: imageLune(), titre: "Bord de la Lune" }];
+  cleDessin = "";
+  const [h2, p] = TEXTES[type];
+  const tache = 2 * flou(436);
+  S.apercu.legende.innerHTML = `<h2>${Math.abs(plan) < 0.01 ? h2 : "Mise au point décalée"}</h2>
+    <p class="spec">Mise au point ${signe(plan)} mm (0 = foyer du vert) · tache violette ≈ ${Math.round(tache)}″ de diamètre</p>
+    <p>${Math.abs(plan) < 0.01 ? p : "Hors du foyer du vert, chaque couleur s'étale à sa façon : on peut rendre nette une autre couleur, jamais toutes à la fois si l'objectif est mal corrigé."}</p>`;
+}
+
+// ---------- Choix de l'objectif ----------
+function choisir(id) {
+  type = id;
+  for (const k in TYPES) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === id));
+  sousTitre.textContent = `Exemple : ${TYPES[id].nom.toLowerCase()} de 80 mm · F = 600 mm · f/7,5`;
+  construire();
+  S.refreshInfo();
+  majApercu();
+}
+
+S.onFrame(({ time }) => {
+  const W = S.apercu.canvas.clientWidth, cle = W + "|" + !!vues;
+  if (cle !== cleDessin && vues) { cleDessin = cle; vuesRondes(S.apercu.canvas, vues); }
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les lentilles (éclaté à 0 %) pour voir le trajet de la lumière." : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 4);
+});
+
+choisir(type);
+majPlan();
+S.start();
+</script>
+</body>
+</html>

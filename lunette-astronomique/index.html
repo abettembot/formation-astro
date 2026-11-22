@@ -17,7 +17,7 @@
 </head>
 <body>
 <script type="module">
-import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo } from "../commun/schema.js";
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, lentille, objectifLunette } from "../commun/schema.js";
 
 // ---------- Géométrie (1 unité = 100 mm) ----------
 // Le tube, l'objectif et le pare-buée suivent le modèle choisi : longueur ≈ focale, diamètre ≈ objectif.
@@ -158,27 +158,6 @@ function cylindre(r, x0, x1, mat, coupe) {
                   : new THREE.CylinderGeometry(r, r, x1 - x0, 72, 1, true);
   return mesh(axeX(g), mat, (x0 + x1) / 2);
 }
-/** Lentille de révolution d'axe X : face avant x = xv − sf·q, face arrière x = xv − t + sb·q, avec q = (r/R)². */
-function lentille(xv, t, sf, sb) {
-  const pts = [], n = 20;
-  for (let i = 0; i <= n; i++) { const r = Math.max(0.001, (i / n) * R), q = (r / R) ** 2; pts.push(new THREE.Vector2(r, xv - sf * q)); }
-  for (let i = n; i >= 0; i--) { const r = Math.max(0.001, (i / n) * R), q = (r / R) ** 2; pts.push(new THREE.Vector2(r, xv - t + sb * q)); }
-  const g = new THREE.LatheGeometry(pts, 72);
-  g.rotateZ(-Math.PI / 2);
-  return mesh(g, ouvert(M.lentille()));
-}
-/** Profils des lentilles (épaisseurs et courbures exagérées pour être visibles). Renvoie [xv, t, sf, sb] par lentille. */
-function profils(type) {
-  const tC = 0.1 + 0.1 * R, sF = 0.05 + 0.04 * R, sB = 0.04 + 0.03 * R, tF = 0.04 + 0.03 * R;
-  if (type === "apo") {
-    const t1 = tC * 0.85, t3 = 0.08 + 0.06 * R, gap = 0.02;
-    const tot = t1 + tF + t3 + 2 * gap, x0 = XO + tot / 2;
-    return [[x0, t1, sF * 0.85, sB], [x0 - t1 - gap, tF, -sB, 0.0], [x0 - t1 - tF - 2 * gap, t3, -0.005, 0.03 + 0.02 * R]];
-  }
-  const gap = type === "ed" ? 0.025 : 0.004;
-  const tot = tC + gap + tF, x0 = XO + tot / 2;
-  return [[x0, tC, sF, sB], [x0 - tC - gap, tF, -sB, 0.01]];
-}
 
 function construire() {
   const coupe = S.state.coupe;
@@ -202,16 +181,13 @@ function construire() {
   if (!coupe) S.add(parebuee, mesh(axeX(new THREE.TorusGeometry(RDS, 0.025, 8, 72).rotateX(Math.PI / 2)), M.noir(), XFRONT));
 
   // objectif : lentilles dans leur cellule
-  const obj = OBJECTIFS[m.type], lent = profils(m.type);
-  const xAv = lent[0][0] + 0.06, xAr = lent.at(-1)[0] - lent.at(-1)[1] - 0.06;
+  const obj = OBJECTIFS[m.type], lent = objectifLunette(m.type, R, XO);
+  const xAv = lent[0].xv + 0.06, xAr = lent.at(-1).xv - lent.at(-1).t - 0.06;
   objectif.eclate.set(1.0, 0, 0);
   objectif.ancre.set(XO, RDS + 0.15, 0);
   objectif.texte = `Ici, un ${obj.nom}. ${obj.texte}`;
   objectif.chiffres = `D = ${m.D} mm · F = ${m.F} mm · f/${fd()} · ${obj.lentilles}`;
-  for (const [xv, t, sf, sb] of lent) {
-    const l = S.add(objectif, lentille(xv, t, sf, sb));
-    if (sf < 0) l.material.opacity = 0.7; // lentille divergente (flint) un peu plus dense
-  }
+  for (const l of lent) S.add(objectif, lentille(R, l.xv, l.t, l.sf, l.sb));
   S.add(objectif, cylindre(RT + 0.02, xAr, xAv, ouvert(M.noir()), coupe));
   S.add(objectif, mesh(axeX(new THREE.TorusGeometry(R + 0.015, 0.02, 8, 72).rotateX(Math.PI / 2)), M.noir(), xAv));
 

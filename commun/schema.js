@@ -19,6 +19,11 @@ export const COULEURS = {
   orange: 0xff9a4a,
   corail: 0xff6b5e,
   laser: 0xff2d2d,   // faisceau d'un collimateur laser (rouge 650 nm)
+  // couleurs du spectre (chromatisme, dispersion) : bleu saturé, distinct de l'accent de l'interface
+  rouge: 0xff4b3e,   // raie C, 656 nm
+  vert: 0x58e07a,    // raie e, 546 nm
+  bleu: 0x4f6bff,    // raie F, 486 nm
+  violet: 0xb062ff,  // raie g, 436 nm
 };
 export const css = (hex) => "#" + hex.toString(16).padStart(6, "0");
 
@@ -176,6 +181,41 @@ export function mesh(geo, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
   return m;
+}
+/** Lentille de révolution d'axe X, de rayon R (lumière venant de +X).
+ *  Face avant x = xv − sf·q, face arrière x = xv − t + sb·q, avec q = (r/R)² :
+ *  sf > 0 face avant bombée, sf < 0 creuse ; sb > 0 face arrière bombée. */
+export function lentille(R, xv, t, sf, sb) {
+  const pts = [], n = 20;
+  for (let i = 0; i <= n; i++) { const r = Math.max(0.001, (i / n) * R), q = (r / R) ** 2; pts.push(new THREE.Vector2(r, xv - sf * q)); }
+  for (let i = n; i >= 0; i--) { const r = Math.max(0.001, (i / n) * R), q = (r / R) ** 2; pts.push(new THREE.Vector2(r, xv - t + sb * q)); }
+  const g = new THREE.LatheGeometry(pts, 72);
+  g.rotateZ(-Math.PI / 2);
+  const m = new THREE.Mesh(g, materiaux.lentille());
+  m.material.side = THREE.DoubleSide;
+  if (sf < 0) m.material.opacity = 0.7; // lentille divergente (flint) un peu plus dense
+  return m;
+}
+/** Lentilles d'un objectif de lunette de rayon R centré en xo (épaisseurs et courbures exagérées).
+ *  type : "simple" (lentille seule), "achro" (crown + flint accolés), "ed" (ED + flint, lame d'air), "apo" (triplet).
+ *  Renvoie [{ xv, t, sf, sb, verre }] de l'avant vers l'arrière, à passer à lentille(R, xv, t, sf, sb). */
+export function objectifLunette(type, R, xo) {
+  const tC = 0.1 + 0.1 * R, sF = 0.05 + 0.04 * R, sB = 0.04 + 0.03 * R, tF = 0.04 + 0.03 * R;
+  if (type === "simple") return [{ xv: xo + tC / 2, t: tC, sf: sF, sb: sB, verre: "crown" }];
+  if (type === "apo") {
+    const t1 = tC * 0.85, t3 = 0.08 + 0.06 * R, gap = 0.02;
+    const x0 = xo + (t1 + tF + t3 + 2 * gap) / 2;
+    return [
+      { xv: x0, t: t1, sf: sF * 0.85, sb: sB, verre: "ed" },
+      { xv: x0 - t1 - gap, t: tF, sf: -sB, sb: 0, verre: "flint" },
+      { xv: x0 - t1 - tF - 2 * gap, t: t3, sf: -0.005, sb: 0.03 + 0.02 * R, verre: "crown" },
+    ];
+  }
+  const gap = type === "ed" ? 0.025 : 0.004, x0 = xo + (tC + gap + tF) / 2;
+  return [
+    { xv: x0, t: tC, sf: sF, sb: sB, verre: type === "ed" ? "ed" : "crown" },
+    { xv: x0 - tC - gap, t: tF, sf: -sB, sb: 0.01, verre: "flint" },
+  ];
 }
 let _halo;
 export function textureHalo() {
@@ -410,7 +450,8 @@ const MOBILE = 760;
  *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue)
  *  - eclate : true pour afficher le curseur « Vue éclatée »
  *  - commandes : [{ type:"bascule", id, label, actif, onChange(v) }
- *                 | { type:"curseur", id, label, min, max, pas, valeur, format(v), onInput(v) }
+ *                 | { type:"curseur", id, label, min, max, pas, valeur, format(v), onInput(v), retour }
+ *                   (retour : libellé d'un bouton qui remet le curseur à sa valeur de départ)
  *                 | { type:"raccourcis", id, label, boutons:[{ id, label, onClick() }] }]
  *                 Un bouton de raccourci a l'id HTML « r-<id> » (aria-pressed réglable par le schéma).
  *  - intro : () => HTML de la fiche affichée quand rien n'est sélectionné
@@ -453,7 +494,8 @@ export function createSchema(cfg) {
         <label for="c-${c.id}">${c.label}</label>
         <input id="c-${c.id}" type="range" min="${c.min}" max="${c.max}" step="${c.pas ?? 1}" value="${c.valeur}">
         <output id="o-${c.id}"></output>
-      </div>`).join("")}
+      </div>${c.retour ? `
+      <div class="row"><button id="z-${c.id}" type="button">${c.retour}</button></div>` : ""}`).join("")}
       ${raccourcis.map((c) => `
       <div class="raccourcis" role="group" aria-label="${c.label}">
         <span class="lib">${c.label}</span>
@@ -672,6 +714,7 @@ export function createSchema(cfg) {
     const upd = () => { state[c.id] = +input.value; out.textContent = c.format ? c.format(state[c.id]) : input.value; c.onInput && c.onInput(state[c.id]); };
     input.addEventListener("input", upd);
     c._init = upd;
+    if (c.retour) panel.querySelector(`#z-${c.id}`).addEventListener("click", () => { input.value = c.valeur; upd(); });
   }
 
   // ---------- Sélection par clic ----------
