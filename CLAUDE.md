@@ -56,5 +56,13 @@ Une carte `<a class="card">` par support, la plus récente en premier, avec une 
 - Libellés des boutons : un nom court (« Trajet lumière », « Tube en coupe »), avec une majuscule initiale seulement.
 - Exactitude scientifique : géométrie et chiffres justes, exemples tirés du matériel courant d'un club.
 
-## Publier
-Après vérification locale (serveur statique, par exemple `python -m http.server`), faire un commit puis `git push`. Le site se met à jour en une à deux minutes.
+## Aperçu local, puis mise en ligne (obligatoire)
+**Ne jamais faire de `git push` sans que l'utilisateur ait validé l'aperçu local.** Le push met immédiatement le site en ligne pour tout le club.
+
+1. Après chaque modification du site (nouveau support, retouche de la charte, de `commun/` ou de l'accueil), lancer l'aperçu local depuis la racine du dépôt, en arrière-plan : `python -m http.server 8000`. L'utilisateur peut aussi double-cliquer sur `apercu.cmd`, qui lance le même serveur et ouvre le navigateur.
+2. Donner à l'utilisateur les liens à vérifier : http://localhost:8000/ (accueil) et http://localhost:8000/<nom-du-schema>/ pour chaque support touché. Si `commun/` a changé, donner le lien de **chaque** schéma existant.
+3. Vérifier soi-même ce qu'on peut (console sans erreur, rendu dans le navigateur intégré), puis demander explicitement à l'utilisateur s'il valide la mise en ligne.
+4. Seulement après son accord : faire le commit (s'il n'est pas déjà fait), puis `git push`. Le site se met à jour en une à deux minutes sur https://abettembot.github.io/formation-astro/. Vérifier ensuite la version en ligne.
+
+Un commit local sans push est possible à tout moment. Seul le push attend la validation.
+Authentification : Git utilise la connexion GitHub CLI du compte perso `abettembot`, réglée pour ce dépôt uniquement. Ne jamais passer par Chrome, où l'utilisateur est connecté avec son compte pro. Si une autorisation GitHub est nécessaire, l'ouvrir dans le navigateur intégré.
