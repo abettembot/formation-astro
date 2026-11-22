@@ -68,7 +68,7 @@ body.schema > .brand {
   position: fixed;
   right: max(18px, env(safe-area-inset-right, 0px));
   bottom: max(16px, env(safe-area-inset-bottom, 0px));
-  height: 30px;
+  height: 60px;
   opacity: .55;
   transition: opacity .2s;
 }
@@ -194,8 +194,8 @@ dl.glossaire dd { margin: 2px 0 0; line-height: 1.5; }
     padding: 14px;
   }
   #panel header h1 { font-size: 21px; }
-  body.schema > .brand { bottom: auto; top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); height: 24px; }
-  #notice { top: max(48px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); max-width: calc(100% - 24px); }
+  body.schema > .brand { bottom: auto; top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); height: 32px; }
+  #notice { top: max(60px, env(safe-area-inset-top, 0px)); bottom: auto; transform: translateX(-50%); max-width: calc(100% - 24px); }
   .lbl { font-size: 10.5px; padding: 3px 5px; }
   #apercu { right: auto; left: max(12px, env(safe-area-inset-left, 0px)); top: max(12px, env(safe-area-inset-top, 0px)); width: 150px; padding: 8px; gap: 6px; }
   #apercu.grand { width: 225px; }
