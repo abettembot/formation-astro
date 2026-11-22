@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Collimation d'un Newton</title>
+<meta name="description" content="Schéma 3D interactif de la collimation d'un télescope de Newton 200/1000 : dérèglement des miroirs primaire et secondaire, effet sur l'image d'une étoile, réglage au Cheshire et au collimateur laser.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, textureHalo, legende } from "../commun/schema.js";
+
+// ---------- Géométrie optique (1 unité = 100 mm) : le même 200/1000 que telescope-newton ----------
+const F = 10;          // focale du primaire (1000 mm)
+const RM = 1.0;        // rayon du primaire (200 mm de diamètre)
+const RT = 1.25;       // rayon du tube
+const XP = -4.6;       // sommet du primaire
+const TUBE_BACK = -5.0, TUBE_FRONT = 4.6;
+const D = RT + 1.05;   // distance axe -> plan focal
+const XS = XP + F - D; // centre du secondaire
+const FE = 0.4;        // focale oculaire (schématique)
+const SEC_R = 0.29;    // demi petit axe du secondaire
+const DECAL = 0.029;   // offset du secondaire : ≈ 2,9 mm vers le primaire et à l'opposé du porte-oculaire
+const RD = 0.25;       // rayon intérieur du tube coulissant du porte-oculaire
+const RC = 0.14;       // rayon intérieur d'un coulant 31,75 mm (Cheshire, laser)
+const Y_BAS = D - 0.35;  // bas du coulant de l'outil : sortie et cible du laser, champ du Cheshire
+const Y_OEIL = D + 0.55; // trou de visée du Cheshire
+const R_OEIL = 0.01;     // trou de visée Ø 2 mm
+const R_PAST = 0.1, R_TROU = 0.025;          // pastille centrale Ø 20 mm, trou Ø 5 mm
+const X_ARA = XS + 0.55, R_MOYEU = 0.16, E_BRANCHE = 0.005; // araignée : branches de 1 mm
+const EXA = 2;         // la 3D exagère les inclinaisons ×2 ; l'aperçu utilise les angles réels
+const MN = Math.PI / 10800;                  // une minute d'angle, en radians
+const TOL_COMA = 0.022 * 125 / 1000;         // f/5 : 0,022·N³ = 2,75 mm au foyer, sur F = 1000 mm (rad)
+const ARCSEC = 0.1 * 206265;                 // décalage au foyer (unités) -> secondes d'arc
+const tubeLen = TUBE_FRONT - TUBE_BACK, tubeMid = (TUBE_FRONT + TUBE_BACK) / 2;
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+
+// ---------- Petits calculs vectoriels (tableaux [x, y, z]) ----------
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const nrm = (a) => { const l = Math.hypot(a[0], a[1], a[2]); return [a[0] / l, a[1] / l, a[2] / l]; };
+const refl = (d, n) => add(d, n, -2 * dot(d, n));
+const V3 = (p) => new THREE.Vector3(p[0], p[1], p[2]);
+
+// ---------- Optique déréglée ----------
+// Inclinaisons en minutes d'angle : p1 / p2 pour le primaire, s1 / s2 pour le secondaire.
+const VX = new THREE.Vector3(1, 0, 0), VY = new THREE.Vector3(0, 1, 0), VZ = new THREE.Vector3(0, 0, 1);
+const N0 = new THREE.Vector3(-1, 1, 0).normalize();   // normale du secondaire réglé
+const AX0 = new THREE.Vector3(1, 1, 0).normalize();   // grand axe de l'ellipse du secondaire
+const AY0 = new THREE.Vector3().crossVectors(N0, AX0);
+function optique(t, k = 1) {
+  const qp = new THREE.Quaternion().setFromAxisAngle(VZ, t.p1 * MN * k).multiply(new THREE.Quaternion().setFromAxisAngle(VY, t.p2 * MN * k));
+  const qs = new THREE.Quaternion().setFromAxisAngle(VZ, t.s1 * MN * k).multiply(new THREE.Quaternion().setFromAxisAngle(AX0, t.s2 * MN * k));
+  const r = (v, q) => v.clone().applyQuaternion(q).toArray();
+  return { qp, qs, V: [XP, 0, 0], a: r(VX, qp), e1: r(VY, qp), e2: r(VZ, qp), C: [XS - DECAL, -DECAL, 0], n: r(N0, qs), u: r(AX0, qs), v: r(AY0, qs) };
+}
+/** Intersection avec le paraboloïde du primaire (flèche r²/4F autour de son axe). */
+function hitPrimary(O, o, d) {
+  const w = sub(o, O.V), wu = dot(w, O.a), du = dot(d, O.a);
+  const wp = add(w, O.a, -wu), dp = add(d, O.a, -du);
+  const A = dot(dp, dp), B = 2 * dot(wp, dp) - 4 * F * du, C = dot(wp, wp) - 4 * F * wu;
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return null;
+  const q = -0.5 * (B + (B >= 0 ? 1 : -1) * Math.sqrt(disc));
+  let t = Infinity;
+  for (const r of [q / A, C / q]) if (Number.isFinite(r) && r > 1e-6 && r < t) t = r;
+  if (!Number.isFinite(t)) return null;
+  const p = add(o, d, t), pv = sub(p, O.V), pu = dot(pv, O.a), pp = add(pv, O.a, -pu);
+  return { p, n: nrm(add(O.a, pp, -1 / (2 * F))), r: Math.hypot(pp[0], pp[1], pp[2]), l1: dot(pp, O.e1), l2: dot(pp, O.e2) };
+}
+/** Intersection avec le plan du secondaire ; dedans : dans l'ellipse ; face : côté aluminé. */
+function hitSecondary(O, o, d) {
+  const dn = dot(d, O.n);
+  if (Math.abs(dn) < 1e-9) return null;
+  const t = dot(sub(O.C, o), O.n) / dn;
+  if (t < 1e-6) return null;
+  const p = add(o, d, t), q = sub(p, O.C), qu = dot(q, O.u) / (SEC_R * Math.SQRT2), qv = dot(q, O.v) / SEC_R;
+  return { p, dedans: qu * qu + qv * qv <= 1, face: dn < 0 };
+}
+/** Le rayon est-il arrêté par le moyeu ou une branche de l'araignée ? */
+function araignee(o, d) {
+  if (Math.abs(d[0]) < 1e-9) return false;
+  const t = (X_ARA - o[0]) / d[0];
+  if (t < 0) return false;
+  const y = o[1] + d[1] * t, z = o[2] + d[2] * t, r = Math.hypot(y, z);
+  if (r > RT) return false;
+  return r < R_MOYEU || Math.abs(y - z) * Math.SQRT1_2 < E_BRANCHE || Math.abs(y + z) * Math.SQRT1_2 < E_BRANCHE;
+}
+/** Remontée dans le porte-oculaire jusqu'à la hauteur yFin ; s'arrête sur la paroi si le rayon en sort. */
+function montee(p, d, yFin) {
+  if (d[1] <= 1e-6) return { p: add(p, d, 1.5), ok: false };
+  const at = (y) => add(p, d, (y - p[1]) / d[1]);
+  const pT = at(RT), pF = at(yFin);
+  const ax = pT[0] - XS, az = pT[2];
+  if (Math.hypot(ax, az) > RD) return { p: pT, ok: false };          // arrêté par la base du porte-oculaire
+  if (Math.hypot(pF[0] - XS, pF[2]) <= RD) return { p: pF, ok: true };
+  const bx = pF[0] - pT[0], bz = pF[2] - pT[2];
+  const A = bx * bx + bz * bz, B = 2 * (ax * bx + az * bz), C = ax * ax + az * az - RD * RD;
+  const s = (-B + Math.sqrt(B * B - 4 * A * C)) / (2 * A);
+  return { p: add(pT, sub(pF, pT), s), ok: false };                    // arrêté par la paroi du tube coulissant
+}
+/** Faisceau du collimateur laser, envoyé le long de l'axe du porte-oculaire. */
+function traceLaser(O) {
+  const o = [XS, Y_BAS, 0], d = [0, -1, 0], pts = [o], res = { pts };
+  const h1 = hitSecondary(O, o, d);
+  if (!h1 || !h1.dedans || !h1.face) { pts.push([XS, -RT, 0]); return res; }
+  pts.push(h1.p);
+  const d1 = refl(d, O.n), hp = hitPrimary(O, h1.p, d1);
+  if (!hp) { pts.push(add(h1.p, d1, 3)); return res; }
+  pts.push(hp.p);
+  res.prim = [hp.l1, hp.l2];
+  if (hp.r > RM) return res;
+  const d2 = refl(d1, hp.n), h2 = hitSecondary(O, hp.p, d2);
+  if (!h2 || !h2.dedans || !h2.face) { pts.push(add(hp.p, d2, (TUBE_FRONT + 0.3 - hp.p[0]) / d2[0])); return res; }
+  pts.push(h2.p);
+  const m = montee(h2.p, refl(d2, O.n), Y_BAS);
+  pts.push(m.p);
+  if (m.ok) res.retour = [m.p[0] - XS, m.p[2]];
+  return res;
+}
+
+// ---------- Charte ----------
+let outil = "oculaire";
+const off = { p1: 0, p2: 0, s1: 0, s2: 0 };   // dérèglement caché de l'exercice
+let exercice = false, reussi = false, pliage = false, sale = true;
+const CLES = ["p1", "p2", "s1", "s2"];
+const fmtAngle = (v) => exercice ? "?" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v)}′`;
+const changer = () => { if (!pliage) reussi = false; sale = true; };
+let tubeOuter, tubeInner, lip;
+function setCut(on) {
+  const mk = (r) => axeX(on ? new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true, Math.PI / 2, Math.PI)
+                            : new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true));
+  tubeOuter.geometry.dispose(); tubeOuter.geometry = mk(RT);
+  tubeInner.geometry.dispose(); tubeInner.geometry = mk(RT - 0.015);
+  lip.visible = !on;
+  // en coupe, le porte-oculaire et l'outil deviennent translucides pour voir la lumière y entrer
+  for (const p of [focuser, eyepiece, cheshire, laserPart]) for (const m of p.materials) {
+    m.userData.opacite ??= m.opacity;
+    m.transparent = on || m.userData.opacite < 1;
+    m.opacity = on ? Math.min(m.userData.opacite, 0.3) : m.userData.opacite;
+    m.depthWrite = !on && m.userData.opacite >= 1;
+    m.needsUpdate = true;
+  }
+}
+
+const S = createSchema({
+  surtitre: "Support de formation · Instruments",
+  titre: "Collimation d'un Newton",
+  sousTitre: "Exemple : Newton 200/1000 · f/5",
+  commandes: [
+    { type: "curseur", id: "p1", label: "Primaire ↕", min: -30, max: 30, pas: 1, valeur: 0, format: fmtAngle, onInput: changer },
+    { type: "curseur", id: "p2", label: "Primaire ↔", min: -30, max: 30, pas: 1, valeur: 0, format: fmtAngle, onInput: changer },
+    { type: "curseur", id: "s1", label: "Secondaire ↕", min: -30, max: 30, pas: 1, valeur: 0, format: fmtAngle, onInput: changer },
+    { type: "curseur", id: "s2", label: "Secondaire ↔", min: -30, max: 30, pas: 1, valeur: 0, format: fmtAngle, onInput: changer },
+    { type: "raccourcis", id: "outil", label: "Outil", boutons: [
+      { id: "oculaire", label: "Oculaire", onClick: () => choisirOutil("oculaire") },
+      { id: "cheshire", label: "Cheshire", onClick: () => choisirOutil("cheshire") },
+      { id: "laser", label: "Laser", onClick: () => choisirOutil("laser") },
+    ] },
+    { type: "raccourcis", id: "reglage", label: "Réglage", boutons: [
+      { id: "collimate", label: "Collimaté", onClick: () => regler(0, 0, 0, 0) },
+      { id: "derPrim", label: "Primaire déréglé", onClick: () => regler(18, -12, 0, 0) },
+      { id: "derSec", label: "Secondaire déréglé", onClick: () => regler(0, 0, -14, 10) },
+      { id: "exercice", label: "Exercice", onClick: lancerExercice },
+    ] },
+    { type: "bascule", id: "axes", label: "Axes optiques", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: setCut },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [12, 8.5, 20], cible: [0, 0.4, 0] },
+    { id: "profil", label: "Profil", pos: [0.3, 1.0, 25], cible: [0, 0.4, 0] },
+    { id: "secondaire", label: "Secondaire", pos: [XS + 4.5, 3.4, 10], cible: [XS - 0.8, 1.1, 0] },
+    { id: "barillet", label: "Barillet", pos: [TUBE_BACK - 6, 2.5, 5], cible: [TUBE_BACK + 0.6, 0, 0] },
+  ],
+  apercu: { titre: "Vu à l'oculaire" },
+  intro: () => `
+    <div class="eyebrow">Aligner les deux miroirs</div>
+    <p>Collimater, c'est faire passer l'axe optique du primaire par le centre du porte-oculaire. Choisissez un outil, déréglez un miroir et observez.</p>
+    ${legende([
+      { couleur: SEG[0], texte: "Secondaire d'abord : on l'incline jusqu'à ce que l'axe du porte-oculaire tombe au centre du primaire (point laser dans la pastille)." },
+      { couleur: SEG[1], texte: "Primaire ensuite : les vis du barillet l'inclinent jusqu'à ce que son axe remonte dans le porte-oculaire (retour du laser dans le trou)." },
+      { couleur: SEG[2], texte: "Contrôle au Cheshire : secondaire, reflet du primaire, pastille et reflet de l'œilleton sont concentriques." },
+      { couleur: SEG[3], texte: "Contrôle final sur une étoile, à fort grossissement : défocalisée, elle montre des anneaux concentriques." },
+    ])}
+    <p class="spec">Dans la 3D, les inclinaisons sont exagérées ×2 pour être visibles ; l'aperçu montre l'effet réel. « Exercice » dérègle les miroirs au hasard et masque les valeurs.</p>`,
+});
+
+// ---------- Tube ----------
+const tube = S.part("tube", "Tube optique", {
+  ancre: [-1.0, RT + 0.05, 0],
+  texte: "Il tient les deux miroirs face à face. Un choc, le transport ou un écart de température suffisent à décaler l'un d'eux : on vérifie la collimation avant chaque soirée.",
+  chiffres: "Newton 200/1000 · f/5 : plus le rapport F/D est petit, plus la collimation est exigeante",
+});
+tubeOuter = S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, tubeLen, 72, 1, true)), M.peinture(), tubeMid));
+tubeInner = S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, tubeLen, 72, 1, true)), M.flocage(), tubeMid));
+lip = S.add(tube, mesh(axeX(new THREE.TorusGeometry(RT, 0.035, 10, 72).rotateX(Math.PI / 2)), M.noir(), TUBE_FRONT));
+
+// ---------- Primaire (inclinable, pivote autour de son sommet) ----------
+const primGroup = new THREE.Group();
+primGroup.position.set(XP, 0, 0);
+S.scene.add(primGroup);
+const primary = S.part("primary", "Miroir primaire", {
+  parent: primGroup, ancre: [-0.1, RM + 0.1, 0],
+  texte: "Miroir parabolique : il ne donne une image parfaite que pour la lumière qui arrive le long de son axe optique. Si cet axe ne passe pas par le centre du porte-oculaire, l'étoile au centre du champ est vue « de biais » et prend une forme de comète : c'est la coma. Refaire la mise au point n'y change rien.",
+  chiffres: "Tolérance à f/5 : axe à moins de ≈ 2,7 mm du centre du champ (≈ 9′ d'inclinaison) · à f/8 : ≈ 11 mm",
+});
+{
+  const pts = [], T = 0.2;
+  for (let i = 0; i <= 24; i++) { const r = (i / 24) * RM; pts.push(new THREE.Vector2(r, r * r / (4 * F))); }
+  pts.push(new THREE.Vector2(RM, -T), new THREE.Vector2(0.001, -T));
+  const g = new THREE.LatheGeometry(pts, 96);
+  g.rotateZ(-Math.PI / 2);
+  S.add(primary, mesh(g, M.miroir())).material.side = THREE.DoubleSide;
+  S.add(primary, mesh(axeX(new THREE.CylinderGeometry(RM - 0.002, RM - 0.002, T - 0.01, 96, 1, true)), M.verre(), -T / 2));
+  S.add(primary, mesh(axeX(new THREE.CylinderGeometry(RM + 0.06, RM + 0.06, 0.08, 72)), M.alu(), -0.26)); // plateau mobile du barillet
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3) + Math.PI / 2 + 1;
+    const clip = S.add(primary, mesh(new THREE.BoxGeometry(0.28, 0.06, 0.16), M.noir()));
+    clip.position.set(0.03, Math.sin(a) * (RM - 0.04), Math.cos(a) * (RM - 0.04));
+    clip.rotation.x = Math.PI / 2 - a;
+  }
+}
+const pastille = S.part("pastille", "Pastille centrale", {
+  parent: primGroup, ancre: [0.1, 0.3, 0.3],
+  texte: "Petit anneau autocollant collé exactement au centre du primaire. Il ne gêne pas l'observation, car ce centre est déjà dans l'ombre du secondaire. C'est la cible commune du Cheshire et du laser.",
+  chiffres: "Anneau Ø ≈ 20 mm · trou central Ø ≈ 5 mm",
+});
+S.add(pastille, mesh(new THREE.RingGeometry(R_TROU, R_PAST, 48).rotateY(Math.PI / 2), M.peinture(), 0.004));
+
+// ---------- Barillet (fixe) : vis de réglage et de blocage ----------
+const cell = S.part("cell", "Barillet", {
+  ancre: [TUBE_BACK - 0.1, -RT - 0.05, 0],
+  texte: "Support arrière du primaire. Trois vis de réglage à 120° inclinent le miroir, trois vis de blocage le maintiennent ensuite. On desserre les blocages, on règle par petites touches, puis on resserre sans forcer.",
+  chiffres: "3 vis de réglage + 3 vis de blocage · quelques degrés de rotation de vis suffisent",
+});
+{
+  S.add(cell, mesh(axeX(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.12, 72)), M.noir(), TUBE_BACK - 0.06));
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3) + Math.PI / 2, b = a + Math.PI / 3;
+    S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.07, 0.07, 0.55, 16)), M.alu(), TUBE_BACK - 0.22, Math.sin(a) * 0.75, Math.cos(a) * 0.75));
+    S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.14, 0.14, 0.12, 20)), M.noir(), TUBE_BACK - 0.5, Math.sin(a) * 0.75, Math.cos(a) * 0.75));
+    S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 12)), M.alu(), TUBE_BACK - 0.2, Math.sin(b) * 0.75, Math.cos(b) * 0.75));
+    S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.07, 0.07, 0.08, 6)), M.alu(), TUBE_BACK - 0.36, Math.sin(b) * 0.75, Math.cos(b) * 0.75));
+  }
+}
+
+// ---------- Secondaire (inclinable autour de son centre) ----------
+const secGroup = new THREE.Group();
+secGroup.position.set(XS - DECAL, -DECAL, 0);
+S.scene.add(secGroup);
+const secondary = S.part("secondary", "Miroir secondaire", {
+  parent: secGroup, ancre: [0, SEC_R + 0.15, 0],
+  texte: "Miroir plan à 45°, tenu par l'araignée. Une vis centrale règle sa position, trois vis autour l'inclinent. Son inclinaison décide de l'endroit où l'axe du porte-oculaire tombe sur le primaire : on le règle toujours en premier.",
+  chiffres: "Petit axe ≈ 58 mm · décalé de ≈ 3 mm vers le primaire (offset) · 1 vis centrale + 3 vis d'inclinaison",
+});
+{
+  const g = new THREE.CylinderGeometry(SEC_R, SEC_R, 0.06, 64);
+  g.rotateX(Math.PI / 2);
+  g.scale(Math.SQRT2, 1, 1);
+  const m = S.add(secondary, mesh(g, M.miroir()));
+  m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(AX0, AY0, N0));
+  S.add(secondary, mesh(axeX(new THREE.CylinderGeometry(0.11, 0.11, 0.5, 24)), M.noir(), 0.33 + DECAL));
+}
+
+// ---------- Araignée (fixe) ----------
+const spider = S.part("spider", "Araignée", {
+  ancre: [XS + 0.55, -0.9, 0.9],
+  texte: "Elle tient le secondaire au centre du tube. Ses vis de réglage sont sur le moyeu, côté entrée du tube. Ses branches doivent rester bien tendues : une araignée qui bouge dérègle le secondaire.",
+  chiffres: "4 branches d'environ 1 mm · 3 vis d'inclinaison autour d'une vis centrale",
+});
+{
+  S.add(spider, mesh(axeX(new THREE.CylinderGeometry(R_MOYEU, R_MOYEU, 0.2, 24)), M.noir(), X_ARA));
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + k * Math.PI / 2, len = RT - R_MOYEU;
+    const v = S.add(spider, mesh(new THREE.BoxGeometry(0.14, len, 0.01), M.noir(), X_ARA));
+    v.rotation.x = Math.PI / 2 - a;
+    v.position.y = Math.sin(a) * (R_MOYEU + len / 2);
+    v.position.z = Math.cos(a) * (R_MOYEU + len / 2);
+  }
+  S.add(spider, mesh(axeX(new THREE.CylinderGeometry(0.035, 0.035, 0.14, 12)), M.alu(), X_ARA + 0.15));
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3) + Math.PI / 2;
+    S.add(spider, mesh(axeX(new THREE.CylinderGeometry(0.022, 0.022, 0.1, 10)), M.alu(), X_ARA + 0.13, Math.sin(a) * 0.1, Math.cos(a) * 0.1));
+  }
+}
+
+// ---------- Porte-oculaire ----------
+const focuser = S.part("focuser", "Porte-oculaire", {
+  ancre: [XS + 0.7, RT + 0.35, 0],
+  texte: "Son axe est la référence de toute la collimation : chaque outil s'y emboîte exactement, et les deux miroirs s'alignent sur lui. On collimate avec le porte-oculaire à peu près dans sa position d'observation.",
+  chiffres: "Coulant 31,75 mm ou 50,8 mm · type crémaillère ou Crayford",
+});
+{
+  S.add(focuser, mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.12, 40), M.noir(), XS, RT + 0.02, 0));
+  S.add(focuser, mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.55, 40, 1, true), M.noir(), XS, RT + 0.33, 0)).material.side = THREE.DoubleSide;
+  S.add(focuser, mesh(new THREE.CylinderGeometry(RD, RD, 0.4, 40, 1, true), M.alu(), XS, RT + 0.78, 0)).material.side = THREE.DoubleSide;
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.05, 0.05, 1.3, 12)), M.alu(), XS + 0.36, RT + 0.3, 0));
+  for (const s of [-1, 1]) S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.17, 0.17, 0.12, 24)), M.noir(), XS + 0.36, RT + 0.3, s * 0.65));
+}
+
+// ---------- Outils : un seul est en place dans le porte-oculaire ----------
+function outil3D(id, nom, ancre, opts) {
+  const p = S.part(id, nom, { ancre, etiquette: false, ...opts });
+  S.label(nom, () => p.group.localToWorld(p.ancre.clone()), { partId: id, visible: () => outil === id });
+  return p;
+}
+const eyepiece = outil3D("oculaire", "Oculaire", [XS + 0.45, D + 0.55, 0], {
+  texte: "Pour le contrôle final, sur une étoile brillante à fort grossissement. Au point, l'étoile doit être un point entouré d'anneaux fins. Un peu défocalisée, elle devient un disque troué par l'ombre du secondaire, qui doit être parfaitement concentrique.",
+  chiffres: "Contrôle vers 200× (oculaire de 5 mm) · étoile haute dans le ciel, nuit calme",
+});
+{
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 32, 1, true), M.alu(), XS, D + 0.15, 0)).material.side = THREE.DoubleSide;
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.6, 32, 1, true), M.noir(), XS, D + 0.65, 0)).material.side = THREE.DoubleSide;
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.29, 0.31, 0.22, 32, 1, true), M.caoutchouc(), XS, D + 1.06, 0)).material.side = THREE.DoubleSide;
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 32), M.lentille(), XS, D + FE, 0));
+}
+const cheshire = outil3D("cheshire", "Œilleton Cheshire", [XS + 0.35, D + 0.6, 0], {
+  texte: "Un tube emboîté dans le porte-oculaire, avec un petit trou de visée et une face claire inclinée, éclairée par une fenêtre latérale. Par le trou, on voit le secondaire, le reflet du primaire, la pastille et le reflet de l'œilleton. Sans pile ni réglage, c'est la référence la plus sûre.",
+  chiffres: "Coulant 31,75 mm · trou de visée Ø ≈ 2 mm · de jour, avec une feuille blanche dans le tube face au porte-oculaire",
+});
+{
+  S.add(cheshire, mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.6, 32, 1, true), M.alu(), XS, Y_BAS + 0.3, 0)).material.side = THREE.DoubleSide;
+  S.add(cheshire, mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.3, 32), M.noir(), XS, D + 0.4, 0));
+  S.add(cheshire, mesh(new THREE.BoxGeometry(0.18, 0.13, 0.03), M.peinture(), XS, D + 0.4, 0.19));
+  S.add(cheshire, mesh(new THREE.TorusGeometry(0.04, 0.01, 8, 24).rotateX(Math.PI / 2), M.alu(), XS, D + 0.555, 0));
+}
+const laserPart = outil3D("laser", "Collimateur laser", [XS + 0.4, D + 0.95, 0], {
+  texte: "Il envoie un faisceau le long de l'axe du porte-oculaire. On règle le secondaire pour que le point rouge tombe dans la pastille, puis le primaire pour que le faisceau revienne dans le trou de sortie. Rapide, même de nuit, mais il doit être lui-même bien aligné. Ne jamais regarder le faisceau ni viser quelqu'un.",
+  chiffres: "Diode rouge 650 nm · moins de 1 mW (classe 2) · vérifier son alignement en le tournant dans le porte-oculaire",
+});
+{
+  S.add(laserPart, mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.55, 32, 1, true), M.alu(), XS, Y_BAS + 0.275, 0)).material.side = THREE.DoubleSide;
+  S.add(laserPart, mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.7, 32), M.noir(), XS, D + 0.55, 0));
+  S.add(laserPart, mesh(new THREE.BoxGeometry(0.16, 0.16, 0.03), M.peinture(), XS, D + 0.4, 0.215));
+  S.add(laserPart, mesh(new THREE.SphereGeometry(0.03, 12, 8), M.lumineux(COULEURS.laser), XS, D + 0.91, 0));
+}
+
+// ---------- Faisceaux lumineux (lignes + particules) ----------
+function faisceau(opacite, taille, maxPh = 64) {
+  const group = new THREE.Group();
+  S.scene.add(group);
+  const lignes = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: opacite, depthWrite: false }));
+  group.add(lignes);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(maxPh * 3), 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(maxPh * 3), 3));
+  const photons = new THREE.Points(geo, new THREE.PointsMaterial({ size: taille, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  photons.frustumCulled = false;
+  group.add(photons);
+  const c = new THREE.Color();
+  let trajets = [];
+  return {
+    group, photons,
+    /** liste : [{ pts: [[x,y,z], ...], cols: [couleur de chaque segment] }] */
+    poser(liste) {
+      trajets = liste.filter((t) => t.pts.length > 1).map((t) => {
+        const lens = []; let total = 0;
+        for (let i = 0; i < t.pts.length - 1; i++) { const l = Math.hypot(...sub(t.pts[i + 1], t.pts[i])); lens.push(l); total += l; }
+        return { ...t, lens, total };
+      });
+      const pos = [], col = [];
+      for (const t of trajets) for (let i = 0; i < t.pts.length - 1; i++) {
+        c.setHex(t.cols[i]);
+        pos.push(...t.pts[i], ...t.pts[i + 1]);
+        col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+      lignes.geometry.dispose(); lignes.geometry = g;
+    },
+    animer(time, parTrajet) {
+      const P = geo.attributes.position, C = geo.attributes.color;
+      let k = 0;
+      for (const t of trajets) for (let j = 0; j < parTrajet && k < maxPh; j++, k++) {
+        let s = (time * 3.2 + j * t.total / parTrajet) % t.total, i = 0;
+        while (i < t.lens.length - 1 && s > t.lens[i]) { s -= t.lens[i]; i++; }
+        const a = t.pts[i], b = t.pts[i + 1], f = Math.min(1, s / Math.max(t.lens[i], 1e-9));
+        P.setXYZ(k, a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f);
+        c.setHex(t.cols[i]); C.setXYZ(k, c.r, c.g, c.b);
+      }
+      geo.setDrawRange(0, k);
+      P.needsUpdate = true; C.needsUpdate = true;
+    },
+  };
+}
+const halo = (couleur, taille) => {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: textureHalo(), color: couleur, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  s.scale.setScalar(taille);
+  return s;
+};
+const lumEtoile = faisceau(0.55, 0.42);
+const focusMark = halo(COULEURS.corail, 0.55);
+lumEtoile.group.add(focusMark);
+const lumLaser = faisceau(0.9, 0.3, 24);
+const tacheLaser = halo(COULEURS.laser, 0.3), tacheRetour = halo(COULEURS.laser, 0.3);
+lumLaser.group.add(tacheLaser, tacheRetour);
+
+// ---------- Axes : porte-oculaire (blanc) et axe optique du primaire (ambre) ----------
+const axes = new THREE.Group();
+S.scene.add(axes);
+const ligneAxe = (couleur, tiret) => {
+  const l = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: couleur, dashSize: tiret, gapSize: tiret * 0.7, transparent: true, opacity: 0.8, depthWrite: false }));
+  axes.add(l);
+  return l;
+};
+const axeFoc = ligneAxe(0xffffff, 0.16), axePrim = ligneAxe(COULEURS.ambre, 0.07);
+function poserLigne(l, pts) {
+  l.geometry.dispose();
+  l.geometry = new THREE.BufferGeometry().setFromPoints(pts.map(V3));
+  l.computeLineDistances();
+}
+const Y_HAUT = D + 1.6;
+let ancreAxePrim = [XP + 2.2, 0.07, 0], foyer3D = null, rayonsOk = false;
+
+// Les six rayons d'étoile du schéma du télescope, tracés dans l'optique exagérée de la 3D
+const ENTREES = [[0.85, 0], [-0.85, 0], [0.5, 0], [-0.5, 0], [0, 0.72], [0, -0.72]];
+function rayon3D(O, y0, z0) {
+  const A = [TUBE_FRONT + 4.5, y0, z0], s = [-1, 0, 0];
+  const hp = hitPrimary(O, A, s);
+  const d1 = refl(s, hp.n), h2 = hitSecondary(O, hp.p, d1);
+  if (!h2 || !h2.dedans || !h2.face) return { pts: [A, hp.p, add(hp.p, d1, (TUBE_FRONT + 0.6 - hp.p[0]) / d1[0])] };
+  const d2 = refl(d1, O.n), m = montee(h2.p, d2, D + FE);
+  const r = { S: h2.p, d2 };
+  if (!m.ok) return { ...r, pts: [A, hp.p, h2.p, m.p] };
+  // oculaire : lentille mince de focale FE, d'axe vertical (pentes dx/dy et dz/dy)
+  const out = nrm([d2[0] / d2[1] - (m.p[0] - XS) / FE, 1, d2[2] / d2[1] - m.p[2] / FE]);
+  return { ...r, pts: [A, hp.p, h2.p, m.p, add(m.p, out, 1.3)], ok: true };
+}
+/** Point le plus proche d'un faisceau de droites (moindres carrés) : le foyer. */
+function pointProche(droites) {
+  const A = new THREE.Matrix3().set(0, 0, 0, 0, 0, 0, 0, 0, 0), e = A.elements, b = new THREE.Vector3();
+  for (const [p, d] of droites) {
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) e[j * 3 + i] += (i === j ? 1 : 0) - d[i] * d[j];
+    const pd = dot(p, d);
+    b.x += p[0] - d[0] * pd; b.y += p[1] - d[1] * pd; b.z += p[2] - d[2] * pd;
+  }
+  return b.applyMatrix3(A.invert()).toArray();
+}
+
+function mettreA3D(O3) {
+  primGroup.quaternion.copy(O3.qp);
+  secGroup.quaternion.copy(O3.qs);
+  // trajet de la lumière d'une étoile
+  const rays = ENTREES.map(([y, z]) => rayon3D(O3, y, z));
+  lumEtoile.poser(rays.map((r) => ({ pts: r.pts, cols: SEG })));
+  const utiles = rays.filter((r) => r.S);
+  rayonsOk = rays.filter((r) => r.ok).length >= 3;
+  foyer3D = utiles.length >= 3 ? pointProche(utiles.map((r) => [r.S, nrm(r.d2)])) : null;
+  focusMark.visible = !!foyer3D && rayonsOk;
+  if (foyer3D) focusMark.position.set(...foyer3D);
+  // faisceau laser
+  const L = traceLaser(O3);
+  lumLaser.poser([{ pts: L.pts, cols: L.pts.map(() => COULEURS.laser) }]);
+  tacheLaser.visible = L.pts.length > 2; tacheLaser.position.set(...L.pts[Math.min(2, L.pts.length - 1)]);
+  tacheRetour.visible = !!L.retour; tacheRetour.position.set(...L.pts[L.pts.length - 1]);
+  // axe du porte-oculaire, renvoyé vers le primaire par le secondaire
+  const top = [XS, Y_HAUT, 0], h1 = hitSecondary(O3, top, [0, -1, 0]);
+  if (h1 && h1.dedans) {
+    const d1 = refl([0, -1, 0], O3.n), hp = hitPrimary(O3, h1.p, d1);
+    poserLigne(axeFoc, [top, h1.p, hp ? hp.p : add(h1.p, d1, 7.7)]);
+  } else poserLigne(axeFoc, [top, [XS, -RT, 0]]);
+  // axe optique du primaire, renvoyé vers le haut par le secondaire
+  const h2 = hitSecondary(O3, O3.V, O3.a);
+  if (h2 && h2.dedans) {
+    const d = refl(O3.a, O3.n);
+    poserLigne(axePrim, [O3.V, h2.p, add(h2.p, d, (Y_HAUT - h2.p[1]) / d[1])]);
+  } else poserLigne(axePrim, [O3.V, add(O3.V, O3.a, TUBE_FRONT - XP)]);
+  ancreAxePrim = add(O3.V, O3.a, 2.4);
+}
+
+const vEtoile = () => outil === "oculaire" && S.state.labels;
+S.label("Lumière d'une étoile", () => new THREE.Vector3(TUBE_FRONT + 3.2, 0.95, 0), { lumiere: true, visible: () => outil === "oculaire" });
+S.label("Foyer", () => V3(foyer3D || [XS, D, 0]).add(new THREE.Vector3(-0.45, 0.12, 0)), { lumiere: true, visible: () => vEtoile() && focusMark.visible });
+S.label("Vers l'œil", () => new THREE.Vector3(XS, D + FE + 1.45, 0), { lumiere: true, visible: () => vEtoile() && rayonsOk });
+S.label("Faisceau laser", () => new THREE.Vector3(0.5, -0.12, 0), { lumiere: true, visible: () => outil === "laser" });
+S.label("Axe du porte-oculaire", () => new THREE.Vector3(XS + 0.05, Y_HAUT + 0.05, 0), { lumiere: true, visible: () => S.state.axes });
+S.label("Axe optique du primaire", () => V3(ancreAxePrim).add(new THREE.Vector3(0, 0.08, 0)), { lumiere: true, visible: () => S.state.axes });
+
+// ---------- Image d'une étoile (angles réels) ----------
+function faisceauEtoile(O, s, n, obstruction) {
+  const res = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const y = ((i + 0.5) / n * 2 - 1) * RM, z = ((j + 0.5) / n * 2 - 1) * RM;
+    if (y * y + z * z > RM * RM) continue;
+    const o = add([XP, y, z], s, -12);
+    if (obstruction) {
+      if (araignee(o, s)) continue;
+      const hs = hitSecondary(O, o, s);
+      if (hs && hs.dedans) continue;
+    }
+    const hp = hitPrimary(O, o, s);
+    if (!hp || hp.r > RM) continue;
+    const d1 = refl(s, hp.n), h2 = hitSecondary(O, hp.p, d1);
+    if (!h2 || !h2.dedans || !h2.face) continue;
+    const d2 = refl(d1, O.n);
+    if (obstruction && !montee(h2.p, d2, D).ok) continue;
+    res.push([h2.p, d2]);
+  }
+  return res;
+}
+// figure de diffraction d'une ouverture de 200 mm obstruée à 29 % (λ = 550 nm)
+function j1(x) {
+  const ax = Math.abs(x);
+  if (ax < 8) {
+    const y = x * x;
+    return x * (72362614232.0 + y * (-7895059235.0 + y * (242396853.1 + y * (-2972611.439 + y * (15704.48260 + y * -30.16036606)))))
+      / (144725228442.0 + y * (2300535178.0 + y * (18583304.74 + y * (99447.43394 + y * (376.9991397 + y)))));
+  }
+  const z = 8 / ax, y = z * z, xx = ax - 2.356194491;
+  const a1 = 1.0 + y * (0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * -0.240337019e-6)));
+  const a2 = 0.04687499995 + y * (-0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
+  const r = Math.sqrt(0.636619772 / ax) * (Math.cos(xx) * a1 - z * Math.sin(xx) * a2);
+  return x < 0 ? -r : r;
+}
+const jinc = (v) => (v < 1e-6 ? 1 : 2 * j1(v) / v);
+const EPS = SEC_R / RM;
+const airy = (v) => { const a = (jinc(v) - EPS * EPS * jinc(EPS * v)) / (1 - EPS * EPS); return a * a; };
+const NI = 81;                                 // définition des images d'étoile
+const FOV_NET = 20, FOV_FLOU = 110;            // champ des deux images, en secondes d'arc
+const PIX = FOV_NET / NI, KR = Math.ceil(4.5 / PIX), KW = 2 * KR + 1;
+const NOYAU = (() => {
+  const K = new Float32Array(KW * KW); let s = 0;
+  for (let y = -KR; y <= KR; y++) for (let x = -KR; x <= KR; x++) { const v = airy(5.538 * Math.hypot(x, y) * PIX); K[(y + KR) * KW + x + KR] = v; s += v; }
+  for (let i = 0; i < K.length; i++) K[i] /= s;
+  return K;
+})();
+function deposer(acc, px, py, w) { // dépôt bilinéaire
+  const x = px - 0.5, y = py - 0.5, i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j;
+  for (const [di, dj, k] of [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)], [0, 1, (1 - fx) * fy], [1, 1, fx * fy]]) {
+    const ii = i + di, jj = j + dj;
+    if (ii >= 0 && jj >= 0 && ii < NI && jj < NI) acc[jj * NI + ii] += w * k;
+  }
+}
+function convoluer(src) {
+  const out = new Float32Array(NI * NI);
+  for (let j = 0; j < NI; j++) for (let i = 0; i < NI; i++) {
+    const w = src[j * NI + i];
+    if (!w) continue;
+    for (let ky = -KR; ky <= KR; ky++) {
+      const y = j + ky;
+      if (y < 0 || y >= NI) continue;
+      for (let kx = -KR; kx <= KR; kx++) { const x = i + kx; if (x >= 0 && x < NI) out[y * NI + x] += w * NOYAU[(ky + KR) * KW + kx + KR]; }
+    }
+  }
+  return out;
+}
+function flouter(src, passes) {
+  let a = src;
+  for (let p = 0; p < passes; p++) {
+    const b = new Float32Array(NI * NI);
+    for (let j = 0; j < NI; j++) for (let i = 0; i < NI; i++) {
+      let s = 0, n = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const x = i + di, y = j + dj;
+        if (x >= 0 && y >= 0 && x < NI && y < NI) { s += a[y * NI + x]; n++; }
+      }
+      b[j * NI + i] = s / n;
+    }
+    a = b;
+  }
+  return a;
+}
+/** Image au point et défocalisée d'une étoile recentrée dans le champ, avec l'écart d'axe (rad). */
+function calculEtoile(O) {
+  // on vise l'étoile comme l'observateur : on bouge le tube jusqu'à ce qu'elle soit au centre du champ
+  const centre = (a, b) => {
+    const R = faisceauEtoile(O, nrm([-1, a, b]), 10, false);
+    if (R.length < 5) return null;
+    let x = 0, z = 0;
+    for (const [p, d] of R) { const t = (D - p[1]) / d[1]; x += p[0] + d[0] * t; z += p[2] + d[2] * t; }
+    return [x / R.length - XS, z / R.length];
+  };
+  let a = 0, b = 0;
+  const h = 1e-4;
+  for (let it = 0; it < 5; it++) {
+    const c0 = centre(a, b);
+    if (!c0 || Math.hypot(c0[0], c0[1]) < 1e-8) break;
+    const ca = centre(a + h, b), cb = centre(a, b + h);
+    if (!ca || !cb) break;
+    const j11 = (ca[0] - c0[0]) / h, j12 = (cb[0] - c0[0]) / h, j21 = (ca[1] - c0[1]) / h, j22 = (cb[1] - c0[1]) / h;
+    const det = j11 * j22 - j12 * j21;
+    if (Math.abs(det) < 1e-12) break;
+    a -= (j22 * c0[0] - j12 * c0[1]) / det;
+    b -= (-j21 * c0[0] + j11 * c0[1]) / det;
+  }
+  const s = nrm([-1, a, b]);
+  const ecart = Math.acos(Math.min(1, -dot(s, O.a)));
+  // meilleure mise au point : le plan où la tache est la plus petite
+  const R = faisceauEtoile(O, s, 70, true);
+  const P = R.map(([p, d]) => { const t = (D - p[1]) / d[1]; return [p[0] + d[0] * t, p[2] + d[2] * t, d[0] / d[1], d[2] / d[1]]; });
+  const moy = [0, 0, 0, 0];
+  for (const q of P) for (let k = 0; k < 4; k++) moy[k] += q[k] / P.length;
+  let num = 0, den = 0;
+  for (const q of P) {
+    const dx = q[0] - moy[0], dz = q[1] - moy[1], kx = q[2] - moy[2], kz = q[3] - moy[3];
+    num += dx * kx + dz * kz; den += kx * kx + kz * kz;
+  }
+  const hMap = den > 0 ? -num / den : 0;
+  const image = (rays, dh, fov) => {
+    const pts = rays.map(([p, d]) => { const t = (D + dh - p[1]) / d[1]; return [p[0] + d[0] * t, p[2] + d[2] * t]; });
+    let cx = 0, cz = 0;
+    for (const q of pts) { cx += q[0] / pts.length; cz += q[1] / pts.length; }
+    const acc = new Float32Array(NI * NI);
+    // vue dans l'oculaire : droite = +z, haut = +x (côté entrée du tube)
+    for (const q of pts) deposer(acc, ((q[1] - cz) * ARCSEC / fov + 0.5) * NI, (0.5 - (q[0] - cx) * ARCSEC / fov) * NI, 1);
+    return acc;
+  };
+  const net = convoluer(image(R, hMap, FOV_NET));
+  const flou = flouter(image(faisceauEtoile(O, s, 170, true), hMap - 0.015, FOV_FLOU), 2);
+  return { ecart, net, flou };
+}
+const REF = (() => {
+  const e = calculEtoile(optique({ p1: 0, p2: 0, s1: 0, s2: 0 }));
+  const tri = Array.from(e.flou).filter((v) => v > 0).sort((x, y) => x - y);
+  return { net: Math.max(...e.net), flou: tri[Math.floor(tri.length * 0.6)] || 1 };
+})();
+function versImage(vals, ref, gamma, cvs) {
+  const ctx = cvs.getContext("2d"), img = ctx.createImageData(NI, NI);
+  for (let k = 0; k < NI * NI; k++) {
+    const v = Math.min(1, Math.pow(vals[k] / ref, gamma));
+    img.data[k * 4] = 255 * v; img.data[k * 4 + 1] = 244 * v; img.data[k * 4 + 2] = 214 * v; img.data[k * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+const cvNet = Object.assign(document.createElement("canvas"), { width: NI, height: NI });
+const cvFlou = Object.assign(document.createElement("canvas"), { width: NI, height: NI });
+
+// ---------- Vue par l'œilleton du Cheshire (lancer de rayons depuis l'œil) ----------
+const COUL = {
+  tube: [6, 7, 9], feuille: [150, 152, 156], coulant: [44, 48, 55], fond: [17, 18, 21], ciel: [178, 188, 202], pastille: [240, 238, 228],
+  clip: [18, 18, 20], plateau: [36, 38, 43], face: [228, 216, 188], oeil: [0, 0, 0], araignee: [12, 12, 14],
+};
+const CLIPS = [0, 1, 2].map((k) => k * (2 * Math.PI / 3) + Math.PI / 2 + 1);
+const estClip = (hp) => hp.r > RM - 0.07 && CLIPS.some((a) => {
+  let da = Math.atan2(hp.l1, hp.l2) - a;
+  da = Math.atan2(Math.sin(da), Math.cos(da));
+  return Math.abs(da) < 0.08;
+});
+const TAN_CH = 0.125;      // demi-champ affiché (le coulant limite à ≈ 0,155)
+function pixelCheshire(O, d) {
+  const E = [XS, Y_OEIL, 0];
+  const pb = add(E, d, (Y_BAS - E[1]) / d[1]);
+  if (Math.hypot(pb[0] - XS, pb[2]) > RC) return COUL.coulant;
+  const h1 = hitSecondary(O, pb, d);
+  if (!h1 || !h1.dedans || !h1.face) return COUL.feuille; // feuille blanche glissée face au porte-oculaire
+  const d1 = refl(d, O.n), hp = hitPrimary(O, h1.p, d1);
+  if (!hp || hp.r > RM + 0.06) return COUL.tube;
+  let c, k = 0.9;
+  if (hp.r > RM) c = COUL.plateau;
+  else if (hp.r > R_TROU && hp.r < R_PAST) c = COUL.pastille;
+  else if (estClip(hp)) c = COUL.clip;
+  else {
+    k *= 0.9;
+    const d2 = refl(d1, hp.n), h2 = hitSecondary(O, hp.p, d2);
+    if (h2 && h2.dedans && h2.face) {
+      k *= 0.9;
+      const d3 = refl(d2, O.n);
+      if (d3[1] <= 0) c = COUL.tube;
+      else {
+        const pB = add(h2.p, d3, (Y_BAS - h2.p[1]) / d3[1]);
+        if (Math.hypot(pB[0] - XS, pB[2]) > RC) c = COUL.fond;
+        else {
+          const pO = add(h2.p, d3, (Y_OEIL - 0.04 - h2.p[1]) / d3[1]);
+          c = Math.hypot(pO[0] - XS, pO[2]) < R_OEIL ? COUL.oeil : COUL.face;
+        }
+      }
+    } else c = araignee(hp.p, d2) ? COUL.araignee : COUL.ciel;
+  }
+  return [c[0] * k, c[1] * k, c[2] * k];
+}
+const cvCh = document.createElement("canvas");
+let cleCh = "";
+function rendreCheshire(O, n, cle) {
+  if (cle === cleCh) return;
+  cleCh = cle;
+  cvCh.width = cvCh.height = n;
+  const ctx = cvCh.getContext("2d"), img = ctx.createImageData(n, n);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const fx = ((i + 0.5) / n * 2 - 1) * TAN_CH, fy = (1 - (j + 0.5) / n * 2) * TAN_CH, q = (j * n + i) * 4;
+    if (fx * fx + fy * fy > TAN_CH * TAN_CH * 1.03) continue;
+    const c = pixelCheshire(O, nrm([fy, -1, fx])); // droite = +z, haut = +x
+    img.data[q] = c[0]; img.data[q + 1] = c[1]; img.data[q + 2] = c[2]; img.data[q + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// ---------- Encart d'aperçu ----------
+const ap = S.apercu;
+const TITRES = { oculaire: "Vu à l'oculaire", cheshire: "Vu dans le Cheshire", laser: "Vu sur les cibles du laser" };
+let diag = null, legendePrec = "";
+const tilts = () => ({ p1: S.state.p1 + off.p1, p2: S.state.p2 + off.p2, s1: S.state.s1 + off.s1, s2: S.state.s2 + off.s2 });
+
+function mettreAJour() {
+  const t = tilts();
+  const O = optique(t);
+  mettreA3D(optique(t, EXA));
+  const L = traceLaser(O);
+  const erPrim = L.prim ? Math.hypot(...L.prim) * 100 : Infinity;   // mm
+  const erRetour = L.retour ? Math.hypot(...L.retour) * 100 : Infinity;
+  const secOk = erPrim <= 2.5, primOk = secOk && erRetour <= 4;
+  diag = { O, L, erPrim, erRetour, secOk, primOk, cle: CLES.map((k) => t[k]).join(",") };
+  if (outil === "oculaire") {
+    const e = calculEtoile(O);
+    diag.ecart = e.ecart;
+    versImage(e.net, REF.net * 0.3, 0.45, cvNet);
+    versImage(e.flou, REF.flou, 0.8, cvFlou);
+  }
+  if (exercice && secOk && primOk) {          // exercice réussi : on dévoile les valeurs
+    const vals = CLES.map((k) => S.state[k] + off[k]);
+    exercice = false; reussi = true; pliage = true;
+    CLES.forEach((k, i) => { off[k] = 0; S.regler(k, vals[i]); });
+    pliage = false;
+    majBoutons();
+  }
+  majLegende();
+}
+
+function rond(ctx, img, x, s, lisse = true) {
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x + s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI); ctx.clip();
+  ctx.fillStyle = "#000"; ctx.fillRect(x, 0, s, s);
+  ctx.imageSmoothingEnabled = lisse;
+  if (img) ctx.drawImage(img, x, 0, s, s);
+  ctx.restore();
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x + s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI); ctx.stroke();
+}
+function point(ctx, x, y, r) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
+  g.addColorStop(0, "rgba(255,235,230,1)"); g.addColorStop(0.25, "rgba(255,45,45,0.95)"); g.addColorStop(1, "rgba(255,45,45,0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3, 0, 2 * Math.PI); ctx.fill();
+}
+/** Panneau rond centré sur une cible ; demi : demi-champ (unités) ; dessin(ctx, versPx) ; pos : position du point rouge. */
+function panneauLaser(ctx, x, s, demi, fond, pos) {
+  const cx = x + s / 2, cy = s / 2, k = (s / 2 - 1) / demi;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, s / 2 - 1, 0, 2 * Math.PI); ctx.clip();
+  fond(ctx, cx, cy, k);
+  if (pos) {
+    const r = Math.hypot(pos[0], pos[1]), lim = demi * 0.92, f = r > lim ? lim / r : 1;
+    point(ctx, cx + pos[0] * f * k, cy - pos[1] * f * k, Math.max(2.5, s * 0.022));
+  }
+  ctx.restore();
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, s / 2 - 1, 0, 2 * Math.PI); ctx.stroke();
+}
+const fondPrimaire = (ctx, cx, cy, k) => {
+  const g = ctx.createRadialGradient(cx - 0.1 * k, cy - 0.1 * k, 0, cx, cy, 0.3 * k);
+  g.addColorStop(0, "#59606b"); g.addColorStop(1, "#262a31");
+  ctx.fillStyle = g; ctx.fillRect(cx - k, cy - k, 2 * k, 2 * k);
+  ctx.fillStyle = "#efede4";
+  ctx.beginPath(); ctx.arc(cx, cy, R_PAST * k, 0, 2 * Math.PI); ctx.arc(cx, cy, R_TROU * k, 0, 2 * Math.PI, true); ctx.fill();
+};
+const fondCible = (ctx, cx, cy, k) => {
+  ctx.fillStyle = "#1c1f25"; ctx.fillRect(cx - k, cy - k, 2 * k, 2 * k);
+  ctx.fillStyle = "#e9e4d6"; ctx.beginPath(); ctx.arc(cx, cy, 0.16 * k, 0, 2 * Math.PI); ctx.fill();
+  ctx.strokeStyle = "rgba(20,24,30,0.55)"; ctx.lineWidth = 1;
+  for (const r of [0.04, 0.08, 0.12]) { ctx.beginPath(); ctx.arc(cx, cy, r * k, 0, 2 * Math.PI); ctx.stroke(); }
+  ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(cx, cy, 0.02 * k, 0, 2 * Math.PI); ctx.fill();
+};
+
+function dessinerApercu() {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W || !diag) return;
+  const gap = 10, lab = 20, deux = outil !== "cheshire";
+  const s = deux ? Math.floor((W - gap) / 2) : W, H = s + lab;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const titres = [];
+  if (outil === "oculaire") {
+    rond(ctx, cvNet, 0, s); rond(ctx, cvFlou, s + gap, s);
+    titres.push("Étoile au point", "Défocalisée");
+  } else if (outil === "cheshire") {
+    const n = Math.min(320, Math.round(s * dpr));
+    rendreCheshire(diag.O, n, diag.cle + "|" + n);
+    rond(ctx, cvCh, 0, s);
+    titres.push("Par le trou de visée");
+  } else {
+    const L = diag.L;
+    // pastille vue depuis l'entrée du tube : droite = −z, haut = +y ; cible vue d'en haut : droite = +z, haut = +x
+    panneauLaser(ctx, 0, s, 0.25, fondPrimaire, L.prim ? [-L.prim[1], L.prim[0]] : null);
+    panneauLaser(ctx, s + gap, s, 0.2, fondCible, L.retour ? [L.retour[1], L.retour[0]] : null);
+    titres.push("Pastille du primaire", "Cible du laser");
+  }
+  ctx.font = "11.5px Arial"; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
+  titres.forEach((t, i) => ctx.fillText(t, (deux ? i * (s + gap) : 0) + s / 2, s + 14));
+}
+
+function majLegende() {
+  const d = diag, mm = (v) => `${v.toFixed(v < 10 ? 1 : 0).replace(".", ",")} mm`;
+  let h2, spec = "", p;
+  if (reussi) {
+    h2 = "Bravo, collimation réussie !";
+    p = "Secondaire puis primaire : le point laser est dans la pastille, le retour dans le trou, et l'étoile est nette. Les valeurs sont maintenant affichées.";
+  } else if (outil === "oculaire") {
+    const am = d.ecart / MN;
+    spec = exercice ? "Exercice : valeurs masquées" : `Écart d'axe ${Math.round(am)}′ · tolérance à f/5 ≈ 9′`;
+    if (d.ecart <= TOL_COMA) {
+      h2 = "Image nette";
+      p = "Au point, l'étoile est un point entouré d'anneaux fins. Défocalisée, ses anneaux sont concentriques autour de l'ombre du secondaire.";
+      if (!d.secOk) p += " Attention : le secondaire est déréglé et le primaire le compense. L'étoile paraît bonne, mais le faisceau est décentré et une partie de la lumière se perd.";
+    } else {
+      h2 = "Coma : l'étoile s'étale";
+      p = "Au point, l'étoile devient une petite comète. Défocalisée, l'ombre du secondaire n'est plus au centre du disque. La mise au point n'y peut rien : planètes molles, étoiles doubles serrées non séparées.";
+    }
+  } else if (outil === "cheshire") {
+    if (!d.secOk) {
+      h2 = "Secondaire à régler";
+      p = "La pastille et le reflet du primaire ne sont pas au centre du cercle du secondaire. On règle d'abord les 3 vis du secondaire.";
+    } else if (!d.primOk) {
+      h2 = "Primaire à régler";
+      p = "Le secondaire est bon : la pastille est centrée. Mais le reflet sombre de l'œilleton est sorti de la pastille : on règle les vis du barillet, à l'arrière du tube.";
+    } else {
+      h2 = "Tout est concentrique";
+      p = "Le reflet de l'œilleton tombe dans la pastille : la collimation est bonne. Il reste à vérifier sur une étoile.";
+    }
+  } else {
+    spec = `Point sur le primaire : ${Number.isFinite(d.erPrim) ? mm(d.erPrim) : "hors du miroir"} · retour : ${Number.isFinite(d.erRetour) ? mm(d.erRetour) : "hors cible"}`;
+    if (!d.secOk) {
+      h2 = "Étape 1 : le secondaire";
+      p = "Le point rouge tombe à côté du trou de la pastille. Tournez les vis du secondaire pour l'y ramener.";
+    } else if (!d.primOk) {
+      h2 = "Étape 2 : le primaire";
+      p = Number.isFinite(d.erRetour) && d.erRetour < 16
+        ? "Le point est dans la pastille. Le faisceau de retour arrive à côté du trou de sortie : tournez les vis du barillet pour le ramener au centre de la cible."
+        : "Le point est dans la pastille, mais le faisceau de retour ne revient même pas sur la cible : le primaire est très déréglé. Tournez les vis du barillet.";
+    } else {
+      h2 = "Collimation réussie";
+      p = "Point dans la pastille, retour dans le trou de sortie. Vérifiez sur une étoile.";
+    }
+  }
+  if (exercice && outil !== "oculaire") spec = (spec ? spec + " · " : "") + "Exercice en cours";
+  const html = `<h2>${h2}</h2>${spec ? `<p class="spec">${spec}</p>` : ""}<p>${p}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Commandes ----------
+function majBoutons() {
+  for (const id of ["oculaire", "cheshire", "laser"]) document.getElementById("r-" + id).setAttribute("aria-pressed", String(outil === id));
+  document.getElementById("r-exercice").setAttribute("aria-pressed", String(exercice));
+  ap.el.querySelector(".eyebrow").textContent = TITRES[outil];
+}
+function choisirOutil(id) {
+  outil = id;
+  for (const [nom, p] of [["oculaire", eyepiece], ["cheshire", cheshire], ["laser", laserPart]]) p.group.visible = outil === nom;
+  majBoutons();
+  sale = true;
+}
+function regler(p1, p2, s1, s2) {
+  exercice = false; reussi = false;
+  for (const k of CLES) off[k] = 0;
+  [p1, p2, s1, s2].forEach((v, i) => S.regler(CLES[i], v));
+  majBoutons();
+  sale = true;
+}
+function lancerExercice() {
+  const hasard = () => (Math.random() < 0.5 ? -1 : 1) * Math.round(8 + Math.random() * 12);
+  for (const k of CLES) off[k] = hasard();
+  exercice = true; reussi = false;
+  for (const k of CLES) S.regler(k, 0);
+  majBoutons();
+  sale = true;
+}
+
+// ---------- Animation ----------
+let largeurPrec = 0;
+S.onFrame(({ time }) => {
+  const W = ap.canvas.clientWidth;
+  if (sale) { sale = false; mettreAJour(); dessinerApercu(); largeurPrec = W; }
+  else if (W !== largeurPrec) { dessinerApercu(); largeurPrec = W; }
+  axes.visible = S.state.axes;
+  lumEtoile.group.visible = outil === "oculaire";
+  lumLaser.group.visible = outil === "laser";
+  const anim = S.state.anim || S.reduced;
+  lumEtoile.photons.visible = lumLaser.photons.visible = anim;
+  if (anim) { lumEtoile.animer(time, 5); lumLaser.animer(time, 6); }
+});
+
+choisirOutil("oculaire");
+S.start();
+</script>
+</body>
+</html>

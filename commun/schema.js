@@ -18,6 +18,7 @@ export const COULEURS = {
   etoile: 0xf6e7b0,  // lumière incidente
   orange: 0xff9a4a,
   corail: 0xff6b5e,
+  laser: 0xff2d2d,   // faisceau d'un collimateur laser (rouge 650 nm)
 };
 export const css = (hex) => "#" + hex.toString(16).padStart(6, "0");
 
