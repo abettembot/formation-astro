@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Télescope Schmidt-Cassegrain</title>
+<meta name="description" content="Schéma 3D interactif d'un télescope Schmidt-Cassegrain 203/2032 (type C8) : trajet replié de la lumière, mise au point par le primaire mobile, vue éclatée.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, imageEtoile, vuesRondes } from "../commun/schema.js";
+
+// ---------- Géométrie optique (1 unité = 100 mm) ----------
+// Formule Cassegrain : primaire f/2, secondaire convexe qui multiplie la focale par 5 → 2032 mm à f/10.
+const RM = 1.015;      // rayon du primaire (203 mm de diamètre)
+const RT = 1.15;       // rayon du tube
+const FP = 4.06;       // focale du primaire seul (406 mm, f/2)
+const RP = 2 * FP;     // rayon de courbure du primaire sphérique
+const MAG = 5;         // grandissement du secondaire
+const B = 1.6;         // foyer final à 160 mm derrière le sommet du primaire (trajet déplié)
+const DSEP = (MAG * FP - B) / (MAG + 1); // distance primaire -> secondaire (≈ 312 mm)
+const XP = -1.9;       // sommet du primaire (mise au point au repos)
+const XS = XP + DSEP;  // sommet du secondaire
+const P0 = FP - DSEP, Q0 = DSEP + B;
+const RSEC = 2 / (1 / Q0 - 1 / P0); // rayon de courbure du secondaire (négatif : convexe, ≈ 236 mm)
+const RSA = -RSEC;
+const XC = XS + 0.1;   // face avant de la lame
+const RC = RT - 0.04;  // rayon de la lame
+const TUBE_FRONT = XC + 0.06, TUBE_BACK = XP - 0.2;
+const CELL_BACK = TUBE_BACK - 0.3;      // arrière de la cellule
+const XD = XP - 0.95;  // centre du miroir du renvoi coudé
+const YF = XD - (XP - B); // hauteur du foyer dans le renvoi (0,65)
+const FE = 0.4;        // focale oculaire (schématique)
+const Y_LENT = YF + FE;
+const SEC_R = 0.27, SEC_HOLDER = 0.34; // secondaire (54 mm) et son support (68 mm → obstruction ≈ 34 %)
+const HOLE = 0.24, BAF_R = 0.17;       // trou du primaire et tube pare-lumière
+const BAF_X0 = CELL_BACK + 0.05, BAF_X1 = XP + 1.2;
+
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+let ocular = 25;
+let tubeOuter, tubeInner, lip, diagSides;
+let map = 0; // déplacement du primaire en mm (+ = vers l'avant)
+const tubeLen = TUBE_FRONT - TUBE_BACK, tubeMid = (TUBE_FRONT + TUBE_BACK) / 2;
+const sagP = (r) => RP - Math.sqrt(RP * RP - r * r);
+const sagS = (r) => RSA - Math.sqrt(RSA * RSA - r * r);
+const conj = (p) => 1 / (1 / p + 2 / RSEC); // secondaire : foyer intermédiaire à p derrière lui → foyer final à q devant
+const dq = () => conj(FP + map / 100 - DSEP) - Q0; // déplacement du foyer final (unités)
+const sens = () => { // phrase décrivant le déplacement du primaire et du foyer
+  const mm = (v, d) => Math.abs(v).toFixed(d).replace(".", ",");
+  return `Primaire ${map > 0 ? "avancé" : "reculé"} de ${mm(map, 1)} mm : le foyer ${dq() > 0 ? "recule" : "avance"} de ${mm(dq() * 100, 0)} mm.`;
+};
+const fmt = (v, d = 1) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(d).replace(".", ",");
+
+function setCut(on) {
+  const mk = (r) => axeX(on ? new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true, Math.PI / 2, Math.PI)
+                            : new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true));
+  tubeOuter.geometry.dispose(); tubeOuter.geometry = mk(RT);
+  tubeInner.geometry.dispose(); tubeInner.geometry = mk(RT - 0.015);
+  lip.visible = !on;
+  diagSides.visible = !on;
+}
+function setLame(on) {
+  lame.group.visible = on;
+  poserRayons();
+}
+
+const S = createSchema({
+  surtitre: "Support de formation · Optique",
+  titre: "Télescope Schmidt-Cassegrain",
+  sousTitre: "Exemple : C8 · 203/2032 · f/10",
+  eclate: true,
+  apercu: { titre: "Vu à l'oculaire" },
+  commandes: [
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: setCut },
+    { type: "bascule", id: "lame", label: "Lame de Schmidt", actif: true, onChange: (v) => setLame(v) },
+    { type: "curseur", id: "map", label: "Mise au point", min: -2.5, max: 2.5, pas: 0.05, valeur: 0,
+      format: (v) => `${fmt(v, 2)} mm`, onInput: (v) => { map = v; primMobile.position.x = v / 100; knob.rotation.x = v * 2.5; poserRayons(); } },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [8.5, 6.5, 14], cible: [-0.9, 0.1, 0] },
+    { id: "profil", label: "Profil", pos: [-0.9, 0.7, 16], cible: [-0.9, 0.1, 0] },
+    { id: "avant", label: "Avant", pos: [11, 0.5, 0.6], cible: [0, 0, 0] },
+    { id: "arriere", label: "Arrière", pos: [-8.5, 4, 5.5], cible: [-2.6, 0.3, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Le trajet de la lumière</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile traverse la lame de Schmidt qui ferme l'avant du tube." },
+      { couleur: SEG[1], texte: "Le miroir primaire, sphérique et très ouvert (f/2), la renvoie vers l'avant en un cône très resserré." },
+      { couleur: SEG[2], texte: "Le secondaire convexe, fixé au centre de la lame, la renvoie vers l'arrière et multiplie la focale par 5. La lumière passe par le trou du primaire." },
+      { couleur: SEG[3], texte: "Derrière le tube, le renvoi coudé dévie la lumière à 90° vers l'oculaire, qui grossit l'image formée au foyer." },
+    ])}
+    <p class="spec">Le trajet est replié : 2 m de focale dans un tube d'à peine plus de 40 cm. On observe par l'arrière, comme avec une lunette. Essayez le curseur « Mise au point ».</p>`,
+});
+
+// ---------- Tube ----------
+const tube = S.part("tube", "Tube optique", {
+  ancre: [-0.6, RT + 0.05, 0],
+  texte: "Tube court et fermé, qui porte la lame à l'avant et la cellule du primaire à l'arrière. Fermé, il protège les miroirs de la poussière. Sa compacité est le grand atout du Schmidt-Cassegrain : il se transporte facilement et tient sur une monture légère.",
+  chiffres: "C8 : longueur ≈ 43 cm · masse ≈ 5,7 kg",
+});
+tubeOuter = S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, tubeLen, 72, 1, true)), M.noir(), tubeMid));
+tubeInner = S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, tubeLen, 72, 1, true)), M.flocage(), tubeMid));
+lip = S.add(tube, mesh(axeX(new THREE.TorusGeometry(RT, 0.035, 10, 72).rotateX(Math.PI / 2)), M.alu(), TUBE_FRONT));
+
+// ---------- Lame de Schmidt (relief très exagéré) ----------
+const lame = S.part("lame", "Lame de Schmidt", {
+  eclate: [2.4, 0, 0], ancre: [XC + 0.05, RT + 0.15, 0], etiquette: false,
+  texte: "Vitre de correction qui ferme l'avant du tube. Son relief, de quelques centièmes de millimètre, compense le défaut des miroirs sphériques pour que tous les rayons se rejoignent au même foyer. Elle sert aussi de support au secondaire, sans araignée. Sur le schéma, son relief est très exagéré.",
+  chiffres: "Verre de quelques mm d'épaisseur · relief réel de l'ordre du centième de mm",
+});
+S.label("Lame de Schmidt", () => lame.group.localToWorld(lame.ancre.clone()), { partId: "lame", visible: () => lame.group.visible });
+{
+  const ep = (r) => { const q = (r / RC) ** 2; return 0.03 + 0.07 * (q * q - 1.5 * q + 0.5625); };
+  const pts = [new THREE.Vector2(0.001, 0), new THREE.Vector2(RC, 0)];
+  for (let i = 24; i >= 0; i--) { const r = Math.max(0.001, (i / 24) * RC); pts.push(new THREE.Vector2(r, -ep(r))); }
+  const g = new THREE.LatheGeometry(pts, 96);
+  g.rotateZ(-Math.PI / 2);
+  const m = S.add(lame, mesh(g, M.lentille(), XC));
+  m.material.side = THREE.DoubleSide; m.material.opacity = 0.4;
+  S.add(lame, mesh(axeX(new THREE.TorusGeometry(RC + 0.02, 0.03, 8, 72).rotateX(Math.PI / 2)), M.noir(), XC + 0.03));
+}
+
+// ---------- Miroir secondaire (convexe, dans son support au centre de la lame) ----------
+const secondary = S.part("secondary", "Miroir secondaire", {
+  eclate: [1.2, 0, 0], ancre: [XS + 0.1, SEC_HOLDER + 0.12, 0],
+  texte: "Petit miroir convexe tourné vers le primaire. Il intercepte le cône de lumière avant le foyer et le renvoie vers l'arrière en l'allongeant : la focale passe de 406 mm à 2032 mm. Son support, au centre de la lame, porte les 3 vis de collimation : sur un Schmidt-Cassegrain, on ne règle que le secondaire.",
+  chiffres: "Grandissement ×5 · support ≈ 68 mm · obstruction ≈ 34 % du diamètre",
+});
+{
+  const pts = [];
+  for (let i = 0; i <= 16; i++) { const r = Math.max(0.001, (i / 16) * SEC_R); pts.push(new THREE.Vector2(r, sagS(r))); }
+  pts.push(new THREE.Vector2(SEC_R, 0.08), new THREE.Vector2(0.001, 0.08));
+  const g = new THREE.LatheGeometry(pts, 64);
+  g.rotateZ(-Math.PI / 2);
+  S.add(secondary, mesh(g, M.miroir(), XS)).material.side = THREE.DoubleSide;
+  const x0 = XS - 0.05, x1 = XC + 0.12;
+  S.add(secondary, mesh(axeX(new THREE.CylinderGeometry(SEC_HOLDER, SEC_HOLDER, x1 - x0, 48, 1, true)), M.noir(), (x0 + x1) / 2)).material.side = THREE.DoubleSide;
+  S.add(secondary, mesh(axeX(new THREE.CylinderGeometry(SEC_HOLDER, SEC_HOLDER, 0.02, 48)), M.noir(), x1));
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3) + Math.PI / 2;
+    S.add(secondary, mesh(axeX(new THREE.CylinderGeometry(0.035, 0.035, 0.07, 10)), M.alu(), x1 + 0.04, Math.sin(a) * 0.22, Math.cos(a) * 0.22));
+  }
+}
+
+// ---------- Miroir primaire (sphérique, percé, mobile pour la mise au point) ----------
+const primary = S.part("primary", "Miroir primaire", {
+  eclate: [-1.4, 0, 0], ancre: [XP - 0.05, RM + 0.12, 0],
+  texte: "Miroir concave sphérique, très ouvert (f/2) et percé en son centre pour laisser repasser la lumière. Il n'est pas fixé : il coulisse sur le tube pare-lumière, poussé par le bouton de mise au point. Un déplacement d'un millimètre suffit à déplacer le foyer de plusieurs centimètres.",
+  chiffres: "D = 203 mm · F = 406 mm (f/2) · rayon de courbure ≈ 812 mm",
+});
+const primMobile = new THREE.Group();
+{
+  const pts = [], T = 0.2;
+  for (let i = 0; i <= 20; i++) { const r = HOLE + (i / 20) * (RM - HOLE); pts.push(new THREE.Vector2(r, sagP(r))); }
+  pts.push(new THREE.Vector2(RM, -T), new THREE.Vector2(HOLE, -T), new THREE.Vector2(HOLE, sagP(HOLE)));
+  const g = new THREE.LatheGeometry(pts, 96);
+  g.rotateZ(-Math.PI / 2);
+  primMobile.add(mesh(g, M.miroir(), XP));
+  primMobile.children[0].material.side = THREE.DoubleSide;
+  primMobile.add(mesh(axeX(new THREE.CylinderGeometry(RM - 0.002, RM - 0.002, T - 0.01, 96, 1, true)), M.verre(), XP - T / 2));
+  primMobile.add(mesh(axeX(new THREE.CylinderGeometry(HOLE, HOLE, 0.3, 32, 1, true)), M.alu(), XP - 0.3));
+  primMobile.children[2].material.side = THREE.DoubleSide;
+  S.add(primary, primMobile);
+}
+
+// ---------- Tube pare-lumière ----------
+const baffle = S.part("baffle", "Tube pare-lumière", {
+  eclate: [0, 2.0, 0], ancre: [BAF_X1 - 0.2, BAF_R + 0.12, 0],
+  texte: "Tube noir qui traverse le trou du primaire. Sans lui, la lumière du ciel passerait directement par le trou jusqu'à l'oculaire, sans toucher les miroirs, et voilerait l'image. Il sert aussi de rail au miroir primaire pour la mise au point.",
+  chiffres: "Intérieur noir et rainuré · le support du secondaire joue le même rôle à l'avant",
+});
+S.add(baffle, mesh(axeX(new THREE.CylinderGeometry(BAF_R, BAF_R, BAF_X1 - BAF_X0, 40, 1, true)), M.noir(), (BAF_X0 + BAF_X1) / 2)).material.side = THREE.DoubleSide;
+S.add(baffle, mesh(axeX(new THREE.TorusGeometry(BAF_R, 0.015, 8, 40).rotateX(Math.PI / 2)), M.noir(), BAF_X1));
+
+// ---------- Cellule arrière (et embase visuelle) ----------
+const cell = S.part("cell", "Cellule arrière", {
+  eclate: [-2.4, 0, 0], ancre: [CELL_BACK + 0.1, -RT - 0.05, 0],
+  texte: "Pièce moulée qui ferme l'arrière du tube et porte le tube pare-lumière. Au centre, l'embase filetée reçoit les accessoires : renvoi coudé, appareil photo ou caméra. Le foyer se trouve derrière le tube, ce qui laisse beaucoup de place pour ces accessoires.",
+  chiffres: "Filetage SC standard (2″ × 24 filets/pouce) · tirage de plus de 10 cm",
+});
+{
+  S.add(cell, mesh(axeX(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.12, 72)), M.alu(), TUBE_BACK - 0.06));
+  S.add(cell, mesh(axeX(new THREE.CylinderGeometry(RT - 0.05, 0.5, 0.28, 72)), M.alu(), TUBE_BACK - 0.26));
+  S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.29, 0.29, 0.18, 40)), M.noir(), CELL_BACK - 0.09));
+}
+const XVB = CELL_BACK - 0.18; // arrière de l'embase
+
+// ---------- Bouton de mise au point ----------
+const knobPart = S.part("knob", "Bouton de mise au point", {
+  eclate: [-2.4, 0, 0], ancre: [CELL_BACK - 0.25, -0.62 - 0.22, 0.2],
+  texte: "En le tournant, on fait avancer ou reculer le miroir primaire le long du tube pare-lumière. Comme le secondaire grossit 5 fois, un tout petit déplacement du primaire déplace beaucoup le foyer : environ 25 fois plus. Inconvénient : le miroir peut basculer un peu en changeant de sens (« image shift »).",
+  chiffres: "Course de quelques cm du foyer · déplacement du primaire de l'ordre du mm",
+  extra: () => {
+    const d = dq() * 100;
+    return `<p class="spec">${Math.abs(map) > 0.05 ? `${sens()} Soit ≈ ${Math.round(Math.abs(d / map))} fois plus.` : "Essayez le curseur « Mise au point » : il déplace le primaire."}</p>`;
+  },
+});
+const knob = new THREE.Group();
+knob.position.set(CELL_BACK - 0.05, -0.62, 0);
+{
+  knob.add(mesh(axeX(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 12)), M.alu(), -0.05));
+  knob.add(mesh(axeX(new THREE.CylinderGeometry(0.15, 0.15, 0.12, 24)), M.caoutchouc(), -0.2));
+  knob.add(mesh(axeX(new THREE.BoxGeometry(0.03, 0.09, 0.045)), M.alu(), -0.27, 0.12, 0)); // repère pour voir la rotation
+  S.add(knobPart, knob);
+}
+
+// ---------- Renvoi coudé (dessiné ouvert en coupe pour montrer le miroir) ----------
+const diag = S.part("diagonal", "Renvoi coudé", {
+  eclate: [-3.4, 0, 0], ancre: [XD - 0.25, -0.35, 0],
+  texte: "Petit miroir (ou prisme) à 45° qui renvoie la lumière à 90° vers l'oculaire. Sans lui, il faudrait se placer sous le tube pour observer un objet haut dans le ciel. L'image est droite mais inversée gauche-droite, comme dans un miroir.",
+  chiffres: "Coulant 31,75 mm ou 50,8 mm · miroir diélectrique ou prisme",
+});
+{
+  const h = 0.22;
+  // coin arrière plein, derrière le miroir
+  const sh = new THREE.Shape();
+  sh.moveTo(-h, h); sh.lineTo(h, -h); sh.lineTo(-h, -h); sh.closePath();
+  const coin = new THREE.ExtrudeGeometry(sh, { depth: 2 * h, bevelEnabled: false }).translate(0, 0, -h);
+  S.add(diag, mesh(coin, M.noir(), XD - 0.01, -0.01, 0));
+  // miroir à 45°
+  const m = S.add(diag, mesh(new THREE.BoxGeometry(2 * h * Math.SQRT2 - 0.02, 0.012, 2 * h - 0.02), M.miroir(), XD, 0, 0));
+  m.rotation.z = -Math.PI / 4;
+  // flancs (masqués en coupe)
+  diagSides = new THREE.Group();
+  const tri = new THREE.Shape();
+  tri.moveTo(h, -h); tri.lineTo(h, h); tri.lineTo(-h, h); tri.closePath();
+  for (const z of [-h, h]) diagSides.add(mesh(new THREE.ShapeGeometry(tri), M.noir(), XD, 0, z));
+  diagSides.children.forEach((o) => (o.material.side = THREE.DoubleSide));
+  S.add(diag, diagSides);
+  // côté embase et côté oculaire
+  S.add(diag, mesh(axeX(new THREE.CylinderGeometry(0.2, 0.2, XVB - (XD + h), 32, 1, true)), M.noir(), (XVB + XD + h) / 2)).material.side = THREE.DoubleSide;
+  S.add(diag, mesh(new THREE.CylinderGeometry(0.24, 0.24, YF - 0.05 - h, 32, 1, true), M.noir(), XD, (YF - 0.05 + h) / 2, 0)).material.side = THREE.DoubleSide;
+}
+
+// ---------- Oculaire (avec calcul du grossissement) ----------
+const eyepiece = S.part("eyepiece", "Oculaire", {
+  eclate: [-3.4, 1.4, 0], ancre: [XD + 0.45, YF + 0.55, 0],
+  texte: "Petite loupe qui grossit l'image formée au foyer. Avec sa longue focale (2032 mm), le Schmidt-Cassegrain grossit facilement : parfait pour la Lune, les planètes et les étoiles doubles.",
+  chiffres: "Grossissement = focale du télescope ÷ focale de l'oculaire",
+  extra: () => `
+    <div class="calc"><label for="ocu">Oculaire de</label>
+      <select id="ocu">${[40, 32, 25, 15, 10].map((f) => `<option value="${f}" ${f === ocular ? "selected" : ""}>${f} mm</option>`).join("")}</select>
+      <span>→ 2032 ÷ ${ocular} = <strong>${Math.round(2032 / ocular)}×</strong></span></div>
+    <p class="spec">Grossissement utile maximal ≈ 2 × diamètre en mm, soit ≈ 400× (rarement atteint à cause de la turbulence).</p>`,
+  bind: (root) => root.querySelector("#ocu").addEventListener("change", (e) => { ocular = +e.target.value; S.refreshInfo(); }),
+});
+{
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 32, 1, true), M.alu(), XD, YF + 0.15, 0)).material.side = THREE.DoubleSide;
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.6, 32, 1, true), M.noir(), XD, YF + 0.65, 0)).material.side = THREE.DoubleSide;
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.29, 0.31, 0.22, 32, 1, true), M.caoutchouc(), XD, YF + 1.06, 0)).material.side = THREE.DoubleSide;
+  S.add(eyepiece, mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 32), M.lentille(), XD, Y_LENT, 0));
+}
+
+// ---------- Chercheur ----------
+const XF = XP + 1.0;
+const FY = (RT + 0.45) * Math.SQRT1_2, FZ = -(RT + 0.45) * Math.SQRT1_2;
+const finder = S.part("finder", "Chercheur", {
+  eclate: [0, 1.2, -1.6], ancre: [XF, FY + 0.3, FZ],
+  texte: "Petite lunette à faible grossissement et à grand champ, alignée avec le tube. Indispensable sur un Schmidt-Cassegrain : à 2 m de focale, le champ de l'oculaire est très étroit.",
+  chiffres: "Typiquement 9×50 ou viseur à point rouge",
+});
+{
+  S.add(finder, mesh(axeX(new THREE.CylinderGeometry(0.18, 0.18, 1.5, 32)), M.noir(), XF, FY, FZ));
+  S.add(finder, mesh(axeX(new THREE.CylinderGeometry(0.24, 0.18, 0.3, 32)), M.noir(), XF + 0.9, FY, FZ));
+  S.add(finder, mesh(axeX(new THREE.CylinderGeometry(0.09, 0.13, 0.3, 24)), M.caoutchouc(), XF - 0.9, FY, FZ));
+  for (const x of [XF - 0.4, XF + 0.4]) {
+    S.add(finder, mesh(axeX(new THREE.TorusGeometry(0.24, 0.035, 8, 32).rotateX(Math.PI / 2)), M.alu(), x, FY, FZ));
+    const foot = S.add(finder, mesh(new THREE.BoxGeometry(0.1, 0.32, 0.1), M.alu(), x, (RT + 0.1) * Math.SQRT1_2 + 0.08, -(RT + 0.1) * Math.SQRT1_2 - 0.08));
+    foot.rotation.x = Math.PI / 4;
+  }
+}
+
+// ---------- Queue d'aronde (vissée directement sous le tube) ----------
+const dovetail = S.part("dovetail", "Queue d'aronde", {
+  eclate: [0, -2.4, 0], ancre: [-0.4, -RT - 0.3, 0.45],
+  texte: "Barre profilée vissée directement sous le tube, sans colliers. Elle se glisse et se serre dans la tête de la monture. On la fait coulisser pour équilibrer le tube, surtout quand on ajoute un appareil photo à l'arrière.",
+  chiffres: "Format Vixen (≈ 44 mm) en série · Losmandy pour les gros modèles",
+});
+{
+  const s = new THREE.Shape();
+  s.moveTo(-0.38, 0); s.lineTo(0.38, 0); s.lineTo(0.3, -0.16); s.lineTo(-0.3, -0.16); s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: 3.0, bevelEnabled: false });
+  g.rotateY(Math.PI / 2);
+  S.add(dovetail, mesh(g, M.alu(), TUBE_BACK + 0.1, -RT - 0.02, 0));
+}
+
+// ---------- Trajet de la lumière ----------
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const plan = (P, d, Q, n) => P.clone().addScaledVector(d, Q.clone().sub(P).dot(n) / d.dot(n));
+const refleter = (d, n) => d.clone().addScaledVector(n, -2 * d.dot(n));
+const N_DIAG = V(1, 1, 0).normalize();
+const C_SEC = V(XS + RSA, 0, 0); // centre de courbure du secondaire
+const entries = [[0.85, 0], [-0.85, 0], [0.55, 0], [-0.55, 0], [0, 0.72], [0, -0.72]];
+
+function rayon(y0, z0, corrige) {
+  const h2 = y0 * y0 + z0 * z0, xp = XP + map / 100;
+  const A = V(TUBE_FRONT + 4.5, y0, z0), C = V(XC, y0, z0);
+  const H = V(xp + sagP(Math.sqrt(h2)), y0, z0);
+  // avec la lame, tous les rayons visent le même foyer ; sans elle, ceux du bord croisent l'axe plus près du miroir
+  const xf = xp + FP - (corrige ? 0 : h2 / (4 * RP));
+  const d1 = V(xf, 0, 0).sub(H).normalize();
+  // impact sur le secondaire convexe (sphère de centre C_SEC)
+  const o = H.clone().sub(C_SEC), b = o.dot(d1), c = o.lengthSq() - RSA * RSA;
+  const Sp = H.clone().addScaledVector(d1, -b - Math.sqrt(b * b - c));
+  // le secondaire renvoie vers le point conjugué du foyer intermédiaire
+  const d2 = V(XS - conj(xf - XS), 0, 0).sub(Sp).normalize();
+  const G = plan(Sp, d2, V(XD, 0, 0), N_DIAG);
+  const d3 = refleter(d2, N_DIAG);
+  const L = plan(G, d3, V(0, Y_LENT, 0), V(0, 1, 0));
+  // oculaire : lentille mince d'axe vertical passant par (XD, ·, 0)
+  const sx = d3.x / d3.y - (L.x - XD) / FE, sz = d3.z / d3.y - L.z / FE;
+  const E = L.clone().addScaledVector(V(sx, 1, sz).normalize(), 1.3);
+  return { pts: [A, C, H, Sp, G, L, E], cols: [SEG[0], SEG[0], SEG[1], SEG[2], SEG[3], SEG[3]] };
+}
+function foyer() { // position du foyer (paraxial), replié par le renvoi coudé
+  const x = XS - conj(FP + map / 100 - DSEP);
+  return x > XD ? V(x, 0, 0) : V(XD, XD - x, 0);
+}
+
+const lum = faisceau(0.55, 0.42);
+S.scene.add(lum.group);
+const focusMark = halo(COULEURS.corail, 0.5);
+lum.group.add(focusMark);
+function poserRayons() {
+  lum.poser(entries.map(([y, z]) => rayon(y, z, S.state.lame)));
+  focusMark.position.copy(foyer());
+  focusMark.visible = S.state.lame;
+  if (S.state.selected === "knob") S.refreshInfo();
+  majApercu();
+}
+
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière d'une étoile", () => V(TUBE_FRONT + 3.2, 0.95, 0), { lumiere: true, visible: lightVisible });
+S.label("Foyer", () => focusMark.position.clone().add(V(-0.45, 0.12, 0)), { lumiere: true, visible: () => lightVisible() && S.state.lame });
+S.label("Vers l'œil", () => V(XD, Y_LENT + 1.45, 0), { lumiere: true, visible: lightVisible });
+
+// ---------- Encart « Vu à l'oculaire » : image d'une étoile calculée ----------
+// Écart (mm, le long du faisceau) entre le croisement du rayon de hauteur rho et le plan de l'oculaire.
+// Sans lame : un miroir sphérique renvoie les rayons du bord plus près de lui (r²/4R), effet agrandi par le secondaire.
+const ecartSC = (rho, dmm, corrige) => {
+  const h = rho * RM, p = FP + dmm / 100 - DSEP - (corrige ? 0 : h * h / (4 * RP));
+  return (conj(p) - Q0) * 100;
+};
+const OPT = { D: 203, F: 2032, obstruction: SEC_HOLDER / RM };
+const CHAMP_ZOOM = (lameOn) => (lameOn ? 15 : 300), CHAMP_OCU = 600;
+const meilleur = {}; // image au meilleur foyer, selon la présence de la lame
+let vueOcu = null, cleDessin = "";
+function majApercu() {
+  const lameOn = S.state.lame;
+  meilleur[lameOn] ??= imageEtoile({ ...OPT, champ: CHAMP_ZOOM(lameOn), auPoint: true, ecart: (r) => ecartSC(r, 0, lameOn) });
+  vueOcu = imageEtoile({ ...OPT, champ: CHAMP_OCU, ecart: (r) => ecartSC(r, map, lameOn) });
+  cleDessin = "";
+  const ap = S.apercu, d = dq() * 100;
+  let h2, spec, p;
+  if (!lameOn) {
+    h2 = "Sans lame : jamais nette";
+    spec = "Situation théorique : on n'observe jamais un Schmidt-Cassegrain sans sa lame";
+    p = "Voici ce que donneraient les miroirs sphériques seuls. Même au meilleur foyer, l'étoile reste une grosse tache floue. En tournant la mise au point, l'image n'a pas le même aspect avant et après le foyer : c'est la signature de l'aberration de sphéricité, que l'on cherche lors du test sur étoile.";
+  } else if (Math.abs(map) < 0.01) {
+    h2 = "Étoile nette";
+    spec = "Foyer exactement dans l'oculaire";
+    p = "Au point, l'étoile est un point entouré d'anneaux très fins, dus à la diffraction (agrandis à gauche). Tournez la mise au point : elle devient un disque troué.";
+  } else {
+    h2 = "Étoile défocalisée";
+    spec = `Foyer à ${Math.round(Math.abs(d))} mm de l'oculaire (${d > 0 ? "derrière" : "devant"})`;
+    p = "L'étoile s'étale en un disque troué en son centre : ce trou est l'ombre du secondaire. Le disque a le même aspect des deux côtés du foyer : l'optique est bien corrigée.";
+  }
+  ap.legende.innerHTML = `<h2>${h2}</h2><p class="spec">${spec}</p><p>${p}</p>`;
+}
+
+S.onFrame(({ time }) => {
+  const W = S.apercu.canvas.clientWidth, cle = W + "|" + !!vueOcu;
+  if (cle !== cleDessin && vueOcu) {
+    cleDessin = cle;
+    vuesRondes(S.apercu.canvas, [
+      { image: meilleur[S.state.lame], titre: `Au mieux · zoom ×${CHAMP_OCU / CHAMP_ZOOM(S.state.lame)}` },
+      { image: vueOcu, titre: "Réglage actuel" },
+    ]);
+  }
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière."
+    : vis && !S.state.lame ? "Expérience de pensée (on n'observe jamais sans lame) : les miroirs sphériques seuls ne concentrent plus la lumière en un point. Les rayons du bord et ceux du centre ne se croisent plus au même endroit (aberration de sphéricité)."
+    : vis && Math.abs(map) > 0.05 ? `${sens()} L'image est floue : il faut ramener le foyer dans l'oculaire.`
+    : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 5);
+});
+
+S.start();
+</script>
+</body>
+</html>

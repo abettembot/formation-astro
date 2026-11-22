@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Télescope Schmidt-Newton</title>
+<meta name="description" content="Schéma 3D interactif d'un télescope Schmidt-Newton 200/800 : lame de Schmidt, miroir sphérique, vue éclatée et trajet de la lumière.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, imageEtoile, vuesRondes } from "../commun/schema.js";
+
+// ---------- Géométrie optique (1 unité = 100 mm) ----------
+const F = 8;           // focale du primaire (800 mm)
+const RS = 2 * F;      // rayon de courbure du primaire sphérique (1600 mm)
+const RM = 1.0;        // rayon du primaire (200 mm de diamètre)
+const RT = 1.2;        // rayon du tube
+const XP = -3.6;       // sommet du primaire
+const D = RT + 1.05;   // distance axe -> plan focal
+const XS = XP + F - D; // centre du secondaire
+const TUBE_BACK = XP - 0.4, TUBE_FRONT = XS + 0.6;
+const XC = TUBE_FRONT - 0.04; // face avant de la lame de Schmidt
+const RC = RT - 0.04;         // rayon de la lame
+const FE = 0.4;        // focale oculaire (schématique)
+const SEC_R = 0.3;     // demi petit axe du secondaire (60 mm)
+const ABER = 25;       // sans lame : aberration de sphéricité exagérée ×25 pour être visible
+
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+let ocular = 25;
+let map = 0; // sortie de l'oculaire en mm (+ = vers l'extérieur)
+const fmt = (v, d = 1) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(d).replace(".", ",");
+let tubeOuter, tubeInner, lip;
+const tubeLen = TUBE_FRONT - TUBE_BACK, tubeMid = (TUBE_FRONT + TUBE_BACK) / 2;
+const sag = (r) => RS - Math.sqrt(RS * RS - r * r); // flèche du miroir sphérique
+
+function setCut(on) {
+  const mk = (r) => axeX(on ? new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true, Math.PI / 2, Math.PI)
+                            : new THREE.CylinderGeometry(r, r, tubeLen, 72, 1, true));
+  tubeOuter.geometry.dispose(); tubeOuter.geometry = mk(RT);
+  tubeInner.geometry.dispose(); tubeInner.geometry = mk(RT - 0.015);
+  lip.visible = !on;
+}
+function setLame(on) {
+  lame.group.visible = on;
+  poserRayons();
+}
+
+const S = createSchema({
+  surtitre: "Support de formation · Optique",
+  titre: "Télescope Schmidt-Newton",
+  sousTitre: "Exemple : Schmidt-Newton 200/800 · f/4",
+  eclate: true,
+  apercu: { titre: "Vu à l'oculaire" },
+  commandes: [
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: setCut },
+    { type: "bascule", id: "lame", label: "Lame de Schmidt", actif: true, onChange: (v) => setLame(v) },
+    { type: "curseur", id: "map", label: "Mise au point", min: -3, max: 3, pas: 0.1, valeur: 0,
+      format: (v) => `${fmt(v)} mm`, onInput: (v) => { map = v; ocuMobile.position.y = v / 100; poserRayons(); } },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [11, 8, 18.5], cible: [-0.6, 0.2, 0] },
+    { id: "profil", label: "Profil", pos: [-0.3, 1.0, 22], cible: [-0.6, 0.2, 0] },
+    { id: "face", label: "Entrée du tube", pos: [15, 0.4, 0.6], cible: [0, 0, 0] },
+    { id: "dessus", label: "Dessus", pos: [XS + 0.01, 15, 0.5], cible: [XS - 3, 0, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Le trajet de la lumière</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile traverse d'abord la lame de Schmidt, une vitre très finement retouchée qui ferme le tube." },
+      { couleur: SEG[1], texte: "Le miroir primaire, sphérique, la fait converger. La lame a dévié les rayons juste ce qu'il faut pour qu'ils se rejoignent tous au même point." },
+      { couleur: SEG[2], texte: "Le miroir secondaire plan, fixé au centre de la lame, renvoie le cône sur le côté du tube." },
+      { couleur: SEG[3], texte: "L'image se forme au foyer, puis l'oculaire la grossit et renvoie des rayons parallèles vers l'œil." },
+    ])}
+    <p class="spec">C'est un Newton fermé par une lame : miroir sphérique, pas d'araignée donc pas d'aigrettes, tube fermé qui reste propre. Essayez « Lame de Schmidt » et « Mise au point » en regardant l'encart « Vu à l'oculaire ».</p>`,
+});
+
+// ---------- Tube ----------
+const tube = S.part("tube", "Tube optique", {
+  ancre: [-1.4, RT + 0.05, 0],
+  texte: "Il maintient la lame et les deux miroirs alignés. Fermé à l'avant par la lame, il protège les miroirs de la poussière et de l'humidité, et limite les courants d'air à l'intérieur. L'intérieur est noir mat pour absorber la lumière parasite.",
+  chiffres: "Longueur ≈ 70 cm pour un 200/800 · tube fermé",
+});
+tubeOuter = S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, tubeLen, 72, 1, true)), M.peinture(), tubeMid));
+tubeInner = S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, tubeLen, 72, 1, true)), M.flocage(), tubeMid));
+lip = S.add(tube, mesh(axeX(new THREE.TorusGeometry(RT, 0.035, 10, 72).rotateX(Math.PI / 2)), M.noir(), TUBE_FRONT));
+
+// ---------- Lame de Schmidt (relief très exagéré) ----------
+// Profil classique : plus épaisse au centre et au bord, plus mince vers 87 % du rayon (zone neutre).
+const lame = S.part("lame", "Lame de Schmidt", {
+  eclate: [3.4, 0, 0], ancre: [XC + 0.05, RT + 0.15, 0], etiquette: false,
+  texte: "Vitre de correction qui ferme l'avant du tube. Sa surface est retouchée de quelques millièmes de millimètre seulement, à peine plus épaisse au centre et au bord. Elle dévie légèrement les rayons pour compenser le défaut du miroir sphérique : sans elle, les rayons du bord et ceux du centre ne se rejoindraient pas au même point. Sur le schéma, son relief est très exagéré.",
+  chiffres: "Verre de quelques mm d'épaisseur · relief réel de l'ordre du centième de mm · porte le secondaire",
+});
+S.label("Lame de Schmidt", () => lame.group.localToWorld(lame.ancre.clone()), { partId: "lame", visible: () => lame.group.visible });
+{
+  const ep = (r) => { const q = (r / RC) ** 2; return 0.03 + 0.07 * (q * q - 1.5 * q + 0.5625); };
+  const pts = [new THREE.Vector2(0.001, XC - XC), new THREE.Vector2(RC, 0)];
+  for (let i = 24; i >= 0; i--) { const r = Math.max(0.001, (i / 24) * RC); pts.push(new THREE.Vector2(r, -ep(r))); }
+  const g = new THREE.LatheGeometry(pts, 96);
+  g.rotateZ(-Math.PI / 2);
+  const m = S.add(lame, mesh(g, M.lentille(), XC));
+  m.material.side = THREE.DoubleSide; m.material.opacity = 0.4;
+  S.add(lame, mesh(axeX(new THREE.CylinderGeometry(RT + 0.02, RT + 0.02, 0.1, 72, 1, true)), M.noir(), XC - 0.02)).material.side = THREE.DoubleSide;
+  S.add(lame, mesh(axeX(new THREE.TorusGeometry(RC + 0.02, 0.03, 8, 72).rotateX(Math.PI / 2)), M.noir(), XC + 0.03));
+}
+
+// ---------- Miroir primaire (sphérique : flèche = R - √(R² - r²)) ----------
+const primary = S.part("primary", "Miroir primaire", {
+  eclate: [-2.3, 0, 0], ancre: [XP - 0.1, RM + 0.1, 0],
+  texte: "Miroir concave sphérique, aluminé sur sa face avant. Une sphère est bien plus facile à polir avec précision qu'une parabole, mais seule elle ne concentre pas tous les rayons au même point (aberration de sphéricité). C'est la lame de Schmidt qui corrige ce défaut. Très ouvert (f/4), il donne un tube court et un grand champ.",
+  chiffres: "D = 200 mm · F = 800 mm · rapport F/D = 4 · rayon de courbure 1600 mm",
+});
+{
+  const pts = [], T = 0.2;
+  for (let i = 0; i <= 24; i++) { const r = (i / 24) * RM; pts.push(new THREE.Vector2(r, sag(r))); }
+  pts.push(new THREE.Vector2(RM, -T), new THREE.Vector2(0.001, -T));
+  const g = new THREE.LatheGeometry(pts, 96);
+  g.rotateZ(-Math.PI / 2);
+  const face = S.add(primary, mesh(g, M.miroir(), XP));
+  face.material.side = THREE.DoubleSide;
+  S.add(primary, mesh(axeX(new THREE.CylinderGeometry(RM - 0.002, RM - 0.002, T - 0.01, 96, 1, true)), M.verre(), XP - T / 2));
+}
+
+// ---------- Barillet ----------
+const cell = S.part("cell", "Barillet", {
+  eclate: [-3.9, 0, 0], ancre: [TUBE_BACK - 0.1, -RT - 0.05, 0],
+  texte: "Support arrière du miroir primaire. Ses vis de collimation permettent d'incliner le miroir pour aligner l'optique, comme sur un Newton. Sur un Schmidt-Newton, la collimation se règle surtout ici : le secondaire, fixé à la lame, bouge peu.",
+  chiffres: "3 paires de vis à 120° · clips de maintien du miroir",
+});
+{
+  S.add(cell, mesh(axeX(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.12, 72)), M.noir(), TUBE_BACK - 0.06));
+  S.add(cell, mesh(axeX(new THREE.CylinderGeometry(RM + 0.06, RM + 0.06, 0.08, 72)), M.alu(), XP - 0.26));
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3) + Math.PI / 2;
+    const y = Math.sin(a), z = Math.cos(a);
+    S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.07, 0.07, 0.55, 16)), M.alu(), TUBE_BACK - 0.22, y * 0.75, z * 0.75));
+    S.add(cell, mesh(axeX(new THREE.CylinderGeometry(0.14, 0.14, 0.12, 20)), M.noir(), TUBE_BACK - 0.5, y * 0.75, z * 0.75));
+    const clip = S.add(cell, mesh(new THREE.BoxGeometry(0.28, 0.06, 0.16), M.noir()));
+    clip.position.set(XP + 0.03, Math.sin(a + 1) * (RM - 0.04), Math.cos(a + 1) * (RM - 0.04));
+    clip.rotation.x = Math.PI / 2 - (a + 1);
+  }
+}
+
+// ---------- Miroir secondaire (plan elliptique à 45°, tenu par la lame) ----------
+const secondary = S.part("secondary", "Miroir secondaire", {
+  eclate: [2.0, 0, 0], ancre: [XS, SEC_R + 0.15, 0],
+  texte: "Petit miroir plan elliptique incliné à 45°, qui renvoie le cône de lumière sur le côté du tube. Son support est fixé au centre de la lame : il n'y a pas d'araignée, donc pas d'aigrettes en croix autour des étoiles brillantes. Ses vis de réglage sont accessibles à l'avant de la lame.",
+  chiffres: "Petit axe ≈ 60 mm · obstruction ≈ 30 % du diamètre",
+});
+{
+  const g = new THREE.CylinderGeometry(SEC_R, SEC_R, 0.06, 64);
+  g.rotateX(Math.PI / 2);
+  g.scale(Math.SQRT2, 1, 1);
+  const n = new THREE.Vector3(-1, 1, 0).normalize();
+  const ax = new THREE.Vector3(1, 1, 0).normalize();
+  const ay = new THREE.Vector3().crossVectors(n, ax);
+  const m = S.add(secondary, mesh(g, M.miroir(), XS));
+  m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ax, ay, n));
+  // support traversant la lame, avec ses 3 vis de réglage à l'avant
+  const x0 = XS + 0.15, x1 = XC + 0.1;
+  S.add(secondary, mesh(axeX(new THREE.CylinderGeometry(0.14, 0.14, x1 - x0, 32)), M.noir(), (x0 + x1) / 2));
+  for (let k = 0; k < 3; k++) {
+    const a = k * (2 * Math.PI / 3);
+    S.add(secondary, mesh(axeX(new THREE.CylinderGeometry(0.03, 0.03, 0.08, 10)), M.alu(), x1 + 0.04, Math.sin(a) * 0.1, Math.cos(a) * 0.1));
+  }
+}
+
+// ---------- Porte-oculaire ----------
+const focuser = S.part("focuser", "Porte-oculaire", {
+  eclate: [0, 1.6, 0], ancre: [XS + 0.7, RT + 0.35, 0],
+  texte: "Tube coulissant que l'on monte ou descend avec les molettes pour amener le foyer exactement sur l'oculaire : c'est la mise au point. Il est placé à hauteur du secondaire, près de l'avant du tube, comme sur un Newton.",
+  chiffres: "Coulant 31,75 mm ou 50,8 mm · souvent de type Crayford",
+});
+{
+  S.add(focuser, mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.12, 40), M.noir(), XS, RT + 0.02, 0));
+  S.add(focuser, mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.55, 40), M.noir(), XS, RT + 0.33, 0));
+  S.add(focuser, mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.4, 40, 1, true), M.alu(), XS, RT + 0.78, 0)).material.side = THREE.DoubleSide;
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.05, 0.05, 1.3, 12)), M.alu(), XS, RT + 0.3, 0));
+  for (const s of [-1, 1]) S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.17, 0.17, 0.12, 24)), M.noir(), XS, RT + 0.3, s * 0.65));
+}
+
+// ---------- Oculaire (avec calcul du grossissement) ----------
+const eyepiece = S.part("eyepiece", "Oculaire", {
+  eclate: [0, 3.1, 0], ancre: [XS + 0.45, D + 0.55, 0],
+  texte: "Petite loupe qui grossit l'image formée au foyer. Avec une focale courte (800 mm), le Schmidt-Newton donne de faibles grossissements et un grand champ : idéal pour le ciel profond.",
+  chiffres: "Grossissement = focale du télescope ÷ focale de l'oculaire",
+  extra: () => `
+    <div class="calc"><label for="ocu">Oculaire de</label>
+      <select id="ocu">${[32, 25, 15, 10, 6].map((f) => `<option value="${f}" ${f === ocular ? "selected" : ""}>${f} mm</option>`).join("")}</select>
+      <span>→ 800 ÷ ${ocular} = <strong>${Math.round(800 / ocular)}×</strong></span></div>
+    <p class="spec">Grossissement utile maximal ≈ 2 × diamètre en mm, soit ≈ 400× (rarement atteint à cause de la turbulence).</p>`,
+  bind: (root) => root.querySelector("#ocu").addEventListener("change", (e) => { ocular = +e.target.value; S.refreshInfo(); }),
+});
+const ocuMobile = new THREE.Group(); // l'oculaire coulisse avec la mise au point
+{
+  ocuMobile.add(mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 32, 1, true), M.alu(), XS, D + 0.15, 0));
+  ocuMobile.add(mesh(new THREE.CylinderGeometry(0.3, 0.27, 0.6, 32, 1, true), M.noir(), XS, D + 0.65, 0));
+  ocuMobile.add(mesh(new THREE.CylinderGeometry(0.29, 0.31, 0.22, 32, 1, true), M.caoutchouc(), XS, D + 1.06, 0));
+  ocuMobile.children.forEach((m) => (m.material.side = THREE.DoubleSide));
+  ocuMobile.add(mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 32), M.lentille(), XS, D + FE, 0));
+  S.add(eyepiece, ocuMobile);
+}
+
+// ---------- Chercheur ----------
+const XF = XS - 1.9;
+const FY = (RT + 0.5) * Math.SQRT1_2, FZ = -(RT + 0.5) * Math.SQRT1_2;
+const finder = S.part("finder", "Chercheur", {
+  eclate: [0, 1.2, -1.6], ancre: [XF, FY + 0.3, FZ],
+  texte: "Petite lunette à faible grossissement et à grand champ, alignée avec le tube. Elle sert à viser l'objet avant de regarder dans l'oculaire.",
+  chiffres: "Typiquement 8×50 : grossissement 8, objectif de 50 mm",
+});
+{
+  S.add(finder, mesh(axeX(new THREE.CylinderGeometry(0.2, 0.2, 1.8, 32)), M.peinture(), XF, FY, FZ));
+  S.add(finder, mesh(axeX(new THREE.CylinderGeometry(0.26, 0.2, 0.35, 32)), M.peinture(), XF + 1.05, FY, FZ));
+  S.add(finder, mesh(axeX(new THREE.CylinderGeometry(0.1, 0.14, 0.35, 24)), M.noir(), XF - 1.05, FY, FZ));
+  for (const x of [XF - 0.5, XF + 0.5]) {
+    S.add(finder, mesh(axeX(new THREE.TorusGeometry(0.26, 0.04, 8, 32).rotateX(Math.PI / 2)), M.noir(), x, FY, FZ));
+    const foot = S.add(finder, mesh(new THREE.BoxGeometry(0.1, 0.36, 0.1), M.noir(), x, (RT + 0.12) * Math.SQRT1_2 + 0.1, -(RT + 0.12) * Math.SQRT1_2 - 0.1));
+    foot.rotation.x = Math.PI / 4;
+  }
+}
+
+// ---------- Colliers ----------
+const rings = S.part("rings", "Colliers", {
+  eclate: [0, -2.9, 0], ancre: [-2.4, -RT - 0.15, 0.9],
+  texte: "Ils serrent le tube et le relient à la queue d'aronde. Desserrés, ils permettent de faire tourner le tube pour placer l'oculaire dans une position confortable, ou de le faire glisser pour l'équilibrer sur la monture.",
+  chiffres: "Paire de colliers à charnière, molettes de serrage",
+});
+for (const x of [-2.4, 1.0]) {
+  S.add(rings, mesh(axeX(new THREE.CylinderGeometry(RT + 0.07, RT + 0.07, 0.3, 72, 1, true)), M.noir(), x)).material.side = THREE.DoubleSide;
+  S.add(rings, mesh(new THREE.BoxGeometry(0.3, 0.32, 0.5), M.noir(), x, -RT - 0.22, 0));
+  S.add(rings, mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.4, 12), M.alu(), x, RT + 0.2, 0));
+}
+
+// ---------- Queue d'aronde ----------
+const dovetail = S.part("dovetail", "Queue d'aronde", {
+  eclate: [0, -3.7, 0], ancre: [-0.7, -RT - 0.5, 0.45],
+  texte: "Barre profilée standardisée qui se glisse et se serre dans la tête de la monture. C'est l'interface entre le télescope et sa monture.",
+  chiffres: "Format Vixen (≈ 44 mm) ou Losmandy (≈ 75 mm)",
+});
+{
+  const s = new THREE.Shape();
+  s.moveTo(-0.38, 0); s.lineTo(0.38, 0); s.lineTo(0.3, -0.16); s.lineTo(-0.3, -0.16); s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: 5.0, bevelEnabled: false });
+  g.rotateY(Math.PI / 2);
+  S.add(dovetail, mesh(g, M.alu(), -3.2, -RT - 0.38, 0));
+}
+
+// ---------- Trajet de la lumière ----------
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const plan = (P, d, Q, n) => P.clone().addScaledVector(d, Q.clone().sub(P).dot(n) / d.dot(n));
+const refleter = (d, n) => d.clone().addScaledVector(n, -2 * d.dot(n));
+const N_SEC = V(-1, 1, 0).normalize(), Y_LENT = D + FE;
+const entries = [[0.85, 0], [-0.85, 0], [0.5, 0], [-0.5, 0], [0, 0.72], [0, -0.72]];
+
+function rayon(y0, z0, corrige) {
+  const h2 = y0 * y0 + z0 * z0;
+  const A = V(TUBE_FRONT + 4.5, y0, z0), C = V(XC, y0, z0);
+  const H = V(XP + sag(Math.sqrt(h2)), y0, z0);
+  // avec la lame, tous les rayons vont au foyer ; sans elle, ceux du bord croisent l'axe plus près du miroir
+  const cible = V(XP + F - (corrige ? 0 : ABER * h2 / (4 * RS)), 0, 0);
+  const d1 = cible.sub(H).normalize();
+  const Sp = plan(H, d1, V(XS, 0, 0), N_SEC);
+  const d2 = refleter(d1, N_SEC);
+  const L = plan(Sp, d2, V(0, Y_LENT + map / 100, 0), V(0, 1, 0));
+  // oculaire : lentille mince d'axe vertical passant par (XS, ·, 0)
+  const sx = d2.x / d2.y - (L.x - XS) / FE, sz = d2.z / d2.y - L.z / FE;
+  const E = L.clone().addScaledVector(V(sx, 1, sz).normalize(), 1.3);
+  return { pts: [A, C, H, Sp, L, E], cols: [SEG[0], SEG[0], SEG[1], SEG[2], SEG[3]] };
+}
+
+const lum = faisceau(0.55, 0.42);
+S.scene.add(lum.group);
+const focusMark = halo(COULEURS.corail, 0.55);
+focusMark.position.set(XS, D, 0);
+lum.group.add(focusMark);
+function poserRayons() {
+  lum.poser(entries.map(([y, z]) => rayon(y, z, S.state.lame)));
+  focusMark.visible = S.state.lame;
+  majApercu();
+}
+
+// ---------- Encart « Vu à l'oculaire » : image d'une étoile calculée (sans exagération) ----------
+// Écart (mm, le long du faisceau) entre le croisement du rayon de hauteur rho et le plan de l'oculaire.
+// Sans lame, le miroir sphérique fait croiser les rayons du bord plus tôt : r²/4R, soit 1,6 mm au bord.
+const ecartSN = (rho, dmm, corrige) => {
+  const h = rho * RM * 100;
+  return (corrige ? 0 : -h * h / (4 * RS * 100)) - dmm;
+};
+const OPT = { D: 200, F: 800, obstruction: SEC_R / RM };
+const CHAMP_ZOOM = (lameOn) => (lameOn ? 15 : 60), CHAMP_OCU = 300;
+const meilleur = {};
+let vueOcu = null, cleDessin = "";
+function majApercu() {
+  const lameOn = S.state.lame;
+  meilleur[lameOn] ??= imageEtoile({ ...OPT, champ: CHAMP_ZOOM(lameOn), auPoint: true, ecart: (r) => ecartSN(r, 0, lameOn) });
+  vueOcu = imageEtoile({ ...OPT, champ: CHAMP_OCU, ecart: (r) => ecartSN(r, map, lameOn) });
+  cleDessin = "";
+  let h2, spec, p;
+  if (!lameOn) {
+    h2 = "Sans lame : jamais nette";
+    spec = "Situation théorique : on n'observe jamais un Schmidt-Newton sans sa lame";
+    p = "Voici ce que donnerait le miroir sphérique seul, calculé sans exagération. Même au meilleur foyer, l'étoile reste une tache floue. En tournant la mise au point, l'image n'a pas le même aspect avant et après le foyer : c'est la signature de l'aberration de sphéricité, que l'on cherche lors du test sur étoile.";
+  } else if (Math.abs(map) < 0.01) {
+    h2 = "Étoile nette";
+    spec = "Foyer exactement dans l'oculaire";
+    p = "Au point, l'étoile est un point entouré d'anneaux très fins, dus à la diffraction (agrandis à gauche). Bougez la mise au point : elle devient un disque troué.";
+  } else {
+    h2 = "Étoile défocalisée";
+    spec = `Oculaire ${map > 0 ? "sorti" : "rentré"} de ${Math.abs(map).toFixed(1).replace(".", ",")} mm`;
+    p = "L'étoile s'étale en un disque troué en son centre : ce trou est l'ombre du secondaire. Le disque a le même aspect des deux côtés du foyer : l'optique est bien corrigée.";
+  }
+  S.apercu.legende.innerHTML = `<h2>${h2}</h2><p class="spec">${spec}</p><p>${p}</p>`;
+}
+
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière d'une étoile", () => V(TUBE_FRONT + 3.2, 0.95, 0), { lumiere: true, visible: lightVisible });
+S.label("Foyer", () => V(XS - 0.45, D + 0.12, 0), { lumiere: true, visible: () => lightVisible() && S.state.lame });
+S.label("Vers l'œil", () => V(XS, D + FE + 1.45, 0), { lumiere: true, visible: lightVisible });
+
+S.onFrame(({ time }) => {
+  const W = S.apercu.canvas.clientWidth, cle = W + "|" + !!vueOcu;
+  if (cle !== cleDessin && vueOcu) {
+    cleDessin = cle;
+    vuesRondes(S.apercu.canvas, [
+      { image: meilleur[S.state.lame], titre: `Au mieux · zoom ×${CHAMP_OCU / CHAMP_ZOOM(S.state.lame)}` },
+      { image: vueOcu, titre: "Réglage actuel" },
+    ]);
+  }
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière."
+    : vis && !S.state.lame ? "Expérience de pensée (on n'observe jamais sans lame) : le miroir sphérique seul ne concentre plus la lumière en un point. Les rayons du bord se croisent avant ceux du centre (aberration de sphéricité, exagérée ici sur les rayons pour être visible)."
+    : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 5);
+});
+
+S.start();
+</script>
+</body>
+</html>

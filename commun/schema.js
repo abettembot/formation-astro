@@ -201,6 +201,195 @@ export function troncCone(r0, r1, s0, s1, couleur, opRemplissage = 0.1, opBord =
     new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: opBord, depthWrite: false })));
   return grp;
 }
+/** Petit halo lumineux (foyer, tache de lumière) : sprite additif de diamètre « taille ». */
+export function halo(couleur, taille = 0.5) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: textureHalo(), color: couleur, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  s.scale.setScalar(taille);
+  return s;
+}
+/** Faisceau de rayons lumineux : lignes fines colorées par segment + particules qui avancent le long des trajets.
+ *  Renvoie { group, photons, poser(liste), animer(time, parTrajet) } ; le groupe est à ajouter à la scène.
+ *  liste : [{ pts: [[x,y,z] ou Vector3, ...], cols: [couleur de chaque segment] }] — poser() peut être rappelé à tout moment. */
+export function faisceau(opacite = 0.55, taille = 0.42, maxPh = 64) {
+  const group = new THREE.Group();
+  const lignes = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: opacite, depthWrite: false }));
+  group.add(lignes);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(maxPh * 3), 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(maxPh * 3), 3));
+  const photons = new THREE.Points(geo, new THREE.PointsMaterial({ size: taille, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  photons.frustumCulled = false;
+  group.add(photons);
+  const c = new THREE.Color();
+  const arr = (p) => (p.isVector3 ? p.toArray() : p);
+  let trajets = [];
+  return {
+    group, photons,
+    poser(liste) {
+      trajets = liste.filter((t) => t.pts.length > 1).map((t) => {
+        const pts = t.pts.map(arr), lens = []; let total = 0;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const l = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1], pts[i + 1][2] - pts[i][2]);
+          lens.push(l); total += l;
+        }
+        return { pts, cols: t.cols, lens, total };
+      });
+      const pos = [], col = [];
+      for (const t of trajets) for (let i = 0; i < t.pts.length - 1; i++) {
+        c.setHex(t.cols[i]);
+        pos.push(...t.pts[i], ...t.pts[i + 1]);
+        col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+      lignes.geometry.dispose(); lignes.geometry = g;
+    },
+    animer(time, parTrajet = 5) {
+      const P = geo.attributes.position, C = geo.attributes.color;
+      let k = 0;
+      for (const t of trajets) for (let j = 0; j < parTrajet && k < maxPh; j++, k++) {
+        let s = (time * 3.2 + j * t.total / parTrajet) % t.total, i = 0;
+        while (i < t.lens.length - 1 && s > t.lens[i]) { s -= t.lens[i]; i++; }
+        const a = t.pts[i], b = t.pts[i + 1], f = Math.min(1, s / Math.max(t.lens[i], 1e-9));
+        P.setXYZ(k, a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f);
+        c.setHex(t.cols[i]); C.setXYZ(k, c.r, c.g, c.b);
+      }
+      geo.setDrawRange(0, k);
+      P.needsUpdate = true; C.needsUpdate = true;
+    },
+  };
+}
+// ---------- Image d'une étoile vue au télescope (pour un encart « Vu à l'oculaire ») ----------
+const ARCSEC = 206264.8; // secondes d'arc par radian
+function besselJ1(x) {
+  const ax = Math.abs(x);
+  if (ax < 8) {
+    const y = x * x;
+    return x * (72362614232.0 + y * (-7895059235.0 + y * (242396853.1 + y * (-2972611.439 + y * (15704.48260 + y * -30.16036606)))))
+      / (144725228442.0 + y * (2300535178.0 + y * (18583304.74 + y * (99447.43394 + y * (376.9991397 + y)))));
+  }
+  const z = 8 / ax, y = z * z, xx = ax - 2.356194491;
+  const a1 = 1.0 + y * (0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * -0.240337019e-6)));
+  const a2 = 0.04687499995 + y * (-0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
+  const r = Math.sqrt(0.636619772 / ax) * (Math.cos(xx) * a1 - z * Math.sin(xx) * a2);
+  return x < 0 ? -r : r;
+}
+const jinc = (v) => (v < 1e-6 ? 1 : 2 * besselJ1(v) / v);
+/**
+ * Image d'une étoile au foyer d'un télescope à symétrie de révolution : canvas carré de n px.
+ * Tache géométrique (rayons répartis sur la pupille, obstruction centrale comprise), puis convolution
+ * par la figure de diffraction de l'ouverture obstruée (λ = 550 nm). Convient du point net (anneaux)
+ * jusqu'au disque défocalisé troué par l'ombre du secondaire.
+ * o : D, F (diamètre et focale résultante, mm) · obstruction (rapport des diamètres)
+ *     ecart(rho) : distance (mm), le long du faisceau, entre le point où le rayon de hauteur relative rho (0…1)
+ *                  croise l'axe et le plan observé (positive si le plan est avant le croisement)
+ *     auPoint : true pour se placer au plan de meilleure mise au point (tache la plus petite)
+ *     champ : largeur de l'image en secondes d'arc · n (81) · rayons (par diamètre, 160) · gamma (0,5)
+ */
+export function imageEtoile(o) {
+  const NI = o.n || 81, champ = o.champ, px = champ / NI, eps = o.obstruction || 0, nr = o.rayons || 160;
+  const N = o.F / o.D;
+  const pup = [];
+  for (let i = 0; i < nr; i++) for (let j = 0; j < nr; j++) {
+    const y = ((i + 0.5) / nr) * 2 - 1, z = ((j + 0.5) / nr) * 2 - 1, r = Math.hypot(y, z);
+    if (r <= 1 && r >= eps) pup.push([y, z, r, o.ecart(r)]);
+  }
+  let c = 0;
+  if (o.auPoint) { // plan qui minimise la tache (moindres carrés)
+    let a = 0, b = 0;
+    for (const p of pup) { a += p[2] * p[2] * p[3]; b += p[2] * p[2]; }
+    c = b ? -a / b : 0;
+  }
+  let acc = new Float32Array(NI * NI);
+  const k = ARCSEC / (2 * N * o.F) / px; // mm d'écart → pixels
+  for (const [y, z, , e] of pup) {
+    const x = NI / 2 + y * (e + c) * k - 0.5, yy = NI / 2 + z * (e + c) * k - 0.5;
+    const i = Math.floor(x), j = Math.floor(yy), fx = x - i, fy = yy - j;
+    for (const [di, dj, w] of [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)], [0, 1, (1 - fx) * fy], [1, 1, fx * fy]]) {
+      const ii = i + di, jj = j + dj;
+      if (ii >= 0 && jj >= 0 && ii < NI && jj < NI) acc[jj * NI + ii] += w;
+    }
+  }
+  if (champ > 60) { // grand champ : lisse le grain dû à l'échantillonnage des rayons
+    const b = new Float32Array(NI * NI);
+    for (let j = 0; j < NI; j++) for (let i = 0; i < NI; i++) {
+      let s = 0, n = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const x = i + di, y = j + dj;
+        if (x >= 0 && y >= 0 && x < NI && y < NI) { s += acc[y * NI + x]; n++; }
+      }
+      b[j * NI + i] = s / n;
+    }
+    acc = b;
+  }
+  // figure de diffraction (disque circulaire de 8 à 9 anneaux), échantillonnée finement dans chaque pixel
+  const vpar = Math.PI * o.D / 5.5e-4 / ARCSEC; // argument de la fonction d'Airy par seconde d'arc
+  const KR = Math.min(40, Math.ceil(30 / vpar / px));
+  if (KR > 0) {
+    const KW = 2 * KR + 1, K = new Float32Array(KW * KW);
+    let s = 0;
+    for (let y = -KR; y <= KR; y++) for (let x = -KR; x <= KR; x++) {
+      if (x * x + y * y > KR * KR) continue;
+      let v = 0;
+      for (let sy = -1; sy <= 1; sy++) for (let sx = -1; sx <= 1; sx++) {
+        const t = vpar * px * Math.hypot(x + sx / 3, y + sy / 3);
+        const a = (jinc(t) - eps * eps * jinc(eps * t)) / (1 - eps * eps);
+        v += a * a;
+      }
+      K[(y + KR) * KW + x + KR] = v; s += v;
+    }
+    const out = new Float32Array(NI * NI);
+    for (let j = 0; j < NI; j++) for (let i = 0; i < NI; i++) {
+      const w = acc[j * NI + i];
+      if (!w) continue;
+      for (let ky = -KR; ky <= KR; ky++) {
+        const y = j + ky;
+        if (y < 0 || y >= NI) continue;
+        for (let kx = -KR; kx <= KR; kx++) { const x = i + kx; if (x >= 0 && x < NI) out[y * NI + x] += w * K[(ky + KR) * KW + kx + KR] / s; }
+      }
+    }
+    acc = out;
+  }
+  // luminosité : l'étoile reste bien visible, qu'elle soit nette ou étalée
+  let max = 0;
+  for (const v of acc) if (v > max) max = v;
+  const ref = max * 0.8 || 1, g = o.gamma ?? 0.5;
+  const cv = document.createElement("canvas"); cv.width = cv.height = NI;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(NI, NI);
+  for (let q = 0; q < NI * NI; q++) {
+    const v = Math.min(1, Math.pow(acc[q] / ref, g));
+    img.data[q * 4] = 255 * v; img.data[q * 4 + 1] = 244 * v; img.data[q * 4 + 2] = 214 * v; img.data[q * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+/** Dessine côte à côte des vues rondes (champ d'oculaire) dans le canvas d'un encart d'aperçu.
+ *  vues : [{ image (canvas ou null), titre }] — à rappeler quand l'encart change de taille. */
+export function vuesRondes(canvas, vues) {
+  const dpr = Math.min(devicePixelRatio, 2), W = canvas.clientWidth;
+  if (!W) return;
+  const gap = 10, lab = 20, n = vues.length, s = Math.floor((W - gap * (n - 1)) / n), H = s + lab;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = H + "px";
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  vues.forEach((v, i) => {
+    const x = i * (s + gap);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x + s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI); ctx.clip();
+    ctx.fillStyle = "#000"; ctx.fillRect(x, 0, s, s);
+    ctx.imageSmoothingEnabled = true;
+    if (v.image) ctx.drawImage(v.image, x, 0, s, s);
+    ctx.restore();
+    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x + s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI); ctx.stroke();
+    ctx.font = "11.5px Arial"; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
+    ctx.fillText(v.titre, x + s / 2, s + 14);
+  });
+}
 /** Vide un groupe en libérant géométries et matériaux (avant de le reconstruire). */
 export function vider(g) { g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); g.clear(); }
 /** Légende colorée (liste d'étapes) pour la fiche d'introduction. */
