@@ -39,7 +39,8 @@ Une carte `<a class="card">` par support, la plus récente en premier, avec une 
    - `commandes` : bascules et curseurs propres au schéma. « Étiquettes » et « Animation » sont ajoutées automatiquement, ne pas les redéclarer.
    - `vues` : 3 à 4 points de vue. La première est la vue de départ et s'appelle « 3/4 » quand c'est une vue en perspective.
    - `intro` : la fiche de vue d'ensemble, avec un `eyebrow`, une `legende([...])` en étapes colorées si le phénomène se déroule dans le temps ou l'espace, et une ligne `spec` de conclusion.
-3. Déclarer chaque élément avec `S.part(id, nom, { eclate, ancre, texte, chiffres, extra, bind })`, puis ajouter ses meshes avec `S.add(part, mesh(...))`.
+   - Une vue peut suivre une pièce mobile : `pos` et `cible` en fonctions, avec `fov`, `exacte: true` et `suivre: true` (exemple : vue « Viseur polaire » de `monture-equatoriale`).
+3. Déclarer chaque élément avec `S.part(id, nom, { eclate, ancre, texte, chiffres, extra, bind, parent })`, puis ajouter ses meshes avec `S.add(part, mesh(...))`. `parent` attache l'élément à un groupe mobile (axe d'une monture) ; `ancre` est alors dans le repère de ce groupe.
 4. Les phénomènes animés passent par `S.onFrame(({ dt, time, explode }) => ...)`. Utiliser `time`, qui s'arrête quand « Animation » est désactivée. Ajouter les étiquettes libres avec `S.label(texte, () => position, { lumiere: true, visible })`.
 5. Terminer par `S.start()`.
 6. Ajouter la carte au catalogue de l'accueil (obligatoire, voir plus haut).
@@ -59,7 +60,7 @@ Une carte `<a class="card">` par support, la plus récente en premier, avec une 
 ## Aperçu local, puis mise en ligne (obligatoire)
 **Ne jamais faire de `git push` sans que l'utilisateur ait validé l'aperçu local.** Le push met immédiatement le site en ligne pour tout le club.
 
-1. Après chaque modification du site (nouveau support, retouche de la charte, de `commun/` ou de l'accueil), lancer l'aperçu local depuis la racine du dépôt, en arrière-plan : `python -m http.server 8000`. L'utilisateur peut aussi double-cliquer sur `apercu.cmd`, qui lance le même serveur et ouvre le navigateur.
+1. Après chaque modification du site (nouveau support, retouche de la charte, de `commun/` ou de l'accueil), lancer l'aperçu local depuis la racine du dépôt, en arrière-plan : `python apercu.py` (port 8000, sans cache navigateur : sinon une page neuve peut tourner avec un ancien `schema.js` et rester vide). L'utilisateur peut aussi double-cliquer sur `apercu.cmd`, qui lance le même serveur et ouvre le navigateur.
 2. Donner à l'utilisateur les liens à vérifier : http://localhost:8000/ (accueil) et http://localhost:8000/<nom-du-schema>/ pour chaque support touché. Si `commun/` a changé, donner le lien de **chaque** schéma existant.
 3. Vérifier soi-même ce qu'on peut (console sans erreur, rendu dans le navigateur intégré), puis demander explicitement à l'utilisateur s'il valide la mise en ligne.
 4. Seulement après son accord : faire le commit (s'il n'est pas déjà fait), puis `git push`. Le site se met à jour en une à deux minutes sur https://abettembot.github.io/formation-astro/. Vérifier ensuite la version en ligne.

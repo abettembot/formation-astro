@@ -65,6 +65,9 @@ const MOBILE = 760;
  * @param {object} cfg
  *  - surtitre, titre, sousTitre : en-tête du panneau
  *  - vues : [{ id, label, pos:[x,y,z], cible:[x,y,z] }] — la première est la vue de départ
+ *           pos et cible peuvent être des fonctions (renvoyant un tableau ou un Vector3).
+ *           Options : fov (champ en degrés, 38 par défaut), exacte:true (pas de recul sur mobile),
+ *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue)
  *  - eclate : true pour afficher le curseur « Vue éclatée »
  *  - commandes : [{ type:"bascule", id, label, actif, onChange(v) }
  *                 | { type:"curseur", id, label, min, max, pas, valeur, format(v), onInput(v) }]
@@ -134,7 +137,8 @@ export function createSchema(cfg) {
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   scene.environmentIntensity = 0.6;
 
-  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400);
+  const FOV = cfg.fov ?? 38;
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 400);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.minDistance = cfg.distanceMin ?? 4;
@@ -144,8 +148,9 @@ export function createSchema(cfg) {
   const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(6, 10, 8); scene.add(key);
   const rim = new THREE.DirectionalLight(0x8fb3ff, 0.8); rim.position.set(-8, 3, -6); scene.add(rim);
 
-  // ciel étoilé de fond
-  {
+  // ciel étoilé de fond (exposé en api.ciel : un schéma peut le faire tourner)
+  const TAILLE_ETOILE = 0.22;
+  const ciel = (() => {
     const n = 900, pos = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
       const v = new THREE.Vector3().randomDirection().multiplyScalar(110 + Math.random() * 40);
@@ -153,8 +158,10 @@ export function createSchema(cfg) {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0x9fb0cc, size: 0.22, transparent: true, opacity: 0.7 })));
-  }
+    const pts = new THREE.Points(g, new THREE.PointsMaterial({ color: 0x9fb0cc, size: TAILLE_ETOILE, transparent: true, opacity: 0.7 }));
+    scene.add(pts);
+    return pts;
+  })();
 
   // ---------- État ----------
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -168,15 +175,17 @@ export function createSchema(cfg) {
   let time = 0;
 
   const api = {
-    THREE, scene, camera, renderer, controls, state, parts,
+    THREE, scene, camera, renderer, controls, state, parts, ciel,
     get time() { return time; },
     get explode() { return ease(state.explode); },
     reduced,
 
-    /** Déclare un élément sélectionnable (avec fiche et étiquette). */
+    /** Déclare un élément sélectionnable (avec fiche et étiquette).
+     *  opts.parent : groupe auquel l'attacher (pièce mobile, ex. axe d'une monture) ;
+     *  eclate et ancre sont alors exprimés dans le repère de ce groupe. */
     part(id, nom, opts = {}) {
       const group = new THREE.Group();
-      scene.add(group);
+      (opts.parent || scene).add(group);
       const p = {
         id, nom, group,
         eclate: new THREE.Vector3(...(opts.eclate || [0, 0, 0])),
@@ -187,7 +196,7 @@ export function createSchema(cfg) {
       };
       parts.push(p);
       if (opts.etiquette !== false) {
-        api.label(nom, () => p.ancre.clone().add(p.group.position), { partId: id });
+        api.label(nom, () => p.group.localToWorld(p.ancre.clone()), { partId: id });
       }
       return p;
     },
@@ -218,6 +227,16 @@ export function createSchema(cfg) {
     onFrame(fn) { frameFns.push(fn); },
     /** Affiche (texte) ou masque (null) le bandeau d'avertissement. */
     notice(texte) { notice.hidden = !texte; if (texte) notice.textContent = texte; },
+    /** Change une commande depuis le script. Curseur : met la valeur et appelle onInput.
+     *  Bascule : met l'état et le bouton à jour, sans appeler onChange. */
+    regler(id, valeur) {
+      const c = curseurs.find((x) => x.id === id);
+      if (c) { panel.querySelector(`#c-${id}`).value = valeur; c._init(); return; }
+      if (bascules.some((x) => x.id === id)) {
+        state[id] = !!valeur;
+        panel.querySelector(`#t-${id}`).setAttribute("aria-pressed", String(state[id]));
+      }
+    },
     select: (id) => select(id),
     refreshInfo: () => renderInfo(),
     vue: (id) => goView(id),
@@ -300,14 +319,26 @@ export function createSchema(cfg) {
   });
 
   // ---------- Vues caméra ----------
-  let camAnim = null;
+  let camAnim = null, vueSuivie = null;
+  const vec = (x) => { const r = typeof x === "function" ? x() : x; return r.isVector3 ? r.clone() : new THREE.Vector3(...r); };
+  function cadrage(v) {
+    const to = { pos: vec(v.pos), target: vec(v.cible), fov: v.fov ?? FOV };
+    if (innerWidth < MOBILE && !v.exacte) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
+    return to;
+  }
+  function applyCam(c) {
+    camera.position.copy(c.pos); controls.target.copy(c.target);
+    if (camera.fov !== c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
+  }
   function goView(id, instant = false) {
     const v = cfg.vues.find((x) => x.id === id) || cfg.vues[0];
-    const to = { pos: new THREE.Vector3(...v.pos), target: new THREE.Vector3(...v.cible) };
-    if (innerWidth < MOBILE) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
-    if (instant || reduced) { camera.position.copy(to.pos); controls.target.copy(to.target); return; }
-    camAnim = { from: { pos: camera.position.clone(), target: controls.target.clone() }, to, t: 0 };
+    vueSuivie = v.suivre ? v : null;
+    const to = cadrage(v);
+    if (instant || reduced) { applyCam(to); return; }
+    camAnim = { v, from: { pos: camera.position.clone(), target: controls.target.clone(), fov: camera.fov }, to, t: 0 };
   }
+  // l'utilisateur reprend la main : la vue cesse de suivre l'objet mobile
+  controls.addEventListener("start", () => { vueSuivie = null; });
   panel.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => goView(b.dataset.view)));
 
   // ---------- Taille : centre de vue décalé hors du panneau ----------
@@ -366,12 +397,16 @@ export function createSchema(cfg) {
 
       // caméra
       if (camAnim) {
+        if (camAnim.v.suivre) camAnim.to = cadrage(camAnim.v);
         camAnim.t = Math.min(1, camAnim.t + dt / 0.9);
         const k = ease(camAnim.t);
         camera.position.lerpVectors(camAnim.from.pos, camAnim.to.pos, k);
         controls.target.lerpVectors(camAnim.from.target, camAnim.to.target, k);
+        const fov = camAnim.from.fov + (camAnim.to.fov - camAnim.from.fov) * k;
+        if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
         if (camAnim.t >= 1) camAnim = null;
-      }
+      } else if (vueSuivie) applyCam(cadrage(vueSuivie));
+      ciel.material.size = TAILLE_ETOILE * camera.fov / FOV; // taille apparente constante quand on zoome
       controls.update();
       renderer.render(scene, camera);
 
