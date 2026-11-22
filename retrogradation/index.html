@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rétrogradation des planètes</title>
+<meta name="description" content="Schéma 3D interactif de la rétrogradation de Mars : la Terre double Mars, et Mars semble reculer devant les étoiles pendant deux mois et demi (opposition de janvier 2025).">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, textureHalo, legende, css, alea, textures, faisceau, halo } from "../commun/schema.js";
+
+// ---------- Échelle et repère ----------
+// 1 unité = 0,2 UA (30 millions de km) : la Terre tourne à 5 unités du Soleil, Mars à 7,6.
+// Distances à l'échelle ; Soleil, Terre et Mars très grossis ; fond du ciel dessiné beaucoup trop près.
+// Repère : plan de l'écliptique = plan XZ, pôle Nord de l'écliptique vers +Y.
+// Longitude écliptique λ comptée depuis +X, dans le sens inverse des aiguilles d'une montre vu de dessus.
+const DEG = Math.PI / 180;
+const UA = 5, R_CIEL = 80;
+const ECH = R_CIEL / 30; // taille des repères dessinés sur le fond du ciel
+
+// ---------- Orbites réelles (éléments moyens J2000, JPL) ----------
+// a (UA), e, i, L0 (longitude moyenne à J2000), n (degrés par jour), w (longitude du périhélie), O (nœud ascendant)
+const ORB = {
+  terre: { a: 1.00000261, e: 0.01671123, i: 0, L0: 100.46457166, n: 35999.37244981 / 36525, w: 102.93768193, O: 0 },
+  mars: { a: 1.52371034, e: 0.0933941, i: 1.84969142, L0: -4.55343205, n: 19140.30268499 / 36525, w: -23.94362959, O: 49.55953891 },
+};
+const J2000 = Date.UTC(2000, 0, 1, 12);
+const jour = (a, m, j) => (Date.UTC(a, m - 1, j) - J2000) / 864e5;
+let inclinaison = 1; // 1 : inclinaison réelle de l'orbite de Mars ; 0 : orbite dans le plan de l'écliptique
+
+/** Position héliocentrique (équation de Kepler), en unités de la scène. */
+function position(p, d, out = new THREE.Vector3()) {
+  const Mo = ((p.L0 + p.n * d - p.w) % 360) * DEG;
+  let E = Mo;
+  for (let k = 0; k < 6; k++) E -= (E - p.e * Math.sin(E) - Mo) / (1 - p.e * Math.cos(E));
+  const xp = p.a * (Math.cos(E) - p.e), yp = p.a * Math.sqrt(1 - p.e * p.e) * Math.sin(E);
+  const o = (p.w - p.O) * DEG, O = p.O * DEG, i = p.i * DEG * (p === ORB.mars ? inclinaison : 1);
+  const co = Math.cos(o), so = Math.sin(o), cO = Math.cos(O), sO = Math.sin(O), ci = Math.cos(i), si = Math.sin(i);
+  const X = (co * cO - so * sO * ci) * xp + (-so * cO - co * sO * ci) * yp;
+  const Y = (co * sO + so * cO * ci) * xp + (-so * sO + co * cO * ci) * yp;
+  const Z = so * si * xp + co * si * yp;
+  return out.set(X * UA, Z * UA, -Y * UA);
+}
+const posT = (d, out) => position(ORB.terre, d, out);
+const posM = (d, out) => position(ORB.mars, d, out);
+/** Direction écliptique (λ, β en degrés) → vecteur unitaire de la scène. */
+const versDir = (l, b, out = new THREE.Vector3()) => out.set(Math.cos(b * DEG) * Math.cos(l * DEG), Math.sin(b * DEG), -Math.cos(b * DEG) * Math.sin(l * DEG));
+const _e = new THREE.Vector3(), _m = new THREE.Vector3(), _u = new THREE.Vector3();
+/** Position vraie de Mars vue de la Terre : longitude, latitude (degrés), distance (millions de km). */
+function vuDeLaTerre(d) {
+  posT(d, _e); posM(d, _m); _u.subVectors(_m, _e);
+  const r = _u.length();
+  let l = Math.atan2(-_u.z, _u.x) / DEG; if (l < 0) l += 360;
+  return { l, b: Math.asin(_u.y / r) / DEG, km: r / UA * 149.6 };
+}
+/** Point du fond du ciel (sphère de rayon R_CIEL centrée sur le Soleil) dans la direction Terre → Mars. */
+function pointCiel(e, m, out = new THREE.Vector3()) {
+  const u = _u.subVectors(m, e).normalize(), b = e.dot(u);
+  return out.copy(e).addScaledVector(u, -b + Math.sqrt(b * b - e.lengthSq() + R_CIEL * R_CIEL));
+}
+const ecartAngle = (a) => ((a % 360) + 540) % 360 - 180;
+
+// ---------- Période étudiée : autour de l'opposition du 16 janvier 2025 ----------
+const D_MIN = jour(2024, 8, 15), D_MAX = jour(2025, 6, 15), N_JOURS = D_MAX - D_MIN;
+const D_OPP = jour(2025, 1, 16);
+/** Dates des deux stations (Mars s'arrête vue de la Terre), calculées par le modèle. */
+function stations() {
+  const res = [];
+  let prec = vuDeLaTerre(D_MIN).l, sens = 0;
+  for (let d = D_MIN + 1; d <= D_MAX; d++) {
+    const l = vuDeLaTerre(d).l, s = Math.sign(ecartAngle(l - prec));
+    if (sens && s !== sens) res.push(d - 0.5);
+    sens = s; prec = l;
+  }
+  return res;
+}
+let STATIONS = stations();
+/** Longitude du milieu de la boucle, et direction correspondante dans le plan de l'écliptique. */
+const L_BOUCLE = (vuDeLaTerre(STATIONS[0]).l + vuDeLaTerre(STATIONS[1]).l) / 2;
+const DIR_BOUCLE = versDir(L_BOUCLE, 0);
+/** Point de vue placé du côté opposé à la boucle (h : hauteur, recul : distance au Soleil, avance : visée au-delà du Soleil). */
+const deriere = (recul, h) => DIR_BOUCLE.clone().multiplyScalar(-recul).setY(h);
+const devant = (avance, h = 0) => DIR_BOUCLE.clone().multiplyScalar(avance).setY(h);
+
+// ---------- Dates ----------
+const dateDe = (d) => new Date(J2000 + Math.floor(d + 0.5) * 864e5);
+const fmtDate = (d, mois = "long") => dateDe(d).toLocaleDateString("fr-FR", { day: "numeric", month: mois, year: "numeric", timeZone: "UTC" });
+const fmtCourt = (d) => dateDe(d).toLocaleDateString("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" });
+const fmt = (v, n = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+
+// ---------- État ----------
+const sim = { d: jour(2024, 10, 20), anim: null };
+let pilote = false;
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+function allerA(d) { sim.anim = { de: sim.d, vers: d, t: 0 }; }
+let trajetSale = true;
+
+const S = createSchema({
+  surtitre: "Support de formation · Mécanique céleste",
+  titre: "Rétrogradation des planètes",
+  sousTitre: "Exemple : Mars, opposition du 16 janvier 2025",
+  distanceMax: 220,
+  apercu: { titre: "Vu de la Terre" },
+  commandes: [
+    { type: "curseur", id: "date", label: "Date", min: 0, max: N_JOURS, pas: 1, valeur: sim.d - D_MIN,
+      format: (v) => fmtCourt(D_MIN + v) + " " + dateDe(D_MIN + v).getUTCFullYear(),
+      onInput: (v) => { if (!pilote) { sim.d = D_MIN + v; sim.anim = null; } } },
+    { type: "curseur", id: "vitesse", label: "Vitesse", min: 2, max: 30, pas: 1, valeur: 10, format: (v) => v + " jours/s" },
+    { type: "raccourcis", id: "moments", label: "Aller à", boutons: [
+      { id: "st1", label: "1re station", onClick: () => allerA(STATIONS[0]) },
+      { id: "opp", label: "Opposition", onClick: () => allerA(D_OPP) },
+      { id: "st2", label: "2e station", onClick: () => allerA(STATIONS[1]) },
+    ] },
+    { type: "bascule", id: "trajet", label: "Trajet sur le ciel", actif: true },
+    { type: "bascule", id: "visees", label: "Lignes de visée", actif: false },
+    { type: "bascule", id: "orbites", label: "Orbites", actif: true },
+    { type: "bascule", id: "incl", label: "Inclinaison réelle", actif: true,
+      onChange: (v) => { inclinaison = v ? 1 : 0; STATIONS = stations(); poserOrbiteMars(); poserVisees(); trajetSale = true; } },
+  ],
+  vues: [
+    // sur téléphone (écran étroit), on recule nettement pour garder la boucle et les orbites dans le cadre
+    { id: "iso", label: "3/4", exacte: true,
+      pos: () => innerWidth < 760 ? deriere(105, 44) : deriere(40, 33), cible: () => innerWidth < 760 ? devant(36, 0) : devant(32, 1.5) },
+    { id: "dessus", label: "Dessus", exacte: true,
+      pos: () => devant(innerWidth < 760 ? 7.95 : 12.95, innerWidth < 760 ? 72 : 48), cible: () => devant(innerWidth < 760 ? 8 : 13) },
+    { id: "terre", label: "Depuis la Terre", fov: 50, exacte: true, suivre: true,
+      // depuis la Terre, regard fixe vers la région de la boucle : Mars y défile devant les étoiles
+      pos: () => posT(sim.d, new THREE.Vector3()).addScaledVector(DIR_BOUCLE, 0.6).add(new THREE.Vector3(0, 0.1, 0)),
+      cible: () => versDir(L_BOUCLE, 3).multiplyScalar(R_CIEL) },
+    // face à la boucle, entre l'orbite de Mars et le fond du ciel
+    { id: "boucle", label: "La boucle", fov: 42, exacte: true,
+      pos: () => devant(R_CIEL * 0.45, 2), cible: () => versDir(L_BOUCLE, 3).multiplyScalar(R_CIEL) },
+  ],
+  intro: () => `
+    <div class="eyebrow">Ce qu'on voit dans le ciel</div>
+    <p>Nuit après nuit, Mars se déplace lentement devant les étoiles, d'ouest en est. Mais tous les 26 mois environ, elle fait demi-tour pendant quelques semaines, puis reprend sa route.</p>
+    ${legende([
+      { couleur: COULEURS.ambre, texte: "Mars avance vers l'est, comme d'habitude. La Terre se rapproche d'elle par l'arrière." },
+      { couleur: COULEURS.orange, texte: "Mars semble s'arrêter : c'est la station (7 décembre 2024)." },
+      { couleur: COULEURS.corail, texte: "Mars recule vers l'ouest pendant que la Terre la double : c'est la rétrogradation. Au milieu, Mars est à l'opposé du Soleil : c'est l'opposition." },
+      { couleur: COULEURS.ambre, texte: "Nouvelle station (24 février 2025), puis Mars repart vers l'est." },
+    ])}
+    <div class="eyebrow">L'explication</div>
+    <p>La Terre tourne plus près du Soleil et plus vite que Mars. Quand elle la rattrape et la double, la direction dans laquelle on voit Mars bascule vers l'arrière, comme une voiture qu'on dépasse sur l'autoroute semble reculer par rapport au paysage du fond. Affichez les « Lignes de visée » et passez en vue « Dessus » pour le voir.</p>
+    <p class="spec">Mars ne recule jamais : c'est notre point de vue, emporté par la Terre, qui change.</p>`,
+});
+
+// ---------- Éclairage : le Soleil au centre ----------
+S.scene.environment = null;
+S.lumieres.principale.intensity = 0;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.3;
+{ const l = new THREE.PointLight(0xfff4e0, 3.2, 0, 0); S.scene.add(l); }
+
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+
+// ---------- Soleil ----------
+const R_SOLEIL = 1.1;
+const soleil = S.part("soleil", "Soleil", {
+  ancre: [0, R_SOLEIL + 0.3, 0],
+  texte: "La Terre et Mars tournent autour de lui, dans le même sens. Plus une planète est loin du Soleil, plus elle avance lentement sur une orbite plus longue. Ici, il est dessiné beaucoup trop gros.",
+  chiffres: "Diamètre : 1,39 million de km · ici grossi environ 25 fois",
+});
+S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd98a)));
+S.scene.add(halo(COULEURS.ambre, R_SOLEIL * 4.5));
+
+// ---------- Terre ----------
+const terre = new THREE.Group(); S.scene.add(terre);
+const pTerre = S.part("terre", "Terre", {
+  parent: terre, etiquette: false,
+  texte: "Notre point d'observation. Elle fait le tour du Soleil en un an, sur une orbite plus petite que celle de Mars, et elle va plus vite. Tous les 26 mois environ, elle rattrape Mars et la double : c'est à ce moment que Mars semble reculer.",
+  chiffres: "Distance au Soleil : 150 millions de km (1 UA) · un tour en 365,25 j · vitesse 29,8 km/s",
+});
+S.add(pTerre, mesh(new THREE.SphereGeometry(0.42, 48, 24), M.astre(textures.terre())));
+S.label("Terre", () => terre.position.clone().add(new THREE.Vector3(0, 0.6, 0)), { partId: "terre" });
+
+// ---------- Mars ----------
+const mars = new THREE.Group(); S.scene.add(mars);
+const pMars = S.part("mars", "Mars", {
+  parent: mars, etiquette: false,
+  texte: "Planète extérieure : son orbite entoure celle de la Terre. Elle avance toujours dans le même sens autour du Soleil, sans jamais s'arrêter ni reculer. Son orbite est légèrement inclinée sur celle de la Terre : sa boucle dans le ciel n'est donc pas un simple aller-retour.",
+  chiffres: "Distance au Soleil : 1,52 UA (228 millions de km) · un tour en 687 j · vitesse 24,1 km/s · orbite inclinée de 1,85°",
+  extra: () => {
+    const v = vuDeLaTerre(sim.d);
+    return `<p class="spec">Le ${fmtDate(sim.d)} : à ${fmt(v.km)} millions de km de la Terre.</p>
+      <p>Au plus près, le 12 janvier 2025, elle n'était qu'à 96 millions de km : c'est autour de l'opposition qu'elle est la plus brillante et la plus grosse au télescope.</p>`;
+  },
+});
+S.add(pMars, mesh(new THREE.SphereGeometry(0.34, 48, 24), M.astre(textures.mars())));
+S.label("Mars", () => depuisTerre() ? imageMars.position.clone().add(new THREE.Vector3(0, 0.9 * ECH, 0)) : mars.position.clone().add(new THREE.Vector3(0, 0.52, 0)), { partId: "mars" });
+
+// ---------- Orbites ----------
+const orbiteMat = (op) => new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.35, gapSize: 0.25, transparent: true, opacity: op, depthWrite: false });
+function trace(f, periode, n = 256) {
+  const pts = []; for (let i = 0; i <= n; i++) pts.push(f(i / n * periode, new THREE.Vector3()));
+  return new THREE.BufferGeometry().setFromPoints(pts);
+}
+const orbiteTerre = new THREE.Line(trace(posT, 365.256), orbiteMat(0.5)); orbiteTerre.computeLineDistances();
+const orbiteMars = new THREE.Line(new THREE.BufferGeometry(), orbiteMat(0.5));
+function poserOrbiteMars() { orbiteMars.geometry.dispose(); orbiteMars.geometry = trace(posM, 686.98); orbiteMars.computeLineDistances(); }
+poserOrbiteMars();
+S.scene.add(orbiteTerre, orbiteMars);
+
+// ---------- Fond du ciel : écliptique et étoiles (Taureau, Gémeaux, Cancer, Lion) ----------
+const EPS = 23.4393 * DEG;
+/** Ascension droite (heures), déclinaison (degrés) → longitude, latitude écliptiques (degrés). */
+function ecliptique(ah, dec) {
+  const a = ah * 15 * DEG, dd = dec * DEG;
+  const b = Math.asin(Math.sin(dd) * Math.cos(EPS) - Math.cos(dd) * Math.sin(EPS) * Math.sin(a));
+  let l = Math.atan2(Math.sin(a) * Math.cos(EPS) + Math.tan(dd) * Math.sin(EPS), Math.cos(a)) / DEG;
+  if (l < 0) l += 360;
+  return [l, b / DEG];
+}
+// [nom, ascension droite (h), déclinaison (°), magnitude]
+const ETOILES = [
+  ["Aldebaran", 4.599, 16.51, 0.9], ["Elnath", 5.438, 28.61, 1.7], ["", 5.627, 21.14, 3.0], ["", 4.477, 15.87, 3.5], ["", 4.33, 15.63, 3.6],
+  ["Bételgeuse", 5.919, 7.41, 0.5], ["", 3.791, 24.1, 2.9],
+  ["Castor", 7.577, 31.89, 1.6], ["Pollux", 7.755, 28.03, 1.1], ["", 6.629, 16.4, 1.9], ["", 7.335, 21.98, 3.5], ["", 6.733, 25.13, 3.0],
+  ["", 6.383, 22.51, 2.9], ["", 7.068, 20.57, 3.8], ["", 7.741, 24.4, 3.6], ["", 6.248, 22.51, 3.3], ["Procyon", 7.655, 5.22, 0.4],
+  ["", 8.975, 11.86, 4.2], ["", 8.745, 18.15, 3.9], ["", 8.721, 21.47, 4.7], ["", 8.275, 9.19, 3.5], ["", 8.778, 28.76, 4.0], ["Amas de la Crèche", 8.667, 19.67, 3.7],
+  ["Régulus", 10.14, 11.97, 1.4], ["", 10.333, 19.84, 2.0], ["", 11.818, 14.57, 2.1], ["", 11.235, 20.52, 2.6], ["", 11.237, 15.43, 3.3],
+  ["", 9.764, 23.77, 3.0], ["", 10.122, 16.76, 3.5], ["", 10.278, 23.42, 3.4], ["", 9.879, 26.01, 3.9],
+];
+const NOMMEES = new Set(["Aldebaran", "Castor", "Pollux", "Régulus", "Amas de la Crèche", "Procyon", "Bételgeuse"]);
+const etoiles = ETOILES.map(([nom, ah, dec, mag]) => { const [l, b] = ecliptique(ah, dec); return { nom, l, b, mag }; });
+// étoiles faibles réparties autour de l'écliptique, sur tout le tour
+{ const r = alea(41); for (let i = 0; i < 420; i++) etoiles.push({ nom: "", l: r() * 360, b: (r() + r() + r() - 1.5) * 16, mag: 4 + r() * 1.8 }); }
+const ciel = S.part("ciel", "Fond du ciel", {
+  etiquette: false,
+  texte: "Les étoiles servent de repère fixe : elles sont si loin que la course de la Terre ne les déplace pas. C'est devant elles que l'on suit, nuit après nuit, le déplacement de Mars. Ici, la bande d'étoiles est dessinée beaucoup trop près, pour tenir dans le schéma : la forme de la boucle y est un peu déformée. L'encart « Vu de la Terre » montre, lui, les vraies positions.",
+  chiffres: "En 2024-2025 : Mars entre le Cancer et les Gémeaux · boucle d'environ 19° de long, plus de 35 fois le diamètre de la pleine Lune",
+});
+{
+  const pos = [], col = [], c = new THREE.Color(), v = new THREE.Vector3();
+  for (const e of etoiles) {
+    versDir(e.l, e.b, v).multiplyScalar(R_CIEL);
+    pos.push(v.x, v.y, v.z);
+    const k = Math.min(1, Math.max(0.18, (5.6 - e.mag) / 4.5));
+    c.setHex(0xdfe7f5).multiplyScalar(k); col.push(c.r, c.g, c.b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  const pts = new THREE.Points(g, new THREE.PointsMaterial({ size: 0.3 * ECH, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  S.scene.add(pts);
+  const ecl = []; for (let i = 0; i <= 256; i++) ecl.push(versDir(i / 256 * 360, 0).multiplyScalar(R_CIEL));
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ecl), new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.6 * ECH, gapSize: 0.6 * ECH, transparent: true, opacity: 0.3, depthWrite: false }));
+  l.computeLineDistances(); S.scene.add(l);
+}
+for (const [nom, l] of [["Taureau", 66], ["Gémeaux", 98], ["Cancer", 130], ["Lion", 150]]) {
+  S.label(nom, () => versDir(l, -9).multiplyScalar(R_CIEL), { visible: () => !depuisTerre() });
+}
+S.label("Fond du ciel", () => versDir(L_BOUCLE + 16, 9).multiplyScalar(R_CIEL), { partId: "ciel", visible: () => !depuisTerre() });
+/** Vue « Depuis la Terre » (champ large, près de la Terre) : on masque les étiquettes de la vue d'ensemble. */
+const depuisTerre = () => S.camera.position.distanceTo(terre.position) < 2;
+
+// ---------- Ligne de visée Terre → Mars → fond du ciel ----------
+const visee = S.part("visee", "Ligne de visée", {
+  etiquette: false,
+  texte: "La direction dans laquelle on voit Mars depuis la Terre. Prolongée jusqu'au fond du ciel, elle indique devant quelles étoiles Mars apparaît. Quand la Terre double Mars, cette ligne pivote vers l'arrière : Mars semble alors reculer devant les étoiles.",
+  chiffres: "À l'opposition de 2025, la lumière de Mars mettait 5 min 20 s pour nous parvenir (96 millions de km)",
+});
+const rayon = faisceau(0.6, 0.38, 8);
+S.scene.add(rayon.group);
+const prolong = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3)),
+  new THREE.LineDashedMaterial({ color: COULEURS.ambre, dashSize: 0.5, gapSize: 0.35, transparent: true, opacity: 0.55, depthWrite: false }));
+prolong.frustumCulled = false; S.scene.add(prolong);
+const imageMars = halo(COULEURS.etoile, 1.5 * ECH); S.scene.add(imageMars);
+S.label("Ligne de visée", () => _lv.clone(), { partId: "visee", visible: () => !depuisTerre() });
+const _lv = new THREE.Vector3();
+
+// ---------- Trajet de Mars sur le fond du ciel ----------
+const trajetPart = S.part("trajet", "Trajet apparent de Mars", {
+  etiquette: false,
+  texte: "Les positions successives de Mars sur le fond du ciel, vues de la Terre. En ambre, Mars avance vers l'est ; en corail, elle recule vers l'ouest. Les deux points orange sont les stations, où Mars semble immobile quelques jours.",
+  chiffres: "Mouvement rétrograde de Mars : environ 80 jours tous les 26 mois · les planètes plus lointaines reculent plus longtemps mais sur une boucle plus petite (Jupiter ≈ 4 mois, Saturne ≈ 4 mois et demi)",
+});
+const MAXP = N_JOURS + 2;
+const trajet = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false }));
+trajet.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAXP * 3), 3));
+trajet.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(MAXP * 3), 3));
+const jalons = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ size: 0.42 * ECH, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+jalons.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAXP * 3), 3));
+jalons.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(MAXP * 3), 3));
+trajet.frustumCulled = jalons.frustumCulled = false;
+S.scene.add(trajet, jalons);
+const haloStation = [halo(COULEURS.orange, 0.8 * ECH), halo(COULEURS.orange, 0.8 * ECH)];
+haloStation.forEach((h) => S.scene.add(h));
+const pointStation = [new THREE.Vector3(), new THREE.Vector3()];
+haloStation.forEach((h, i) => S.label("Station", () => pointStation[i].clone().add(new THREE.Vector3(0, 0.5 * ECH, 0)),
+  { lumiere: true, visible: () => S.state.trajet && !S.state.visees && h.visible && !depuisTerre() }));
+S.label("Trajet apparent", () => _tl.clone(), { partId: "trajet", visible: () => S.state.trajet && !depuisTerre() });
+const _tl = new THREE.Vector3();
+
+const cAmbre = new THREE.Color(COULEURS.ambre), cCorail = new THREE.Color(COULEURS.corail);
+/** Point du fond du ciel où l'on voit Mars à la date d. */
+const surCiel = (d, out) => pointCiel(posT(d, _a), posM(d, _b), out);
+/** Ce trajet est dessiné sur le fond du ciel du schéma (trop proche) : son sens de marche est lu sur ce fond même. */
+function majTrajet() {
+  const P = trajet.geometry.attributes.position, C = trajet.geometry.attributes.color;
+  const JP = jalons.geometry.attributes.position, JC = jalons.geometry.attributes.color;
+  const v = new THREE.Vector3(), prec = new THREE.Vector3();
+  let n = 0, nj = 0;
+  surCiel(D_MIN - 1, prec);
+  for (let d = D_MIN; d <= sim.d + 1e-6; d += 1) {
+    surCiel(d, v);
+    const retro = ecartAngle(Math.atan2(-v.z, v.x) / DEG - Math.atan2(-prec.z, prec.x) / DEG) < 0;
+    const c = retro ? cCorail : cAmbre;
+    P.setXYZ(n, v.x, v.y, v.z); C.setXYZ(n, c.r, c.g, c.b); n++;
+    if ((d - D_MIN) % 4 === 0) { JP.setXYZ(nj, v.x, v.y, v.z); JC.setXYZ(nj, c.r, c.g, c.b); nj++; }
+    prec.copy(v);
+  }
+  surCiel(sim.d, v); P.setXYZ(n, v.x, v.y, v.z); C.setXYZ(n, ...(n ? [C.getX(n - 1), C.getY(n - 1), C.getZ(n - 1)] : [1, 1, 1])); n++;
+  trajet.geometry.setDrawRange(0, n); jalons.geometry.setDrawRange(0, nj);
+  P.needsUpdate = C.needsUpdate = JP.needsUpdate = JC.needsUpdate = true;
+  // stations du trajet dessiné : là où il change de sens sur ce fond du ciel
+  let k = 0, sens = 0;
+  surCiel(D_MIN, prec);
+  for (let d = D_MIN + 1; d <= D_MAX && k < 2; d++) {
+    surCiel(d, v);
+    const s = Math.sign(ecartAngle(Math.atan2(-v.z, v.x) / DEG - Math.atan2(-prec.z, prec.x) / DEG));
+    if (sens && s !== sens) { pointStation[k].copy(prec); haloStation[k].position.copy(prec); haloStation[k].userData.d = d - 1; k++; }
+    sens = s; prec.copy(v);
+  }
+  surCiel(Math.max(D_MIN, sim.d - 12), _tl).add(new THREE.Vector3(0, -1.1 * ECH, 0));
+}
+
+// ---------- Lignes de visée successives (le schéma classique) ----------
+const DECALAGES = [-105, -70, -35, 0, 35, 70, 105];
+const visees = new THREE.Group(); S.scene.add(visees);
+const numeros = [];
+function poserVisees() {
+  for (const o of visees.children) { o.geometry.dispose(); o.material.dispose(); }
+  visees.clear();
+  numeros.length = 0;
+  const pts = [];
+  DECALAGES.forEach((dd, i) => {
+    const d = D_OPP + dd, e = posT(d, new THREE.Vector3()), m = posM(d, new THREE.Vector3()), c = pointCiel(e, m, new THREE.Vector3());
+    pts.push(e, c);
+    visees.add(mesh(new THREE.SphereGeometry(0.13, 16, 8), M.lumineux(0xdfe7f5), e.x, e.y, e.z));
+    visees.add(mesh(new THREE.SphereGeometry(0.11, 16, 8), M.lumineux(0xe0845a), m.x, m.y, m.z));
+    visees.add(mesh(new THREE.SphereGeometry(0.2 * ECH, 16, 8), M.lumineux(COULEURS.etoile), c.x, c.y, c.z));
+    numeros.push({ i: i + 1, e, c });
+  });
+  visees.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: COULEURS.etoile, transparent: true, opacity: 0.4, depthWrite: false })));
+}
+poserVisees();
+for (let i = 0; i < DECALAGES.length; i++) {
+  const vis = () => S.state.visees && !depuisTerre();
+  S.label(String(i + 1), () => numeros[i].e.clone().multiplyScalar(0.9).add(new THREE.Vector3(0, 0.2, 0)), { lumiere: true, visible: vis });
+  S.label(String(i + 1), () => numeros[i].c.clone().add(new THREE.Vector3(0, 0.45 * ECH, 0)), { lumiere: true, visible: vis });
+}
+
+// ---------- Encart : Mars vue de la Terre, devant les vraies étoiles ----------
+const ap = S.apercu;
+const MOIS = [];
+for (let a = 2024, m = 9; a < 2025 || m <= 6; m++) { if (m > 12) { m = 1; a++; } MOIS.push(jour(a, m, 1)); if (a === 2025 && m === 6) break; }
+let legendePrec = "";
+function etatMars(d) {
+  const v0 = vuDeLaTerre(d - 0.5), v1 = vuDeLaTerre(d + 0.5), vit = ecartAngle(v1.l - v0.l);
+  return { vit, etat: Math.abs(vit) < 0.06 ? "station" : vit < 0 ? "recul" : "avance" };
+}
+function dessinerApercu() {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.62);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#04070e"); g.addColorStop(1, "#0c1528");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // fenêtre de 56° de large : fixe pendant la boucle, elle suit Mars quand elle s'en éloigne
+  const vm = vuDeLaTerre(sim.d), dl = ecartAngle(vm.l - L_BOUCLE);
+  const cl = L_BOUCLE + Math.sign(dl) * Math.max(0, Math.abs(dl) - 16), cb = 4;
+  const k = W / 56;
+  const X = (l) => W / 2 - ecartAngle(l - cl) * k, Y = (b) => H / 2 - (b - cb) * k; // est à gauche, nord en haut
+  // écliptique
+  ctx.setLineDash([3, 4]); ctx.strokeStyle = "rgba(139,154,176,0.35)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(W, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.font = "9.5px Arial"; ctx.fillStyle = "rgba(139,154,176,0.7)"; ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+  ctx.fillText("écliptique", W - 4, Y(0) - 2);
+  // étoiles
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const e of etoiles) {
+    const x = X(e.l), y = Y(e.b);
+    if (x < -10 || x > W + 10 || y < -10 || y > H + 10) continue;
+    const r = Math.max(0.5, (5.2 - e.mag) * 0.62), a = Math.min(1, 0.35 + (5.5 - e.mag) / 5);
+    ctx.fillStyle = `rgba(232,238,248,${a})`; ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
+    if (NOMMEES.has(e.nom)) { ctx.fillStyle = "rgba(196,208,224,0.75)"; ctx.font = "10px Arial"; ctx.fillText(e.nom, x + r + 3, y); }
+  }
+  // dates : un repère au 1er de chaque mois
+  ctx.font = "9px Arial"; ctx.textAlign = "center";
+  for (const d of MOIS) {
+    if (d > sim.d) continue;
+    const v = vuDeLaTerre(d), x = X(v.l), y = Y(v.b);
+    ctx.strokeStyle = "rgba(196,208,224,0.45)"; ctx.beginPath(); ctx.moveTo(x, y + 4); ctx.lineTo(x, y + 9); ctx.stroke();
+    ctx.fillStyle = "rgba(196,208,224,0.7)"; ctx.fillText(fmtCourt(d), x, y + 16);
+  }
+  // trajet de Mars, ambre quand elle avance, corail quand elle recule
+  ctx.lineWidth = 2.2; ctx.lineCap = "round";
+  let p = vuDeLaTerre(D_MIN);
+  for (let d = D_MIN + 1; d <= sim.d; d++) {
+    const v = vuDeLaTerre(d);
+    ctx.strokeStyle = css(ecartAngle(v.l - p.l) < 0 ? COULEURS.corail : COULEURS.ambre);
+    ctx.beginPath(); ctx.moveTo(X(p.l), Y(p.b)); ctx.lineTo(X(v.l), Y(v.b)); ctx.stroke();
+    p = v;
+  }
+  ctx.strokeStyle = css(COULEURS.orange); ctx.lineWidth = 1.5;
+  for (const d of STATIONS) {
+    if (d > sim.d) continue;
+    const v = vuDeLaTerre(d);
+    ctx.beginPath(); ctx.arc(X(v.l), Y(v.b), 5, 0, 2 * Math.PI); ctx.stroke();
+  }
+  // Mars
+  const x = X(vm.l), y = Y(vm.b), gm = ctx.createRadialGradient(x, y, 0, x, y, 12);
+  gm.addColorStop(0, "rgba(255,154,74,0.9)"); gm.addColorStop(1, "rgba(255,154,74,0)");
+  ctx.fillStyle = gm; ctx.fillRect(x - 12, y - 12, 24, 24);
+  ctx.fillStyle = "#ffc9a0"; ctx.beginPath(); ctx.arc(x, y, 3.2, 0, 2 * Math.PI); ctx.fill();
+  // points cardinaux
+  ctx.font = "bold 9px Arial"; ctx.fillStyle = css(COULEURS.accent); ctx.textBaseline = "top";
+  ctx.textAlign = "left"; ctx.fillText("← EST", 6, 6);
+  ctx.textAlign = "right"; ctx.fillText("OUEST →", W - 6, 6);
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+  // légende
+  const { vit, etat } = etatMars(sim.d);
+  const titre = { avance: "Mars avance vers l'est", station: "Mars semble immobile : station", recul: "Mars recule : rétrogradation" }[etat];
+  const ecartOpp = sim.d - D_OPP;
+  let quoi;
+  if (Math.abs(ecartOpp) < 3) quoi = "Opposition : la Terre passe entre le Soleil et Mars. Mars est à l'opposé du Soleil, visible toute la nuit.";
+  else if (etat === "recul") quoi = ecartOpp < 0 ? "La Terre rattrape Mars par l'intérieur : la ligne de visée pivote vers l'arrière." : "La Terre vient de doubler Mars et prend de l'avance : Mars recule encore, de moins en moins vite.";
+  else if (etat === "station") quoi = "Le mouvement de la Terre compense exactement celui de Mars : vue d'ici, Mars ne bouge plus.";
+  else quoi = ecartOpp < 0 ? "La Terre se rapproche de Mars, mais avance encore moins vite qu'elle dans cette direction." : "La Terre s'éloigne de Mars : sa course ne masque plus celle de Mars, qui reprend sa route.";
+  const html = `<h2>${titre}</h2><p class="spec">${fmtDate(sim.d)} · ${vit >= 0 ? "+" : "−"}${fmt(Math.abs(vit), 2)}° par jour · à ${fmt(vm.km)} millions de km</p><p>${quoi}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Animation ----------
+let affiche = null, tPrec = 0, dPrec = null;
+function recalerDate() {
+  const v = Math.round(sim.d - D_MIN);
+  if (v === affiche) return;
+  affiche = v; pilote = true; S.regler("date", v); pilote = false;
+}
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (sim.anim) {
+    sim.anim.t = S.reduced ? 1 : Math.min(1, sim.anim.t + dt / 1.6);
+    sim.d = sim.anim.de + (sim.anim.vers - sim.anim.de) * ease(sim.anim.t);
+    if (sim.anim.t >= 1) sim.anim = null;
+  } else if (dtt > 0) {
+    sim.d += dtt * S.state.vitesse;
+    if (sim.d > D_MAX) sim.d = D_MIN;
+  }
+  sim.d = Math.min(D_MAX, Math.max(D_MIN, sim.d));
+  recalerDate();
+
+  posT(sim.d, terre.position); posM(sim.d, mars.position);
+  terre.rotation.y += dt * 0.3;
+  mars.rotation.y += dt * 0.3;
+
+  // ligne de visée : la lumière de Mars arrive vers la Terre ; prolongement jusqu'au fond du ciel
+  const pc = pointCiel(terre.position, mars.position, _c);
+  rayon.poser([{ pts: [mars.position.clone(), terre.position.clone()], cols: [COULEURS.ambre] }]);
+  rayon.animer(time * 0.5, 3);
+  const a = prolong.geometry.attributes.position;
+  a.setXYZ(0, mars.position.x, mars.position.y, mars.position.z); a.setXYZ(1, pc.x, pc.y, pc.z); a.needsUpdate = true;
+  prolong.computeLineDistances();
+  imageMars.position.copy(pc);
+  _lv.lerpVectors(mars.position, pc, 0.55).add(new THREE.Vector3(0, 0.35, 0));
+  // depuis la Terre, Mars n'est qu'un point lumineux sur le fond du ciel (dessinée ici, elle cacherait sa boucle)
+  const vue = !depuisTerre();
+  rayon.group.visible = prolong.visible = mars.visible = vue;
+
+  // trajet sur le ciel
+  if (trajetSale || dPrec === null || Math.abs(sim.d - dPrec) > 1e-4) { majTrajet(); trajetSale = false; dPrec = sim.d; }
+  trajet.visible = jalons.visible = S.state.trajet;
+  haloStation.forEach((h) => { h.visible = S.state.trajet && h.userData.d !== undefined && h.userData.d <= sim.d; });
+
+  orbiteTerre.visible = orbiteMars.visible = S.state.orbites && vue;
+  visees.visible = S.state.visees;
+
+  dessinerApercu();
+});
+
+S.start();
+</script>
+</body>
+</html>

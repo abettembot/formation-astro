@@ -149,9 +149,38 @@ function cvLune() {
     }
   });
 }
+let _cvMars;
+function cvMars() {
+  return _cvMars ??= canvasDessin(1024, 512, (ctx, w, h) => {
+    ctx.fillStyle = "#b8643a"; ctx.fillRect(0, 0, w, h);
+    const r = alea(23);
+    for (let i = 0; i < 700; i++) { // nuances de poussière claire et sombre
+      const x = r() * w, y = r() * h, rad = 4 + r() * 22;
+      ctx.fillStyle = r() < 0.5 ? "rgba(214,140,90,0.18)" : "rgba(120,58,34,0.16)";
+      ctx.beginPath(); ctx.ellipse(x, y, rad * 1.6, rad, 0, 0, 2 * Math.PI); ctx.fill();
+    }
+    // grandes régions sombres schématiques : [longitude, latitude, étendue en longitude, en latitude, nombre de taches]
+    const SOMBRES = [[70, 10, 12, 18, 40], [20, -12, 40, 8, 60], [-60, -25, 35, 9, 50], [-120, 15, 15, 10, 25], [150, -15, 25, 8, 35]];
+    for (const [lon, lat, dl, db, n] of SOMBRES) {
+      for (let i = 0; i < n; i++) {
+        const lo = lon + (r() - 0.5) * 2 * dl, la = lat + (r() - 0.5) * 2 * db, rad = (2 + r() * 5) / 180 * h;
+        ctx.fillStyle = "rgba(96,48,30,0.35)";
+        for (const dx of [0, -w, w]) { ctx.beginPath(); ctx.ellipse(ux(lo, w) + dx, vy(la, h), rad / Math.max(0.35, Math.cos(la * DEG)), rad, 0, 0, 2 * Math.PI); ctx.fill(); }
+      }
+    }
+    // calottes polaires
+    for (const [y0, y1] of [[0, 0.07], [1, 0.95]]) {
+      const gg = ctx.createLinearGradient(0, y0 * h, 0, y1 * h);
+      gg.addColorStop(0, "#f4efe8"); gg.addColorStop(0.6, "#eadfd2"); gg.addColorStop(1, "rgba(234,223,210,0)");
+      ctx.fillStyle = gg; ctx.fillRect(0, Math.min(y0, y1) * h, w, Math.abs(y1 - y0) * h);
+    }
+  });
+}
 export const textures = {
   /** Terre schématique (océans, continents, calottes) : texture pour une sphère. */
   terre: () => versTexture(cvTerre()),
+  /** Mars schématique (sol orangé, régions sombres, calottes polaires) : texture pour une sphère. */
+  mars: () => versTexture(cvMars()),
   /** Lune avec ses mers : texture pour une sphère. Face visible (longitude 0) côté +X local : tourner la sphère pour la présenter à la Terre. */
   lune: () => versTexture(cvLune()),
   /** Face visible de la Lune vue de la Terre, nord en haut : canvas carré de 256 px (bord adouci) pour les dessins 2D. */
