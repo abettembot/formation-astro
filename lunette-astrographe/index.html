@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lunette astrographe</title>
+<meta name="description" content="Schéma 3D interactif d'une lunette pour l'astrophoto : courbure de champ, aplanisseur, réducteur ×0,8, formule Petzval, tirage, et étoiles au centre et dans les coins du capteur.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, lentille, objectifLunette, vuesRondes, alea } from "../commun/schema.js";
+
+// ---------- Échelle (libre, pour rendre les défauts visibles) ----------
+// Le long de l'axe : 1 unité ≈ 69 mm (focale de 480 mm dessinée sur 7 unités).
+// En travers : le capteur APS-C (diagonale 28,3 mm) mesure 0,7 unité ; l'angle de champ est donc exagéré, et le train photo
+// (porte-oculaire, correcteur, bagues) est élargi d'autant pour que tous les faisceaux restent à l'intérieur.
+// Les décalages de foyer (courbure de champ) sont agrandis : DRAW_Z unité par mm.
+const R = 0.55, RT = 0.66, XO = 3.6, LF = 7, XF = XO - LF; // objectif, foyer de l'objectif seul
+const HC = 0.35, TAN = HC / LF;                              // coin du capteur (dessin)
+const DRAW_Z = 0.77;
+const SW = 0.583, SH = 0.387;                                // capteur 23,5 × 15,6 mm (dessin)
+const ARCSEC = 206264.8, PIXEL = 0.00376;                    // pixel de 3,76 µm (capteur APS-C courant)
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+
+// Décalage du foyer dans le coin du capteur APS-C (mm, + = vers l'objectif), pour les deux orientations
+// d'étalement (radiale et tangentielle : astigmatisme). Valeurs typiques, ordre de grandeur.
+const CONFIGS = {
+  seule: { nom: "Lunette seule", bouton: "Lunette seule", F: 480, N: 6,
+    coin: () => [0.45, 0.2],
+    bilan: "Sans correcteur, les points nets forment une surface courbe. Sur un capteur plat, on ne peut avoir net que le centre ou les bords : les étoiles des coins s'étalent et s'allongent. Essayez le curseur « Mise au point »." },
+  plat: { nom: "Avec aplanisseur", bouton: "Aplanisseur", F: 480, N: 6,
+    coin: (e) => [0.06 * e, 0.025 * e],
+    bilan: "L'aplanisseur redresse la surface de netteté : les étoiles restent fines jusque dans les coins, à condition de respecter le tirage. Essayez le curseur « Écart de tirage »." },
+  red: { nom: "Avec réducteur ×0,8", bouton: "Réducteur ×0,8", F: 384, N: 4.8,
+    coin: (e) => [0.06 * e, 0.025 * e],
+    bilan: "Le réducteur-correcteur aplanit le champ et raccourcit la focale : 384 mm à f/4,8. Le champ photographié est 1,25 fois plus grand et le temps de pose 1,56 fois plus court. Lui aussi exige le bon tirage." },
+  petz: { nom: "Astrographe Petzval", bouton: "Petzval", F: 480, N: 6,
+    coin: () => [0.01, 0.01],
+    bilan: "Le groupe de correction est intégré dans le tube, à distance fixe de l'objectif : le champ est plat d'origine. Pas de tirage à régler, seulement la mise au point." },
+};
+
+let config = "seule", map = 0, tirage = 0;
+// étoiles tracées : s = +1 arrive d'en haut (image en bas du capteur), 0 au centre, −1 arrive d'en bas
+const ETOILES_3D = { toutes: [-1, 0, 1], haut: [1], centre: [0], bas: [-1] };
+let etoile = "toutes";
+function choisirEtoile(id) {
+  etoile = id;
+  for (const k in ETOILES_3D) document.getElementById("r-e-" + k).setAttribute("aria-pressed", String(k === id));
+  poserRayons();
+}
+let cur = {}; // géométrie de la configuration courante
+const v = (x, d = 2) => x.toFixed(d).replace(".", ",");
+const signe = (x, d = 2) => (x > 1e-6 ? "+" : x < -1e-6 ? "−" : "") + v(Math.abs(x), d);
+
+function geometrie() {
+  const c = CONFIGS[config];
+  const [zt, zs] = c.coin(tirage);
+  const g = { hf: 1, Xc: null, Xr: null, K: ((zt + zs) / 2) * DRAW_Z / (HC * HC) };
+  if (config === "seule") g.XFb = XF;
+  if (config === "plat") { g.Xc = XF + 0.75; g.XFb = XF - 0.05; }
+  if (config === "red") { g.Xc = XF + 0.75; g.XFb = g.Xc - 0.6; g.hf = 0.8; }
+  if (config === "petz") { g.Xr = XO - 4.2; g.LF1 = 1.35 * LF; g.XFb = g.Xr - LF * (1 - 4.2 / g.LF1); }
+  g.XS = g.XFb + map * DRAW_Z;           // capteur (déplacé par la mise au point)
+  g.TB = g.XFb + 1.6;                    // arrière du tube
+  g.xPO = g.Xc !== null ? g.Xc + 0.18 : g.XS + 0.3; // bout du coulant du porte-oculaire
+  cur = g;
+}
+geometrie();
+
+const S = createSchema({
+  surtitre: "Support de formation · Astrophoto",
+  titre: "Lunette astrographe",
+  sousTitre: "Exemple : apochromatique 80/480 · f/6 · capteur APS-C",
+  eclate: true,
+  apercu: { titre: "Sur la photo" },
+  commandes: [
+    { type: "raccourcis", id: "configs", label: "Configuration", boutons: Object.entries(CONFIGS).map(([id, c]) => ({ id, label: c.bouton, onClick: () => choisir(id) })) },
+    { type: "raccourcis", id: "etoiles", label: "Étoiles tracées", boutons: [
+      { id: "e-toutes", label: "Les trois", onClick: () => choisirEtoile("toutes") },
+      { id: "e-haut", label: "Étoile du haut", onClick: () => choisirEtoile("haut") },
+      { id: "e-centre", label: "Étoile du centre", onClick: () => choisirEtoile("centre") },
+      { id: "e-bas", label: "Étoile du bas", onClick: () => choisirEtoile("bas") },
+    ] },
+    { type: "curseur", id: "map", label: "Mise au point", min: -0.5, max: 0.5, pas: 0.01, valeur: 0, retour: "Net au centre",
+      format: (x) => `${signe(x)} mm`, onInput: (x) => { map = x; maj(); } },
+    { type: "curseur", id: "tirage", label: "Écart de tirage", min: -5, max: 5, pas: 0.1, valeur: 0, retour: "Tirage idéal",
+      format: (x) => `${signe(x, 1)} mm`, onInput: (x) => { tirage = x; maj(); } },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: () => construire() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [4.5, 5, 13.5], cible: [-0.3, 0, 0] },
+    { id: "profil", label: "Profil", pos: [-0.3, 0.3, 14], cible: [-0.3, 0, 0] },
+    { id: "train", label: "Train photo", pos: () => [cur.XS + 1.8, 1.9, 3.8], cible: () => [cur.XS + 0.5, 0, 0] },
+    { id: "capteur", label: "Au capteur", pos: () => [cur.XS + 1.2, 0.5, 2.0], cible: () => [cur.XS + 0.25, 0, 0], fov: 30, exacte: true },
+  ],
+  intro: () => `
+    <div class="eyebrow">Une image nette jusque dans les coins</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile au centre du champ et de deux étoiles au bord entre dans la lunette." },
+      { couleur: SEG[1], texte: "L'objectif fait converger chaque faisceau vers son foyer. Les foyers du bord sont plus près de l'objectif que celui du centre." },
+      { couleur: SEG[2], texte: "Un correcteur, s'il y en a un, redresse les faisceaux du bord pour que tous les foyers soient dans un même plan." },
+      { couleur: SEG[3], texte: "Les images des étoiles se forment sur le capteur, qui est plat." },
+    ])}
+    <p><strong>${CONFIGS[config].nom}.</strong> ${CONFIGS[config].bilan}</p>
+    <p>Chaque point de l'objectif reçoit la lumière de toutes les étoiles. L'objectif trie les rayons selon leur direction d'arrivée, pas selon l'endroit où ils le traversent : tous ceux d'une même étoile se rejoignent au même point. Affichez une seule étoile avec « Étoiles tracées » pour le voir.</p>
+    <p class="spec">Sur le schéma, l'angle de champ et les décalages de foyer sont très exagérés pour être visibles.</p>`,
+});
+const sousTitre = document.querySelector("#panel header p");
+
+// ---------- Éléments ----------
+const tube = S.part("tube", "Tube optique", {
+  texte: "Tube fermé, avec un pare-buée à l'avant. En astrophoto, il doit rester rigide sous le poids du train photo : la moindre flexion déplace les étoiles pendant la pose.",
+  chiffres: "Longueur ≈ focale · pare-buée souvent chauffé pendant les longues poses",
+});
+const objectif = S.part("objectif", "Objectif", {});
+const arriere = S.part("arriere", "Groupe arrière", { etiquette: false,
+  texte: "Formule Petzval : un second groupe de lentilles est fixé dans le tube, à distance réglée en usine de l'objectif. Il corrige la courbure de champ. Pas de tirage critique à respecter : on fait simplement la mise au point. C'est la formule de beaucoup d'astrographes modernes, souvent à f/5 ou plus ouvert.",
+  chiffres: "4 ou 5 lentilles au total · champ plat jusqu'au plein format sur de nombreux modèles",
+});
+S.label("Groupe arrière", () => arriere.group.localToWorld(arriere.ancre.clone()), { partId: "arriere", visible: () => arriere.group.children.length > 0 });
+const focuser = S.part("focuser", "Porte-oculaire", {
+  texte: "Il porte tout le train photo : correcteur, bagues et caméra. Il doit tenir ce poids sans glisser ni basculer. Une molette démultipliée permet une mise au point au centième de millimètre près, indispensable à f/6 et en dessous.",
+  chiffres: "Coulant 2″ ou filetage M48 à M63 · démultiplication 1:10 · souvent motorisé",
+});
+const correcteur = S.part("correcteur", "Correcteur", { etiquette: false });
+const lblCorr = S.label("Correcteur", () => correcteur.group.localToWorld(correcteur.ancre.clone()), { partId: "correcteur", visible: () => correcteur.group.children.length > 0 });
+const bagues = S.part("bagues", "Bagues de tirage", { etiquette: false });
+const lblBagues = S.label("Bagues de tirage", () => bagues.group.localToWorld(bagues.ancre.clone()), { partId: "bagues", visible: () => bagues.group.children.length > 0 });
+const camera = S.part("camera", "Caméra", {
+  texte: "Caméra astro refroidie ou appareil photo sans son objectif. Son capteur est plat et rectangulaire : ce sont ses coins, les points les plus éloignés du centre, qui révèlent les défauts de champ.",
+  chiffres: "APS-C : 23,5 × 15,6 mm · diagonale 28,3 mm · pixels de 3,76 µm",
+});
+const surface = S.part("surface", "Surface de netteté", {
+  texte: "Ce n'est pas une pièce : c'est l'endroit où chaque étoile est nette. Sans correction, cette surface est courbe, tournée vers l'objectif : c'est la courbure de champ. Un capteur est plat : si le centre est net, les coins sont flous, et inversement. En visuel, l'œil s'accommode ; en photo, non.",
+  chiffres: "Coins d'un APS-C sans correcteur : foyer décalé de 0,2 à 0,45 mm, pour une tolérance de ±0,04 mm à f/6",
+});
+
+const ouvert = (m) => { m.side = THREE.DoubleSide; return m; };
+function cylindre(r, x0, x1, mat, coupe) {
+  const g = coupe ? new THREE.CylinderGeometry(r, r, x1 - x0, 64, 1, true, Math.PI / 2, Math.PI)
+                  : new THREE.CylinderGeometry(r, r, x1 - x0, 64, 1, true);
+  return mesh(axeX(g), ouvert(mat), (x0 + x1) / 2);
+}
+
+function construire() {
+  const coupe = S.state.coupe, g = cur;
+  for (const p of S.parts) S.viderElement(p);
+
+  // tube et pare-buée
+  tube.ancre.set((g.TB + XO) / 2, RT + 0.08, 0);
+  S.add(tube, cylindre(RT, g.TB, XO - 0.1, M.peinture(), coupe));
+  S.add(tube, cylindre(RT - 0.012, g.TB, XO - 0.1, M.flocage(), coupe));
+  S.add(tube, cylindre(RT + 0.04, XO - 0.25, XO + 0.9, M.noir(), coupe));
+  S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, 0.04, 64)), M.noir(), g.TB - 0.02));
+
+  // objectif (triplet apo, ou doublet avant d'un Petzval)
+  const petz = config === "petz";
+  const lent = objectifLunette(petz ? "ed" : "apo", R, XO);
+  objectif.eclate.set(1.0, 0, 0);
+  objectif.ancre.set(XO, RT + 0.2, 0);
+  objectif.texte = petz
+    ? "Groupe avant d'un astrographe Petzval : un doublet, souvent en verre ED, qui fait l'essentiel de la convergence. Seul, il donnerait une image courbe, comme toute lunette."
+    : "Triplet apochromatique : toutes les couleurs arrivent au même foyer (voir le support sur le chromatisme). Mais comme tout objectif de lunette, il ne forme pas une image plane : au bord du champ, le foyer se rapproche de l'objectif.";
+  objectif.texte += " Toute la surface de l'objectif sert à chaque étoile : en cacher la moitié ne coupe pas la moitié de l'image, cela la rend seulement deux fois moins lumineuse. De même, un objectif plus grand ne voit pas un ciel plus large : il récolte plus de lumière. La taille du champ dépend de la focale et du capteur.";
+  objectif.chiffres = "D = 80 mm · F = 480 mm · f/6";
+  for (const l of lent) S.add(objectif, lentille(R, l.xv, l.t, l.sf, l.sb));
+  S.add(objectif, cylindre(RT - 0.02, lent.at(-1).xv - lent.at(-1).t - 0.05, lent[0].xv + 0.05, M.noir(), coupe));
+
+  // groupe arrière d'un Petzval
+  if (petz) {
+    const r2 = R, la = objectifLunette("achro", r2, g.Xr);
+    arriere.eclate.set(0, 1.6, 0);
+    arriere.ancre.set(g.Xr, RT + 0.2, 0);
+    for (const l of la) S.add(arriere, lentille(r2, l.xv, l.t, l.sf, l.sb));
+    S.add(arriere, cylindre(r2 + 0.03, g.Xr - 0.15, g.Xr + 0.15, M.noir(), coupe));
+    S.add(arriere, mesh(axeX(new THREE.RingGeometry(r2 + 0.03, RT - 0.015, 48).rotateY(Math.PI / 2)), ouvert(M.noir()), g.Xr - 0.15));
+  }
+
+  // porte-oculaire : embase, coulant, molettes
+  focuser.eclate.set(-1.0, 0, 0);
+  focuser.ancre.set(g.TB - 0.15, RT * 0.7 + 0.1, 0);
+  S.add(focuser, cylindre(0.52, g.TB - 0.32, g.TB, M.noir(), coupe));
+  S.add(focuser, cylindre(0.45, g.xPO, g.TB - 0.32, M.alu(), coupe));
+  S.add(focuser, mesh(new THREE.BoxGeometry(0.28, 0.14, 0.7), M.noir(), g.TB - 0.16, -0.58, 0));
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 12)), M.alu(), g.TB - 0.16, -0.62, 0));
+  for (const s of [-1, 1]) S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.15, 0.15, 0.1, 24)), M.caoutchouc(), g.TB - 0.16, -0.62, s * 0.5));
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.08, 0.08, 0.08, 20)), M.alu(), g.TB - 0.16, -0.62, 0.6));
+
+  // correcteur (aplanisseur ou réducteur), vissé au bout du coulant
+  if (g.Xc !== null) {
+    const red = config === "red", rc = 0.4;
+    correcteur.nom = red ? "Réducteur ×0,8" : "Aplanisseur";
+    lblCorr.el.textContent = correcteur.nom;
+    correcteur.eclate.set(-1.6, 0, 0);
+    correcteur.ancre.set(g.Xc, 0.62, 0);
+    correcteur.texte = red
+      ? "Réducteur-correcteur : comme l'aplanisseur, il rend la surface de netteté plane, et en plus il raccourcit la focale. Le champ photographié s'agrandit et l'image devient plus lumineuse : on pose moins longtemps. Il ne fonctionne bien qu'à la distance du capteur prévue par le fabricant."
+      : "Groupe de 2 ou 3 lentilles placé peu avant le capteur. Il redresse la surface de netteté pour la rendre plane, sans changer la focale. Il ne fonctionne bien qu'à une distance précise du capteur : le tirage, donné par le fabricant.";
+    correcteur.chiffres = red ? "480 mm → 384 mm · f/6 → f/4,8 · champ ×1,25 · pose ÷1,56 · tirage typique 55 mm"
+                              : "Focale inchangée (≈ ×1) · tirage typique 55 mm";
+    S.add(correcteur, cylindre(rc + 0.06, g.Xc - 0.12, g.Xc + 0.18, M.noir(), coupe));
+    if (red) { S.add(correcteur, lentille(rc, g.Xc + 0.11, 0.09, 0.03, 0.025)); S.add(correcteur, lentille(rc, g.Xc + 0.0, 0.05, -0.025, 0.01)); }
+    else { S.add(correcteur, lentille(rc, g.Xc + 0.11, 0.05, -0.02, 0.0)); S.add(correcteur, lentille(rc, g.Xc + 0.03, 0.07, 0.025, 0.02)); }
+  }
+
+  // bagues de tirage (ou simple adaptateur) entre correcteur / coulant et caméra
+  {
+    const x0 = g.XS + 0.27, x1 = g.Xc !== null ? g.Xc - 0.12 : g.xPO;
+    bagues.nom = lblBagues.el.textContent = g.Xc !== null ? "Bagues de tirage" : "Adaptateur";
+    bagues.eclate.set(-2.1, 0, 0);
+    bagues.ancre.set((x0 + x1) / 2, -0.55, 0);
+    bagues.texte = g.Xc !== null
+      ? "Bagues et adaptateurs (T2, M48) qui placent le capteur à la bonne distance du correcteur. On vise le millimètre près. En dehors de cette distance, les étoiles des coins s'allongent, même si le centre est parfaitement net : essayez le curseur « Écart de tirage »."
+      : "Simple bague qui relie la caméra au porte-oculaire. Sans correcteur séparé, sa longueur n'a pas d'importance : on fait la mise au point avec le porte-oculaire.";
+    bagues.chiffres = g.Xc !== null ? "Tirage typique 55 mm du correcteur au capteur · tolérance de l'ordre de ±1 mm" : "Filetage T2 (M42 × 0,75) ou M48";
+    if (x1 > x0) {
+      S.add(bagues, cylindre(0.45, x0, x1, M.noir(), coupe));
+      const n = Math.max(1, Math.round((x1 - x0) / 0.2));
+      for (let i = 0; i <= n; i++) S.add(bagues, mesh(axeX(new THREE.TorusGeometry(0.455, 0.012, 6, 48).rotateX(Math.PI / 2)), M.alu(), x0 + (x1 - x0) * i / n));
+    }
+  }
+
+  // caméra : boîtier cylindrique ouvert pour montrer le capteur
+  camera.eclate.set(-2.7, 0, 0);
+  camera.ancre.set(g.XS - 0.25, 0.85, 0);
+  S.add(camera, cylindre(0.75, g.XS - 0.6, g.XS + 0.1, M.noir(), true));
+  S.add(camera, mesh(axeX(new THREE.CylinderGeometry(0.75, 0.75, 0.03, 64)), M.noir(), g.XS - 0.6));
+  const plaque = coupe ? new THREE.RingGeometry(0.45, 0.75, 64, 1, -Math.PI / 2, Math.PI) : new THREE.RingGeometry(0.45, 0.75, 64);
+  S.add(camera, mesh(plaque.rotateY(Math.PI / 2), ouvert(M.alu()), g.XS + 0.1));
+  S.add(camera, cylindre(0.45, g.XS + 0.1, g.XS + 0.27, M.alu(), coupe));
+  const capteur = S.add(camera, mesh(new THREE.BoxGeometry(0.02, SH, SW), M.noir(), g.XS - 0.01, 0, 0));
+  capteur.material.color.set(0x1d2740);
+  capteur.rotation.x = -Math.atan2(SW, SH); // diagonale du capteur verticale : les coins reçoivent les étoiles du bord
+  for (let k = 0; k < 4; k++) { // cellules de refroidissement (ailettes)
+    S.add(camera, mesh(axeX(new THREE.TorusGeometry(0.76, 0.02, 6, 48).rotateX(Math.PI / 2)), M.alu(), g.XS - 0.5 + k * 0.1));
+  }
+
+  // surface de netteté : x = XFb + K·r² (+ = vers l'objectif)
+  surface.ancre.set(g.XFb + g.K * 0.36, -0.7, 0);
+  {
+    const pts = [];
+    for (let i = 0; i <= 16; i++) { const r = Math.max(0.001, (i / 16) * 0.62); pts.push(new THREE.Vector2(r, g.XFb + g.K * r * r)); }
+    const geo = new THREE.LatheGeometry(pts, 64); geo.rotateZ(-Math.PI / 2);
+    S.add(surface, mesh(geo, M.lumineux(COULEURS.corail, 0.13)));
+  }
+
+  poserRayons();
+}
+
+// ---------- Trajet de la lumière : une étoile au centre, deux au bord du champ ----------
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const surPlan = (P, Q, x) => P.clone().lerp(Q, (x - P.x) / (Q.x - P.x)); // point de la droite PQ d'abscisse x
+const lum = faisceau(0.55, 0.36, 64);
+S.scene.add(lum.group);
+const marques = [-1, 0, 1].map(() => { const h = halo(COULEURS.corail, 0.16); lum.group.add(h); return h; });
+function poserRayons() {
+  const g = cur, trajets = [];
+  [-1, 0, 1].forEach((s, i) => {
+    const t = s * TAN, h = s * HC;
+    const P = V(g.XFb + g.K * (h * g.hf) ** 2, -h * g.hf, 0); // foyer de ce faisceau
+    marques[i].position.copy(P);
+    marques[i].visible = ETOILES_3D[etoile].includes(s);
+    if (!marques[i].visible) return;
+    for (const y0 of [-0.8 * R, 0, 0.8 * R]) {
+      const C = V(XO, y0, 0), A = C.clone().add(V(4.5, 4.5 * t, 0));
+      let pts, cols;
+      if (g.Xc !== null) {
+        const P0 = V(XF + (0.325 * DRAW_Z / (HC * HC)) * h * h, -h, 0); // foyer courbe de l'objectif seul
+        const Q = surPlan(C, P0, g.Xc);
+        pts = [A, C, Q, P]; cols = [SEG[0], SEG[1], SEG[2], SEG[3]];
+      } else if (g.Xr !== null) {
+        const Q = surPlan(C, V(XO - g.LF1, -g.LF1 * t, 0), g.Xr);
+        pts = [A, C, Q, P]; cols = [SEG[0], SEG[1], SEG[2], SEG[3]];
+      } else { pts = [A, C, P]; cols = [SEG[0], SEG[1], SEG[3]]; }
+      const avant = pts.at(-2), xEnd = Math.min(g.XS, P.x) - 0.35;
+      pts.push(surPlan(avant, P, xEnd));
+      trajets.push({ pts, cols });
+    }
+  });
+  lum.poser(trajets);
+}
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Étoiles du centre et du bord", () => V(XO + 3.2, 0.7, 0), { lumiere: true, visible: () => lightVisible() && etoile === "toutes" });
+const NOMS_ETOILES = { haut: "l'étoile du haut", centre: "l'étoile du centre", bas: "l'étoile du bas" };
+const lblLumiere = S.label("", () => V(XO + 3.2, 0.7, 0), { lumiere: true, visible: () => lightVisible() && etoile !== "toutes" });
+const lblImage = S.label("", () => marques[ETOILES_3D[etoile]?.[0] + 1].position.clone().add(V(0.25, 0.12, 0)),
+  { lumiere: true, visible: () => lightVisible() && etoile !== "toutes" });
+S.onFrame(() => {
+  if (etoile === "toutes") return;
+  lblLumiere.el.textContent = `Lumière de ${NOMS_ETOILES[etoile]}`;
+  lblImage.el.textContent = `Image de ${NOMS_ETOILES[etoile]}`;
+});
+
+// ---------- Encart « Sur la photo » : étoiles au centre et dans un coin du capteur ----------
+const NI = 101, CHAMP = 100, PX = CHAMP / NI, SIGMA = 1.0; // ″ ; flou de turbulence et diffraction
+const ETOILES = (() => { const r = alea(7), l = []; for (let i = 0; i < 9; i++) l.push([r() * 0.8 + 0.1, r() * 0.8 + 0.1, i === 0 ? 3 : 0.3 + r() * 1.2, r()]); l[0][0] = 0.5; l[0][1] = 0.5; return l; })();
+/** Noyau d'étalement : ellipse uniforme (demi-axes a radial, b tangentiel, en ″) orientée vers le centre, lissée. */
+function noyau(a, b, angle) {
+  const KR = Math.ceil(Math.max(a, b, 1) / PX + 3 * SIGMA / PX), KW = 2 * KR + 1, K = new Float32Array(KW * KW);
+  const ca = Math.cos(angle), sa = Math.sin(angle), n = 13, ech = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const u = (i + 0.5) / n * 2 - 1, w = (j + 0.5) / n * 2 - 1;
+    if (u * u + w * w <= 1) ech.push([(u * a * ca - w * b * sa) / PX, (u * a * sa + w * b * ca) / PX]);
+  }
+  const s2 = 2 * (SIGMA / PX) ** 2;
+  let somme = 0;
+  for (let y = -KR; y <= KR; y++) for (let x = -KR; x <= KR; x++) {
+    let val = 0;
+    for (const [ex, ey] of ech) { const dx = x - ex, dy = y - ey; val += Math.exp(-(dx * dx + dy * dy) / s2); }
+    K[(y + KR) * KW + x + KR] = val; somme += val;
+  }
+  for (let q = 0; q < K.length; q++) K[q] /= somme;
+  return { K, KR, KW };
+}
+function imageChamp(a, b, angle) {
+  const { K, KR, KW } = noyau(a, b, angle), acc = [0, 1, 2].map(() => new Float32Array(NI * NI));
+  for (const [fx, fy, br, teinte] of ETOILES) {
+    const cx = Math.round(fx * NI), cy = Math.round(fy * NI);
+    const col = teinte < 0.3 ? [1, 0.86, 0.7] : teinte > 0.75 ? [0.8, 0.88, 1] : [1, 0.97, 0.92];
+    for (let y = -KR; y <= KR; y++) { const py = cy + y; if (py < 0 || py >= NI) continue;
+      for (let x = -KR; x <= KR; x++) { const px = cx + x; if (px < 0 || px >= NI) continue;
+        const k = K[(y + KR) * KW + x + KR] * br; for (let c = 0; c < 3; c++) acc[c][py * NI + px] += k * col[c]; } }
+  }
+  const cv = document.createElement("canvas"); cv.width = cv.height = NI;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(NI, NI);
+  for (let q = 0; q < NI * NI; q++) {
+    for (let c = 0; c < 3; c++) img.data[q * 4 + c] = 255 * Math.sqrt(1 - Math.exp(-60 * acc[c][q]));
+    img.data[q * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+let vues = null, cleDessin = "";
+function majApercu() {
+  const c = CONFIGS[config], [zt, zs] = c.coin(tirage);
+  const enSec = (mm) => mm / (2 * c.N) / c.F * ARCSEC;    // demi-largeur de la tache (″) pour un écart de foyer en mm
+  const aC = enSec(Math.abs(map)), aR = enSec(Math.abs(zt - map)), aT = enSec(Math.abs(zs - map));
+  vues = [
+    { image: imageChamp(aC, aC, 0), titre: "Centre de l'image" },
+    { image: imageChamp(aR, aT, Math.PI / 4), titre: "Coin de l'image" },
+  ];
+  cleDessin = "";
+  const tache = (a) => Math.max(2 * a, 2.4); // diamètre (″), au moins la turbulence
+  const echelle = PIXEL / c.F * ARCSEC;
+  const coinMax = tache(Math.max(aR, aT)), centre = tache(aC);
+  const h2 = centre > 5 ? "Centre flou" : coinMax > 5 ? "Étoiles déformées dans les coins" : "Étoiles fines partout";
+  let p;
+  if (centre > 5) p = map > 0 && config === "seule"
+    ? "La mise au point est faite pour le bord : le centre devient flou. Sur un capteur plat, il faut une surface de netteté plate."
+    : "Le capteur n'est plus au foyer : toutes les étoiles s'étalent. Ramenez la mise au point au centre.";
+  else if (coinMax <= 5) p = config === "petz" ? "Le Petzval donne un champ plat sans aucun réglage de tirage." : "Le tirage est respecté : le correcteur fait son travail jusque dans les coins.";
+  else if (config === "seule") p = "Le centre est net, mais les étoiles des coins s'étalent en petites taches allongées : leur foyer est devant le capteur.";
+  else p = "Le centre est net, mais le correcteur n'est pas à la bonne distance du capteur : les étoiles des coins s'allongent. On corrige avec des bagues, pas avec la mise au point.";
+  S.apercu.legende.innerHTML = `<h2>${h2}</h2>
+    <p class="spec">Taille des étoiles : centre ≈ ${Math.round(centre)}″ · coin ≈ ${Math.round(tache(aR))}″ × ${Math.round(tache(aT))}″ · 1 pixel = ${v(echelle, 1)}″</p>
+    <p>${p}</p>`;
+}
+
+function maj() {
+  geometrie();
+  construire();
+  majApercu();
+  if (S.state.selected) S.refreshInfo();
+}
+
+// ---------- Choix de la configuration ----------
+function choisir(id) {
+  config = id;
+  for (const k in CONFIGS) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === id));
+  sousTitre.textContent = id === "red" ? "Exemple : 80/480 + réducteur ×0,8 → 384 mm · f/4,8 · APS-C"
+    : id === "petz" ? "Exemple : astrographe Petzval 80/480 · f/6 · capteur APS-C"
+    : "Exemple : apochromatique 80/480 · f/6 · capteur APS-C";
+  maj();
+  S.refreshInfo();
+}
+
+S.onFrame(({ time }) => {
+  const W = S.apercu.canvas.clientWidth, cle = W + "|" + !!vues;
+  if (cle !== cleDessin && vues) { cleDessin = cle; vuesRondes(S.apercu.canvas, vues); }
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  surface.group.visible = vis;
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière."
+    : Math.abs(tirage) > 0.05 && cur.Xc === null ? "L'écart de tirage ne compte qu'avec un aplanisseur ou un réducteur séparé : ici, il suffit de faire la mise au point."
+    : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 4);
+});
+
+choisir(config);
+choisirEtoile("toutes");
+S.start();
+</script>
+</body>
+</html>
