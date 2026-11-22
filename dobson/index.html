@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dobson et monture azimutale</title>
+<meta name="description" content="Schéma 3D interactif d'un Dobson 200/1200 : la monture azimutale et ses deux axes, le suivi à la main et la rotation de champ.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, textureHalo, legende, css, alea } from "../commun/schema.js";
+
+// ---------- Échelle et constantes (1 unité = 100 mm) ----------
+// Repère : Y vers le zénith, -Z vers le nord, +X vers l'est. Sol en y = 0.
+const DEG = Math.PI / 180, HEURE = 15 * DEG;
+const LAT = 49 + 38 / 60 + 55 / 3600; // Rouvroy, commune du club : 49° 38′ 55″ N
+const OMEGA = 15.041;  // vitesse du ciel, en ° par heure (1 tour en 23 h 56 min)
+const Y_ALT = 6.2;     // axe de hauteur à ≈ 62 cm du sol
+const RT = 1.16;       // rayon du tube (Ø ≈ 232 mm)
+const AV = -7.3, AR = 4.2; // entrée et fond du tube, mesurés depuis l'axe de hauteur (tube ≈ 1,15 m)
+const RB = 1.0;        // rayon des tourillons
+const RN = 1.06;       // rayon de l'échancrure des flancs
+const XF = 1.54;       // milieu de l'épaisseur des flancs
+const ZF = AV + 1.3;   // porte-oculaire, près de l'entrée du tube
+const R_CIEL = 1500;   // sphère céleste, très loin
+const VITESSE = 0.1;   // heures de ciel par seconde (temps accéléré)
+const CHAMP_APP = 50;  // champ apparent des oculaires Plössl fournis (°)
+const Y = new THREE.Vector3(0, 1, 0);
+
+// ---------- Cibles (coordonnées 2026 approchées : AD en heures, déclinaison en °) ----------
+const autour = (c, dx, dy, mag) => ({ ad: c.ad + dx / 60 / Math.cos(c.dec * DEG) / 15, dec: c.dec + dy / 60, mag });
+const ALCYONE = { ad: 3.817, dec: 24.17 };
+const CIBLES = {
+  pleiades: {
+    nom: "Pléiades (M45)", ad: ALCYONE.ad - 7 / 60 / Math.cos(ALCYONE.dec * DEG) / 15, dec: ALCYONE.dec + 8 / 60, h0: -5.5, h1: -2.5, graine: 11,
+    etoiles: [[0, 0, 2.9], [23, -3, 3.6], [23.3, 1.9, 5.1], [-35.8, 0.5, 3.7], [-22.7, 15.8, 3.9],
+      [-15.9, -9.4, 4.2], [-31.2, 21.7, 4.3], [-36.7, 11.1, 5.5], [-21.6, 27, 5.8]].map(([dx, dy, m]) => autour(ALCYONE, dx, dy, m)),
+  },
+  m42: {
+    nom: "Nébuleuse d'Orion (M42)", ad: 5.5878, dec: -5.383, h0: -1.5, h1: 1.5, graine: 23, nebuleuse: true,
+    etoiles: [{ ad: 5.5878, dec: -5.383, mag: 4.0 }, { ad: 5.5897, dec: -5.417, mag: 5.0 }, { ad: 5.5906, dec: -5.91, mag: 2.8 },
+      { ad: 5.5897, dec: -4.833, mag: 4.6 }, { ad: 5.5942, dec: -4.85, mag: 5.3 }],
+  },
+  deneb: {
+    nom: "Deneb", ad: 20.6906, dec: 45.28, h0: -1.5, h1: 1.5, graine: 37,
+    etoiles: [{ ad: 20.6906, dec: 45.28, mag: 1.25 }],
+  },
+};
+// quelques étoiles faibles autour de chaque cible, pour remplir le champ de l'oculaire
+for (const c of Object.values(CIBLES)) {
+  const r = alea(c.graine);
+  for (let i = 0; i < 28; i++) {
+    const a = r() * 2 * Math.PI, d = Math.sqrt(r()) * 75;
+    c.etoiles.push(autour(c, d * Math.cos(a), d * Math.sin(a), 7 + r() * 2.8));
+  }
+}
+
+// ---------- Ciel et mécanique ----------
+const qVrai = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -(90 - LAT) * DEG);
+const POLE = Y.clone().applyQuaternion(qVrai); // pôle céleste nord
+const sim = { tsl: 0, cible: "m42", A: 180, h: 35, trace: [], ocular: 25 };
+
+/** Direction (monde) d'un astre à l'instant simulé. */
+function dirCiel(ad, dec, out = new THREE.Vector3()) {
+  const h = (sim.tsl - ad) * HEURE, d = dec * DEG;
+  return out.set(-Math.cos(d) * Math.sin(h), Math.sin(d), Math.cos(d) * Math.cos(h)).applyQuaternion(qVrai);
+}
+/** Azimut (° depuis le nord, vers l'est) et hauteur (°) d'une direction. */
+function azh(v) { return [((Math.atan2(v.x, -v.z) / DEG) + 360) % 360, Math.asin(Math.max(-1, Math.min(1, v.y))) / DEG]; }
+const dirAzh = (A, h, out = new THREE.Vector3()) => out.set(Math.sin(A * DEG) * Math.cos(h * DEG), Math.sin(h * DEG), -Math.cos(A * DEG) * Math.cos(h * DEG));
+
+function viser() {
+  const c = CIBLES[sim.cible];
+  [sim.A, sim.h] = azh(dirCiel(c.ad, c.dec));
+}
+function choisir(id) {
+  sim.cible = id;
+  const c = CIBLES[id];
+  sim.tsl = c.ad + c.h0;
+  viser();
+  sim.trace = [];
+  for (const k of Object.keys(CIBLES)) document.getElementById("r-" + k)?.setAttribute("aria-pressed", String(k === id));
+}
+const CARDINAUX = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"];
+const cardinal = (A) => CARDINAUX[Math.round(A / 45) % 8];
+const nb = (v, d = 1) => v.toLocaleString("fr-FR", { minimumFractionDigits: d, maximumFractionDigits: d });
+const grossissement = () => Math.round(1200 / sim.ocular);
+const champReel = () => CHAMP_APP / (1200 / sim.ocular);
+
+const S = createSchema({
+  surtitre: "Support de formation · Instruments",
+  titre: "Dobson et monture azimutale",
+  sousTitre: "Exemple : Dobson 200/1200 · Rouvroy 49° 39′ N",
+  eclate: true,
+  distanceMax: 70,
+  commandes: [
+    { type: "raccourcis", id: "cible", label: "Cible", boutons: [
+      { id: "pleiades", label: "Pléiades · est", onClick: () => choisir("pleiades") },
+      { id: "m42", label: "M42 · sud", onClick: () => choisir("m42") },
+      { id: "deneb", label: "Deneb · zénith", onClick: () => choisir("deneb") },
+    ] },
+    { type: "bascule", id: "suivi", label: "Suivi", actif: true, onChange: () => { viser(); sim.trace = []; } },
+    { type: "bascule", id: "reperes", label: "Repères", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [15, 10, 17], cible: [0, 4.5, 0] },
+    { id: "profil", label: "Profil", pos: () => new THREE.Vector3(1, 0, 0).applyQuaternion(azGroup.quaternion).multiplyScalar(27).add(new THREE.Vector3(0, 5, 0)), cible: [0, 5, 0] },
+    { id: "dessus", label: "Dessus", pos: [0, 30, 3], cible: [0, 0, 0] },
+    { id: "cible", label: "Vers la cible", fov: 50, exacte: true, suivre: true,
+      pos: () => pivot().addScaledVector(dirAzh(sim.A, 0), -14).add(new THREE.Vector3(0, 6, 0)),
+      cible: () => pivot().addScaledVector(axeTube(), 30) },
+  ],
+  apercu: { titre: "À l'oculaire" },
+  intro: () => `
+    <div class="eyebrow">Le principe</div>
+    <p>Le Dobson est un télescope de Newton posé sur la plus simple des montures : une monture azimutale. Elle a deux axes : l'un vertical (l'azimut, gauche-droite), l'autre horizontal (la hauteur, haut-bas). On pointe en poussant le tube à la main, sans aucun réglage.</p>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "Pointer : on pousse le tube vers le haut ou vers le bas, et la caisse pivote quand on le pousse de côté. Le chercheur aide à trouver l'objet." },
+      { couleur: COULEURS.ambre, texte: "Suivre : le ciel tourne autour du pôle céleste, pas autour du zénith. Pour garder l'objet, il faut bouger les deux axes à la fois, par petites poussées, à des vitesses qui changent selon l'endroit du ciel." },
+      { couleur: COULEURS.orange, texte: "Près du zénith, l'azimut doit tourner très vite : la caisse fait presque un demi-tour en quelques minutes. C'est la zone difficile du Dobson." },
+      { couleur: COULEURS.corail, texte: "L'image tourne lentement autour du centre du champ : c'est la rotation de champ. Sans effet à l'oculaire, elle limite la durée des poses en photo." },
+    ])}
+    <p class="spec">Comparez les trois cibles dans l'encart « À l'oculaire ». La monture équatoriale, plus complexe, suit avec un seul axe et sans rotation de champ.</p>`,
+});
+S.camera.far = 4000; // la sphère céleste est à 1 500 unités
+
+// groupes emboîtés : la caisse tourne en azimut, le tube bascule en hauteur
+const azGroup = new THREE.Group();
+const altGroup = new THREE.Group(); altGroup.position.y = Y_ALT;
+azGroup.add(altGroup);
+S.scene.add(azGroup);
+const pivot = () => altGroup.getWorldPosition(new THREE.Vector3());
+const axeTube = () => dirAzh(sim.A, sim.h);
+function poseMonture(explode) {
+  azGroup.rotation.y = -sim.A * DEG;
+  altGroup.rotation.x = sim.h * DEG;
+  altGroup.position.y = Y_ALT + explode * 5.2;
+  azGroup.updateMatrixWorld(true);
+}
+const ouvert = (m) => { m.material.side = THREE.DoubleSide; return m; };
+/** Mesh dont l'axe Y de la géométrie est orienté selon d, centré en p. */
+function oriente(geo, mat, d, p) { const m = mesh(geo, mat); m.quaternion.setFromUnitVectors(Y, d); m.position.copy(p); return m; }
+
+// ---------- Plateau d'azimut (fixe, au sol) ----------
+const plateau = S.part("plateau", "Plateau d'azimut", {
+  ancre: [1.6, 0.45, 1.7],
+  texte: "Le plateau est posé au sol sur trois pieds. Un pivot central, un simple boulon, relie la caisse au plateau et la laisse tourner sur elle-même : c'est l'axe d'azimut, vertical. Trois pieds suffisent pour que l'ensemble soit stable sur un sol inégal : pas de mise à niveau précise ni de mise en station.",
+  chiffres: "3 pieds à 120° · pivot central · oculaire entre ≈ 0,9 m (horizon) et ≈ 1,3 m (zénith) : on observe assis",
+});
+S.add(plateau, mesh(new THREE.CylinderGeometry(2.3, 2.3, 0.22, 64), M.bois(), 0, 0.34, 0));
+S.add(plateau, mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.75, 16), M.alu(), 0, 0.6, 0));
+S.add(plateau, mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 6), M.alu(), 0, 0.48, 0));
+for (let k = 0; k < 3; k++) {
+  const a = (30 + k * 120) * DEG;
+  S.add(plateau, mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.23, 24), M.caoutchouc(), Math.sin(a) * 1.9, 0.115, -Math.cos(a) * 1.9));
+}
+
+// ---------- Patins d'azimut ----------
+const patinsAz = S.part("patinsAz", "Patins d'azimut", {
+  eclate: [0, 0.8, 0], ancre: [-1.9, 0.6, 0.6],
+  texte: "Trois patins en téflon (PTFE) entre le plateau et la caisse. La caisse glisse dessus quand on pousse le tube de côté. Le frottement doit être doux mais ferme : la caisse démarre sans à-coup et s'arrête dès qu'on la lâche, ce qui permet de pointer précisément à la main.",
+  chiffres: "3 patins à 120°, au-dessus des pieds · téflon sur stratifié (formica) ou mélaminé",
+});
+for (let k = 0; k < 3; k++) {
+  const a = (30 + k * 120) * DEG;
+  S.add(patinsAz, mesh(new THREE.BoxGeometry(0.34, 0.05, 0.34), M.peinture(), Math.sin(a) * 1.9, 0.475, -Math.cos(a) * 1.9));
+}
+
+// ---------- Caisse (rocking-box), tourne en azimut ----------
+const caisse = S.part("caisse", "Caisse (rocking-box)", {
+  parent: azGroup, eclate: [0, 1.6, 0], ancre: [-XF - 0.1, 3.4, 1.2],
+  texte: "La caisse porte le tube et tourne sur le plateau : c'est elle qui fait l'azimut. Ses deux flancs portent les tourillons dans une échancrure ; le panneau avant et la traverse arrière la rigidifient. En panneaux de bois, lourde et stable, elle n'a aucun réglage.",
+  chiffres: "Axe d'azimut vertical · 360° sans butée · aucun réglage de latitude ni mise en station",
+});
+S.add(caisse, mesh(new THREE.CylinderGeometry(2.3, 2.3, 0.2, 64), M.bois(), 0, 0.6, 0));
+{
+  const H = Y_ALT + 0.3, s = new THREE.Shape();
+  s.moveTo(-1.7, 0.7); s.lineTo(1.7, 0.7); s.lineTo(1.7, H); s.lineTo(RN, H); s.lineTo(RN, Y_ALT);
+  s.absarc(0, Y_ALT, RN, 0, -Math.PI, true);
+  s.lineTo(-RN, H); s.lineTo(-1.7, H); s.closePath();
+  for (const x of [1.45, -1.63]) {
+    const g = new THREE.ExtrudeGeometry(s, { depth: 0.18, bevelEnabled: false, curveSegments: 32 });
+    g.rotateY(Math.PI / 2);
+    S.add(caisse, mesh(g, M.bois(), x, 0, 0));
+  }
+  S.add(caisse, mesh(new THREE.BoxGeometry(2.9, 1.9, 0.18), M.bois(), 0, 1.65, -1.6));
+  S.add(caisse, mesh(new THREE.BoxGeometry(2.9, 0.6, 0.18), M.bois(), 0, 1.0, 1.6));
+  // poignée de transport sur chaque flanc
+  for (const sx of [-1, 1]) {
+    const p = S.add(caisse, mesh(new THREE.TorusGeometry(0.32, 0.05, 10, 24, Math.PI), M.noir(), sx * 1.68, 3.3, 0));
+    p.rotation.y = sx * Math.PI / 2;
+  }
+}
+
+// ---------- Patins d'altitude, sur les flancs ----------
+const patinsAlt = S.part("patinsAlt", "Patins de hauteur", {
+  parent: azGroup, eclate: [0, 1.6, 0], ancre: [XF + 0.15, Y_ALT - 0.6, -1.0],
+  texte: "Les tourillons reposent sur des patins en téflon collés dans l'échancrure des flancs. Le téflon glisse sans à-coups : le tube démarre sous une poussée légère et reste où on le lâche. Trop de frottement, le tube saute au démarrage ; pas assez, il ne tient pas en place.",
+  chiffres: "2 patins par flanc, à ≈ 40° de part et d'autre du bas de l'échancrure · téflon (PTFE)",
+});
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+  const p = S.add(patinsAlt, mesh(new THREE.BoxGeometry(0.2, 0.06, 0.26), M.peinture(), sx * XF, Y_ALT - 1.03 * Math.cos(40 * DEG), sz * 1.03 * Math.sin(40 * DEG)));
+  p.rotation.x = -sz * 40 * DEG;
+}
+
+// ---------- Tourillons (axe de hauteur), solidaires du tube ----------
+const tourillons = S.part("tourillons", "Tourillons", {
+  parent: altGroup, ancre: [-1.5, RB + 0.15, 0],
+  texte: "Deux grands disques fixés de chaque côté du tube, au niveau de son centre de gravité. Ils forment l'axe de hauteur, horizontal : le tube bascule sur eux pour viser plus haut ou plus bas. Placés au point d'équilibre, ils laissent le tube immobile quand on le lâche. Un oculaire lourd ou une caméra le déséquilibre : on ajoute alors un petit contrepoids au fond du tube.",
+  chiffres: "Hauteur de 0° (horizon) à 90° (zénith) · disques de ≈ 20 cm de diamètre",
+});
+for (const sx of [-1, 1]) {
+  S.add(tourillons, mesh(axeX(new THREE.CylinderGeometry(RB, RB, 0.4, 64)), M.noir(), sx * 1.43, 0, 0));
+  S.add(tourillons, mesh(axeX(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 32)), M.alu(), sx * 1.66, 0, 0));
+}
+
+// ---------- Tube optique ----------
+const tube = S.part("tube", "Tube optique", {
+  parent: altGroup, ancre: [0, RT + 0.1, -3.2],
+  texte: "Un Newton de 200 mm de diamètre et de 1 200 mm de focale. Sur un Dobson, il est simplement posé dans la caisse, sans queue d'aronde ni colliers : on le soulève et on le repose en quelques secondes. On le pointe en le poussant à la main, par le haut du tube.",
+  chiffres: "D = 203 mm · F = 1 200 mm · f/5,9 · tube ≈ 9 kg, longueur ≈ 1,15 m",
+});
+{
+  const L = AR - AV, zm = (AR + AV) / 2;
+  S.add(tube, ouvert(mesh(axeZ(new THREE.CylinderGeometry(RT, RT, L, 72, 1, true)), M.peinture(), 0, 0, zm)));
+  S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, L, 72, 1, true)), M.flocage(), 0, 0, zm));
+  S.add(tube, mesh(new THREE.TorusGeometry(RT, 0.035, 10, 72), M.noir(), 0, 0, AV));
+  S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.25, 72)), M.noir(), 0, 0, AR - 0.1));
+  for (let k = 0; k < 3; k++) { // vis de collimation du barillet
+    const a = k * 120 * DEG;
+    S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(0.12, 0.12, 0.2, 20)), M.noir(), Math.sin(a) * 0.7, Math.cos(a) * 0.7, AR + 0.12));
+  }
+  // araignée et support du secondaire, vus par l'entrée du tube
+  S.add(tube, mesh(axeZ(new THREE.CylinderGeometry(0.2, 0.2, 0.4, 24)), M.noir(), 0, 0, ZF));
+  for (let k = 0; k < 4; k++) {
+    const a = 45 * DEG + k * 90 * DEG, len = RT - 0.2;
+    const v = S.add(tube, mesh(new THREE.BoxGeometry(0.02, len, 0.14), M.noir(), -Math.sin(a) * (0.2 + len / 2), Math.cos(a) * (0.2 + len / 2), ZF - 0.3));
+    v.rotation.z = a;
+  }
+}
+
+// ---------- Porte-oculaire, oculaire, chercheur ----------
+const DOC = new THREE.Vector3(Math.sin(45 * DEG), Math.cos(45 * DEG), 0); // vers l'observateur, à 45° du haut du tube
+const surDoc = (r) => DOC.clone().multiplyScalar(r).setZ(ZF);
+const focuser = S.part("focuser", "Porte-oculaire", {
+  parent: altGroup, eclate: DOC.clone().multiplyScalar(0.8).toArray(), ancre: surDoc(RT + 0.45).setZ(ZF + 1.0).toArray(),
+  texte: "Il est près de l'entrée du tube, sur le côté : l'observateur se place en haut du tube, pas derrière. On fait tourner le tube dans la caisse pour l'orienter vers soi. Les molettes font la mise au point.",
+  chiffres: "Crémaillère · coulant 31,75 mm et 50,8 mm",
+});
+S.add(focuser, oriente(new THREE.CylinderGeometry(0.42, 0.42, 0.12, 40), M.noir(), DOC, surDoc(RT + 0.03)));
+S.add(focuser, oriente(new THREE.CylinderGeometry(0.3, 0.3, 0.55, 40), M.noir(), DOC, surDoc(RT + 0.33)));
+S.add(focuser, ouvert(oriente(new THREE.CylinderGeometry(0.24, 0.24, 0.4, 40, 1, true), M.alu(), DOC, surDoc(RT + 0.75))));
+S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.05, 0.05, 1.2, 12)), M.alu(), ...surDoc(RT + 0.3).toArray()));
+for (const s of [-1, 1]) S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 24)), M.noir(), ...surDoc(RT + 0.3).setZ(ZF + s * 0.6).toArray()));
+
+const oculaire = S.part("oculaire", "Oculaire", {
+  parent: altGroup, eclate: DOC.clone().multiplyScalar(2).toArray(), ancre: surDoc(RT + 2.1).toArray(),
+  texte: "On regarde ici. L'oculaire fixe le grossissement, mais aussi le champ réel : la portion de ciel visible. Plus le grossissement est fort, plus le champ est petit, et plus vite l'objet en sort si on ne suit pas.",
+  chiffres: "Grossissement = 1 200 ÷ focale de l'oculaire · champ réel ≈ 50° ÷ grossissement · fournis : 25 et 10 mm",
+  extra: () => `
+    <div class="calc"><label for="ocu">Oculaire de</label>
+      <select id="ocu">${[32, 25, 15, 10, 6].map((f) => `<option value="${f}" ${f === sim.ocular ? "selected" : ""}>${f} mm</option>`).join("")}</select>
+      <span>→ <strong>${grossissement()}×</strong> · champ ≈ ${nb(champReel(), 2)}°</span></div>
+    <p class="spec">Sans suivi, un objet de l'équateur céleste traverse ce champ en ≈ ${nb(champReel() / (OMEGA / 60), 1)} min.</p>`,
+  bind: (root) => root.querySelector("#ocu").addEventListener("change", (e) => { sim.ocular = +e.target.value; S.refreshInfo(); }),
+});
+S.add(oculaire, ouvert(oriente(new THREE.CylinderGeometry(0.19, 0.19, 0.4, 32, 1, true), M.alu(), DOC, surDoc(RT + 1.0))));
+S.add(oculaire, ouvert(oriente(new THREE.CylinderGeometry(0.3, 0.27, 0.6, 32, 1, true), M.noir(), DOC, surDoc(RT + 1.45))));
+S.add(oculaire, ouvert(oriente(new THREE.CylinderGeometry(0.29, 0.31, 0.22, 32, 1, true), M.caoutchouc(), DOC, surDoc(RT + 1.86))));
+S.add(oculaire, oriente(new THREE.CylinderGeometry(0.19, 0.19, 0.04, 32), M.lentille(), DOC, surDoc(RT + 1.6)));
+
+const DCH = new THREE.Vector3(-Math.sin(45 * DEG), Math.cos(45 * DEG), 0);
+const surCh = (r, z) => DCH.clone().multiplyScalar(r).setZ(z);
+const chercheur = S.part("chercheur", "Chercheur", {
+  parent: altGroup, eclate: DCH.clone().multiplyScalar(1.4).toArray(), ancre: surCh(RT + 0.95, AV + 2.6).toArray(),
+  texte: "Petite lunette 9×50 fixée sur le tube : elle grossit 9 fois avec un objectif de 50 mm. Son grand champ permet de trouver l'objet, puis de le centrer sur la croix avant de regarder dans l'oculaire, au champ bien plus étroit.",
+  chiffres: "9×50 · champ ≈ 5° · fourni avec le 200/1200 (ou un viseur à point rouge)",
+});
+{
+  const r = RT + 0.55;
+  S.add(chercheur, mesh(axeZ(new THREE.CylinderGeometry(0.22, 0.22, 2.2, 32)), M.peinture(), ...surCh(r, AV + 2.7).toArray()));
+  S.add(chercheur, mesh(axeZ(new THREE.CylinderGeometry(0.3, 0.22, 0.45, 32)), M.peinture(), ...surCh(r, AV + 1.45).toArray()));
+  S.add(chercheur, mesh(axeZ(new THREE.CylinderGeometry(0.1, 0.14, 0.4, 24)), M.noir(), ...surCh(r, AV + 3.95).toArray()));
+  for (const z of [AV + 2.1, AV + 3.2]) {
+    S.add(chercheur, mesh(new THREE.TorusGeometry(0.27, 0.04, 8, 32), M.noir(), ...surCh(r, z).toArray()));
+    S.add(chercheur, oriente(new THREE.BoxGeometry(0.1, 0.36, 0.1), M.noir(), DCH, surCh(RT + 0.17, z)));
+  }
+}
+
+// ---------- Ciel : tourne autour du pôle céleste ----------
+const ciel = new THREE.Group();
+ciel.position.set(0, Y_ALT, 0);
+S.scene.add(ciel);
+function etoile(ad, decl, taille) {
+  const h = -ad * HEURE, d = decl * DEG;
+  const g = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(
+    [-Math.cos(d) * Math.sin(h) * R_CIEL, Math.sin(d) * R_CIEL, Math.cos(d) * Math.cos(h) * R_CIEL], 3));
+  const p = new THREE.Points(g, new THREE.PointsMaterial({ size: taille, sizeAttenuation: false, map: textureHalo(), color: COULEURS.etoile, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  p.frustumCulled = false;
+  ciel.add(p);
+}
+for (const c of Object.values(CIBLES)) for (const s of c.etoiles) if (s.mag < 6) etoile(s.ad, s.dec, Math.max(3, 13 - 1.7 * s.mag));
+const qCiel = (q) => q.copy(qVrai).multiply(new THREE.Quaternion().setFromAxisAngle(Y, -sim.tsl * HEURE));
+const posCiel = (ad, decl) => dirCiel(ad, decl).multiplyScalar(R_CIEL).add(ciel.position);
+for (const [id, c] of Object.entries(CIBLES)) {
+  S.label(c.nom, () => posCiel(c.ad, c.dec + 0.7), { lumiere: true, visible: () => S.state.reperes && sim.cible === id });
+}
+
+// ---------- Repères : axes, ligne de visée, hauteur et azimut ----------
+const reperes = new THREE.Group();
+S.scene.add(reperes);
+const ligne = (couleur, n = 2, opacite = 0.6) => {
+  const g = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: opacite, depthWrite: false }));
+  l.frustumCulled = false; reperes.add(l); return l;
+};
+const setLigne = (l, pts) => { const a = l.geometry.attributes.position; pts.forEach((p, i) => a.setXYZ(i, p.x, p.y, p.z)); a.needsUpdate = true; };
+const N_ARC = 40, R_H = 9.5, R_A = 5.0;
+const lVert = ligne(COULEURS.etoile, 2, 0.5);
+const lHoriz = ligne(COULEURS.etoile, 2, 0.5);
+const lVisee = ligne(COULEURS.ambre, 2, 0.55);
+const lHaut = ligne(COULEURS.orange, N_ARC + 4, 0.85);
+const lAz = ligne(COULEURS.corail, N_ARC + 4, 0.85);
+// rose des vents au sol
+{
+  const pts = [];
+  for (let i = 0; i <= 96; i++) { const a = i / 96 * 2 * Math.PI; pts.push(new THREE.Vector3(Math.cos(a) * 5.8, 0.01, Math.sin(a) * 5.8)); }
+  const mat = new THREE.LineBasicMaterial({ color: 0x8b9ab0, transparent: true, opacity: 0.3, depthWrite: false });
+  reperes.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+  reperes.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0.01, -6.6), new THREE.Vector3(0, 0.01, 6.6), new THREE.Vector3(-6.6, 0.01, 0), new THREE.Vector3(6.6, 0.01, 0)]), mat));
+  for (const [nom, x, z] of [["Nord", 0, -7], ["Est", 7, 0], ["Sud", 0, 7], ["Ouest", -7, 0]]) {
+    S.label(nom, () => new THREE.Vector3(x, 0, z), { visible: () => S.state.reperes });
+  }
+}
+const axeX3 = () => new THREE.Vector3(1, 0, 0).applyQuaternion(azGroup.quaternion);
+S.label("Axe d'azimut (vertical)", () => new THREE.Vector3(0, 15, 0), { lumiere: true, visible: () => S.state.reperes });
+S.label("Axe de hauteur (horizontal)", () => pivot().addScaledVector(axeX3(), 4.6), { lumiere: true, visible: () => S.state.reperes });
+const lblH = S.label("", () => {
+  const t = sim.h / 2 * DEG;
+  return pivot().addScaledVector(dirAzh(sim.A, 0), R_H * Math.cos(t) + 0.6).addScaledVector(Y, R_H * Math.sin(t) + 0.4);
+}, { lumiere: true, visible: () => S.state.reperes });
+const lblA = S.label("", () => {
+  const a = sim.A / 2 * DEG;
+  return new THREE.Vector3(Math.sin(a) * (R_A + 0.5), 0.05, -Math.cos(a) * (R_A + 0.5));
+}, { lumiere: true, visible: () => S.state.reperes });
+
+function majReperes() {
+  setLigne(lVert, [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 14.5, 0)]);
+  const P = pivot(), ax = axeX3(), f = axeTube();
+  setLigne(lHoriz, [P.clone().addScaledVector(ax, -4.2), P.clone().addScaledVector(ax, 4.2)]);
+  setLigne(lVisee, [P.clone().addScaledVector(f, -AV), P.clone().addScaledVector(f, R_CIEL)]);
+  const hz = dirAzh(sim.A, 0), ph = [P, P.clone().addScaledVector(hz, R_H)];
+  for (let i = 0; i <= N_ARC; i++) {
+    const t = sim.h * DEG * i / N_ARC;
+    ph.push(P.clone().addScaledVector(hz, R_H * Math.cos(t)).addScaledVector(Y, R_H * Math.sin(t)));
+  }
+  ph.push(P);
+  setLigne(lHaut, ph);
+  const O = new THREE.Vector3(0, 0.03, 0), pa = [O, new THREE.Vector3(0, 0.03, -R_A)];
+  for (let i = 0; i <= N_ARC; i++) {
+    const a = sim.A * DEG * i / N_ARC;
+    pa.push(new THREE.Vector3(Math.sin(a) * R_A, 0.03, -Math.cos(a) * R_A));
+  }
+  pa.push(O);
+  setLigne(lAz, pa);
+  const th = `Hauteur ${Math.round(sim.h)}°`, ta = `Azimut ${Math.round(sim.A)}° (${cardinal(sim.A)})`;
+  if (lblH.el.textContent !== th) lblH.el.textContent = th;
+  if (lblA.el.textContent !== ta) lblA.el.textContent = ta;
+}
+
+// ---------- Encart « À l'oculaire » : champ vu dans l'oculaire, haut de l'image vers le zénith ----------
+const _c = new THREE.Vector3(), _u = new THREE.Vector3(), _r = new THREE.Vector3(), _s = new THREE.Vector3(), _n = new THREE.Vector3();
+function repereChamp(c) { _c.copy(c); _u.copy(Y).addScaledVector(c, -c.y).normalize(); _r.crossVectors(_c, _u); }
+/** Position d'un astre dans le champ (en degrés, x vers la droite, y vers le haut), ou null s'il est loin. */
+function projeter(ad, dec) {
+  dirCiel(ad, dec, _s);
+  const z = _s.dot(_c);
+  return z < 0.99 ? null : [_s.dot(_r) / z / DEG, _s.dot(_u) / z / DEG];
+}
+/** Angle du nord céleste dans le champ (pour mesurer la rotation de l'image). */
+function angleNord() { _n.copy(POLE).addScaledVector(_c, -POLE.dot(_c)).normalize(); return Math.atan2(_n.dot(_r), _n.dot(_u)) / DEG; }
+/** Vitesses des axes (°/min) et de rotation du champ (°/h) pour suivre un astre en (A, h). */
+function vitesses(A, h) {
+  const p = LAT * DEG, a = A * DEG, t = h * DEG, w = OMEGA;
+  return {
+    az: w / 60 * (Math.sin(p) - Math.cos(p) * Math.cos(a) * Math.tan(t)),
+    haut: w / 60 * Math.cos(p) * Math.sin(a),
+    rot: w * Math.cos(p) * Math.cos(a) / Math.cos(t),
+  };
+}
+function echantillonner() {
+  const dern = sim.trace[sim.trace.length - 1];
+  if (dern && sim.tsl - dern.t < 1 / 60) return; // une image par minute simulée
+  const c = CIBLES[sim.cible];
+  sim.trace.push({ t: sim.tsl, angle: angleNord(), pts: c.etoiles.map((s) => projeter(s.ad, s.dec)) });
+  if (sim.trace.length > 45) sim.trace.shift();
+}
+let texteLegende = "";
+function dessiner() {
+  const ap = S.apercu, cv = ap.canvas, W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.82), dpr = Math.min(devicePixelRatio, 2);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2, R = H / 2 - 8, k = R / (champReel() / 2);
+  const c = CIBLES[sim.cible];
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.clip();
+  ctx.fillStyle = "#03060c"; ctx.fillRect(0, 0, W, H);
+  if (c.nebuleuse) { // lueur de la nébuleuse autour du Trapèze
+    const p = projeter(c.etoiles[0].ad, c.etoiles[0].dec);
+    if (p) {
+      const g = ctx.createRadialGradient(cx + p[0] * k, cy - p[1] * k, 0, cx + p[0] * k, cy - p[1] * k, 0.33 * k);
+      g.addColorStop(0, "rgba(255,107,94,0.32)"); g.addColorStop(1, "rgba(255,107,94,0)");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    }
+  }
+  // traces des étoiles (dernières minutes simulées)
+  ctx.strokeStyle = "rgba(255,200,97,0.45)"; ctx.lineWidth = 1.2;
+  c.etoiles.forEach((st, j) => {
+    ctx.beginPath(); let ouvert = false;
+    for (const e of sim.trace) {
+      const q = e.pts[j];
+      if (!q) { ouvert = false; continue; }
+      if (ouvert) ctx.lineTo(cx + q[0] * k, cy - q[1] * k); else ctx.moveTo(cx + q[0] * k, cy - q[1] * k);
+      ouvert = true;
+    }
+    ctx.stroke();
+  });
+  // étoiles à l'instant présent
+  ctx.fillStyle = css(COULEURS.etoile); ctx.shadowColor = css(COULEURS.etoile); ctx.shadowBlur = 6;
+  const echelle = W / 300;
+  for (const st of c.etoiles) {
+    const q = projeter(st.ad, st.dec);
+    if (!q) continue;
+    ctx.beginPath(); ctx.arc(cx + q[0] * k, cy - q[1] * k, Math.max(0.7, (7.5 - st.mag) * 0.6) * echelle, 0, 2 * Math.PI); ctx.fill();
+  }
+  ctx.restore();
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.stroke();
+  ctx.font = "11px Arial"; ctx.fillStyle = "#c4d0e0"; ctx.textAlign = "left";
+  ctx.fillText("↑ zénith", 6, 14);
+  ctx.textAlign = "right";
+  ctx.fillText(`${grossissement()}× · champ ${nb(champReel(), 2)}°`, W - 6, 14);
+
+  // légende : vitesses à donner aux axes pour suivre la cible
+  const [A, h] = azh(dirCiel(c.ad, c.dec)), v = vitesses(A, h);
+  let rot = 0, duree = 0;
+  if (sim.trace.length > 1) {
+    rot = sim.trace[sim.trace.length - 1].angle - sim.trace[0].angle;
+    rot = Math.abs(((rot + 540) % 360) - 180);
+    duree = Math.round((sim.trace[sim.trace.length - 1].t - sim.trace[0].t) * 60);
+  }
+  const fmt = (x) => nb(Math.abs(x), Math.abs(x) < 1 ? 2 : 1);
+  const t = `<h2>${c.nom}</h2>
+    <p>Pour suivre : azimut <strong>${fmt(v.az)}°/min</strong> ${v.az >= 0 ? "vers la droite" : "vers la gauche"} · hauteur <strong>${fmt(v.haut)}°/min</strong> ${v.haut >= 0 ? "en montant" : "en descendant"}.</p>
+    <p>Rotation du champ : <strong>${nb(Math.abs(v.rot), Math.abs(v.rot) < 10 ? 1 : 0)}°/h</strong>${S.state.suivi && duree ? ` · ${Math.round(rot)}° sur les ${duree} dernières minutes` : ""}.</p>`;
+  if (t !== texteLegende) { texteLegende = t; ap.legende.innerHTML = t; }
+}
+
+// ---------- Animation ----------
+let tPrec = 0;
+S.onFrame(({ time, explode }) => {
+  sim.tsl += (time - tPrec) * VITESSE; tPrec = time;
+  const c = CIBLES[sim.cible];
+  if (sim.tsl - c.ad > c.h1) { // nouvelle nuit : on revient au début de la fenêtre et on repointe
+    sim.tsl -= c.h1 - c.h0; viser(); sim.trace = [];
+  }
+  if (S.state.suivi) viser();
+  poseMonture(explode);
+  qCiel(ciel.quaternion);
+  S.ciel.quaternion.copy(ciel.quaternion);
+  reperes.visible = S.state.reperes;
+  majReperes();
+  repereChamp(axeTube());
+  echantillonner();
+  dessiner();
+  S.notice(!S.state.suivi ? "Suivi arrêté : le ciel tourne, l'objet sort du champ de l'oculaire en quelques minutes."
+    : sim.h > 80 ? "Près du zénith : la caisse doit pivoter très vite en azimut pour garder l'objet."
+    : null);
+});
+
+choisir("m42");
+S.start();
+</script>
+</body>
+</html>
