@@ -40,6 +40,8 @@ export const materiaux = {
   bois: () => new THREE.MeshStandardMaterial({ color: 0xa47548, roughness: 0.75, metalness: 0 }),
   // sol d'un paysage (herbe sombre), éclairé par le Soleil du schéma
   sol: () => new THREE.MeshStandardMaterial({ color: 0x34462f, roughness: 1, metalness: 0, envMapIntensity: 0.3 }),
+  // eau de mer (océans, enveloppe déformée par la marée) : bleu sourd, translucide pour laisser voir le globe
+  eau: (opacite = 0.5) => new THREE.MeshStandardMaterial({ color: 0x6aa8d8, roughness: 0.35, metalness: 0, transparent: true, opacity: opacite, depthWrite: false, envMapIntensity: 0 }),
   lentille: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
   // silicium d'un capteur (photodiodes) : gris bleuté, translucide pour laisser voir les charges à l'intérieur
   silicium: () => new THREE.MeshStandardMaterial({ color: 0x5a6478, roughness: 0.3, metalness: 0.4, transparent: true, opacity: 0.4, depthWrite: false }),

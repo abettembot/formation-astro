@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marées</title>
+<meta name="description" content="Schéma 3D interactif des marées : la Lune et le Soleil étirent les océans, la Terre tourne sous les bourrelets d'eau, vives-eaux et mortes-eaux. Marée à Brest et littoral qui se couvre et se découvre.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, textureHalo, legende, css, alea, textures } from "../commun/schema.js";
+
+// ---------- Échelle et constantes ----------
+// Schéma NON proportionnel. Terre à l'échelle 1 unité = 4 000 km (rayon 1,6) ;
+// enveloppe d'eau exagérée plusieurs millions de fois ; Lune grossie et beaucoup trop proche ;
+// Soleil symbolique. Repère vu de dessus, depuis le pôle Nord (comme « Phases de la Lune ») :
+// angles comptés depuis +X dans le sens inverse des aiguilles d'une montre, Soleil à gauche (180°).
+// La Lune est placée dans le plan de l'équateur : les deux marées du jour sont égales.
+const DEG = Math.PI / 180;
+const LUNAISON = 29.53;              // jours entre deux nouvelles lunes
+const R_TERRE = 1.6, R_LUNE = 0.6, R_ORBITE = 8;
+const X_SOLEIL = -19, R_SOLEIL = 3.2;
+const R_EAU = 1.9;                   // rayon moyen de l'enveloppe d'eau
+const RAPPORT_SOLEIL = 0.46;         // effet de marée du Soleil ÷ celui de la Lune (M/d³)
+const A_LUNE = 0.38, A_SOLEIL = A_LUNE * RAPPORT_SOLEIL; // hauteur (exagérée) des bourrelets
+const LAT_BREST = 48.4;
+const VITESSE = 2;                   // heures simulées par seconde (« Temps qui passe »)
+
+// Marée réelle à Brest : ondes semi-diurnes lunaire M2 et solaire S2 (TICON-3, 1846-2021).
+// Le Soleil n'y pèse que 37 % de la Lune (46 % en théorie) : l'océan répond différemment aux deux périodes.
+const M2 = 2.05, S2 = 0.75;          // amplitudes en mètres
+const U_BREST = 6.10;                // marnage d'une marée de coefficient 100 à Brest (m)
+
+// ---------- État : âge de la Lune (jours) et heure solaire à Brest ----------
+const sim = { age: 2, heure: 9, anim: null };
+const wrap = (a) => ((((a + 180) % 360) + 360) % 360) - 180;
+const mod = (v, m) => ((v % m) + m) % m;
+const elongation = (age = sim.age) => (age / LUNAISON) * 360;     // 0 = nouvelle lune, 180 = pleine
+const angleLune = () => 180 + elongation();
+const angleObs = (h = sim.heure) => 180 + (h - 12) * 15;          // midi : face au Soleil
+const dir = (aDeg, r = 1, out = new THREE.Vector3()) => out.set(Math.cos(aDeg * DEG) * r, 0, -Math.sin(aDeg * DEG) * r);
+
+/** Hauteur d'eau à Brest (m, par rapport au niveau moyen), tau jours après l'instant affiché.
+ *  Modèle d'équilibre : pleine mer quand la Lune passe au méridien (ou à l'opposé). */
+function hBrest(tau = 0) {
+  const E = elongation(sim.age + tau), dS = (sim.heure + 24 * tau - 12) * 15;
+  return M2 * Math.cos(2 * (dS - E) * DEG) + S2 * Math.cos(2 * dS * DEG);
+}
+/** Demi-marnage du jour (m) : M2 et S2 s'ajoutent quand le Soleil et la Lune sont alignés. */
+const amplitude = (age = sim.age) => Math.sqrt(M2 * M2 + S2 * S2 + 2 * M2 * S2 * Math.cos(2 * elongation(age) * DEG));
+const coefficient = (age = sim.age) => Math.round(2 * amplitude(age) / U_BREST * 100);
+
+const PHASES = [
+  { id: "nl", nom: "Nouvelle lune", age: 0 },
+  { id: "pq", nom: "Premier quartier", age: 7.38 },
+  { id: "pl", nom: "Pleine lune", age: 14.77 },
+  { id: "dq", nom: "Dernier quartier", age: 22.15 },
+];
+function allerA(p) {
+  const dAge = mod(p.age - sim.age + LUNAISON / 2, LUNAISON) - LUNAISON / 2;
+  sim.anim = { age: sim.age, dAge, t: 0 };
+}
+const fmtHeure = (v) => { const m = Math.round(mod(v, 24) * 60) % 1440; return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmtDuree = (h) => { const m = Math.round(h * 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmt1 = (v) => v.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const signe = (v) => (v >= 0.05 ? "+" : v <= -0.05 ? "−" : "") + fmt1(Math.abs(v));
+
+let pilote = false; // vrai quand le script recale les curseurs (onInput ne doit rien changer)
+const S = createSchema({
+  surtitre: "Support de formation · Mécanique céleste",
+  titre: "Marées",
+  sousTitre: "Exemple : Brest · coefficients 20 à 120",
+  distanceMax: 140,
+  aide: "Glisser la Lune ou la Terre : les déplacer · Glisser ailleurs : tourner la vue · Molette ou pincer : zoomer · Cliquer un élément : l'expliquer",
+  apercu: [{ titre: "Marée à Brest" }, { titre: "Le littoral" }],
+  commandes: [
+    { type: "curseur", id: "age", label: "Âge de la Lune", min: 0, max: 29.5, pas: 0.1, valeur: sim.age,
+      format: (v) => fmt1(v) + " j", onInput: (v) => { if (!pilote) { sim.age = v; sim.anim = null; } } },
+    { type: "curseur", id: "heure", label: "Heure", min: 0, max: 24, pas: 0.25, valeur: sim.heure,
+      format: fmtHeure, onInput: (v) => { if (!pilote) { sim.heure = v; sim.anim = null; } } },
+    { type: "raccourcis", id: "phases", label: "Aller à la phase", boutons: PHASES.map((p) => ({ id: p.id, label: p.nom, onClick: () => allerA(p) })) },
+    { type: "bascule", id: "temps", label: "Temps qui passe", actif: true },
+    { type: "bascule", id: "forces", label: "Forces de marée", actif: true },
+    { type: "bascule", id: "attraction", label: "Attraction de la Lune", actif: false },
+    { type: "bascule", id: "separes", label: "Effets séparés", actif: false },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [11, 12, 19], cible: [2, -1, 0] },
+    // sur téléphone (écran en hauteur), on monte assez haut pour voir toute l'orbite en largeur
+    { id: "dessus", label: "Dessus", exacte: true,
+      pos: () => innerWidth < 760 ? [0, Math.max(60, 25 / (0.69 * innerWidth / (innerHeight * 1.4))), 0.01] : [1.5, 46, 0.01],
+      cible: () => innerWidth < 760 ? [0, 0, 0] : [1.5, 0, 0] },
+    { id: "proche", label: "Terre de près", pos: [3.3, 15, 6.5], cible: [2.5, 0, 0] },
+    { id: "profil", label: "Profil", pos: [2, 1.2, 27], cible: [2, 0, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">D'où viennent les marées</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "La Lune attire plus fort le côté de la Terre tourné vers elle que le centre de la Terre, et le centre plus que le côté opposé." },
+      { couleur: COULEURS.ambre, texte: "Cette différence étire les océans : un bourrelet d'eau se forme du côté de la Lune, un autre du côté opposé." },
+      { couleur: COULEURS.orange, texte: "La Terre tourne sous ces bourrelets : chaque côte a deux marées hautes et deux marées basses par jour, toutes les 12 h 25 min." },
+      { couleur: COULEURS.corail, texte: "Le Soleil fait de même, deux fois moins fort. Aligné avec la Lune (nouvelle et pleine lune), leurs effets s'ajoutent : vives-eaux. À angle droit (quartiers), ils se contrarient : mortes-eaux." },
+    ])}
+    <p>Glissez la Lune sur son orbite ou utilisez les raccourcis, et faites tourner la Terre avec le curseur « Heure ». Les encarts suivent la marée à Brest : la courbe de la hauteur d'eau et la mer qui monte et descend sur le littoral.</p>
+    <div class="eyebrow">Les mots de la marée</div>
+    <dl class="glossaire">
+      <dt>Pleine mer, basse mer</dt>
+      <dd>Le niveau le plus haut et le plus bas de chaque marée. Entre les deux, la mer monte (le flot) ou descend (le jusant).</dd>
+      <dt>Marnage</dt>
+      <dd>La différence de hauteur entre une pleine mer et la basse mer qui la suit.</dd>
+      <dt>Coefficient</dt>
+      <dd>Il mesure la force de la marée, de 20 à 120. Il compare le marnage du jour à celui d'une grande marée à Brest : coefficient 100 = 6,10 m de marnage.</dd>
+      <dt>Vives-eaux, mortes-eaux</dt>
+      <dd>Les fortes marées (coefficients élevés), autour de la nouvelle et de la pleine lune, et les faibles marées, autour des quartiers. Elles alternent tous les 7 jours environ.</dd>
+      <dt>Estran</dt>
+      <dd>La bande du rivage couverte à marée haute et découverte à marée basse : c'est là que l'on pêche à pied.</dd>
+    </dl>
+    <p class="spec">Schéma non proportionnel : hauteur d'eau exagérée plusieurs millions de fois, Lune et Soleil beaucoup trop proches. La Lune est placée dans le plan de l'équateur. En réalité, les côtes et les fonds marins retardent la marée : à Brest, la pleine mer arrive quelques heures après le passage de la Lune, et les plus fortes marées environ 1,5 jour après la nouvelle ou la pleine lune.</p>`,
+});
+
+// ---------- Éclairage : une seule source, le Soleil, à gauche ----------
+S.lumieres.principale.position.set(-1, 0, 0);
+S.lumieres.principale.intensity = 3.2;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.4;
+S.scene.environment = null;
+
+// ---------- Soleil ----------
+const soleil = S.part("soleil", "Soleil", {
+  ancre: [X_SOLEIL, 0, -R_SOLEIL - 0.2],
+  texte: "Il attire la Terre bien plus fort que la Lune. Mais il est si loin que cette attraction est presque la même d'un bord à l'autre de la Terre : or c'est la différence d'attraction entre les deux côtés qui crée la marée. Son effet de marée ne vaut donc qu'à peu près la moitié de celui de la Lune. Il est dessiné ici beaucoup trop près et trop petit.",
+  chiffres: "Distance : 150 millions de km · attraction sur la Terre ≈ 180 fois celle de la Lune · effet de marée ≈ 0,46 fois celui de la Lune",
+});
+S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd98a), X_SOLEIL, 0, 0));
+{
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: textureHalo(), color: COULEURS.ambre, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.position.set(X_SOLEIL, 0, 0); halo.scale.setScalar(R_SOLEIL * 4.2);
+  S.scene.add(halo);
+}
+
+// ---------- Terre (tourne sur elle-même) ----------
+const terre = new THREE.Group();
+S.scene.add(terre);
+const pTerre = S.part("terre", "Terre", {
+  parent: terre, etiquette: false,
+  texte: "Elle tourne sur elle-même en 24 heures sous les deux bourrelets d'eau, qui restent alignés avec la Lune. Un point de la côte passe sous un bourrelet (marée haute), puis entre les deux (marée basse), deux fois par jour. Comme la Lune avance sur son orbite pendant ce temps, il faut 24 h 50 min pour retrouver la même position face à elle : c'est le jour lunaire.",
+  chiffres: "Rayon : 6 371 km · jour lunaire : 24 h 50 min · deux pleines mers par jour, espacées de 12 h 25 min",
+});
+S.add(pTerre, mesh(new THREE.SphereGeometry(R_TERRE, 64, 32), M.astre(textures.terre())));
+S.label("Terre", () => new THREE.Vector3(0, R_TERRE + 0.15, 0), { partId: "terre" });
+
+// ---------- Brest : un mât de marée planté sur la côte, avec un flotteur ----------
+const nBrest = new THREE.Vector3(Math.cos(LAT_BREST * DEG), Math.sin(LAT_BREST * DEG), 0); // repère local de la Terre
+const brest = S.part("brest", "Brest", {
+  parent: terre, etiquette: false,
+  texte: "Port de référence des marées en France : la hauteur de la mer y est mesurée depuis 1711. Le flotteur corail glisse le long du mât avec le niveau de l'eau à Brest. Le coefficient de marée compare le marnage du jour à celui d'une grande marée de Brest.",
+  chiffres: "Coefficient 100 = 6,10 m de marnage · vives-eaux moyennes ≈ 95, mortes-eaux moyennes ≈ 45 · coefficient 120 ≈ 7,3 m",
+});
+const HAUT_MAT = R_TERRE + 0.62;
+{
+  const mat = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, HAUT_MAT - R_TERRE, 8), M.lumineux(0xf6f9fd));
+  mat.position.copy(nBrest).multiplyScalar((R_TERRE + HAUT_MAT) / 2);
+  mat.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nBrest);
+  S.add(brest, mat);
+  S.add(brest, mesh(new THREE.SphereGeometry(0.06, 12, 8), M.lumineux(0xf6f9fd), ...nBrest.clone().multiplyScalar(HAUT_MAT).toArray()));
+}
+const flotteur = S.add(brest, mesh(new THREE.TorusGeometry(0.07, 0.03, 8, 20), M.lumineux(COULEURS.corail)));
+flotteur.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nBrest);
+const sommetBrest = () => terre.localToWorld(nBrest.clone().multiplyScalar(HAUT_MAT + 0.12));
+S.label("Brest", sommetBrest, { partId: "brest" });
+
+// ---------- Lune ----------
+const lune = new THREE.Group();
+S.scene.add(lune);
+const pLune = S.part("lune", "Lune", {
+  parent: lune, etiquette: false,
+  texte: "C'est elle qui commande les marées. Le côté de la Terre tourné vers elle est 6 400 km plus près que le centre : il est attiré un peu plus fort ; le côté opposé, un peu moins. Cette différence étire les océans dans l'axe Terre-Lune. Comme la Lune tourne autour de la Terre dans le même sens que la Terre tourne sur elle-même, la marée revient chaque jour environ 50 min plus tard.",
+  chiffres: "Distance : 384 400 km · attraction ≈ 3 % plus forte côté proche qu'au centre · à son plus près (périgée), marée lunaire ≈ 40 % plus forte qu'à son plus loin (apogée)",
+});
+S.add(pLune, mesh(new THREE.SphereGeometry(R_LUNE, 48, 24), M.astre(textures.lune())));
+S.label("Lune", () => lune.position.clone().add(new THREE.Vector3(0, 0, -R_LUNE - 0.1)), { partId: "lune" });
+{
+  const pts = [];
+  for (let i = 0; i <= 128; i++) pts.push(dir(i / 128 * 360, R_ORBITE));
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.3, gapSize: 0.25, transparent: true, opacity: 0.45, depthWrite: false }));
+  l.computeLineDistances(); S.scene.add(l);
+}
+
+// ---------- Océans : enveloppe d'eau étirée par la Lune et le Soleil ----------
+const uLune = new THREE.Vector3(), uSoleil = new THREE.Vector3(-1, 0, 0);
+const P2 = (c) => 1.5 * c * c - 0.5;  // forme d'un bourrelet de marée (deux bosses opposées)
+/** Rayon de l'eau dans la direction unitaire n (repère de la scène). */
+const rEau = (n, lunePart = A_LUNE, soleilPart = A_SOLEIL) => R_EAU + lunePart * P2(n.dot(uLune)) + soleilPart * P2(n.dot(uSoleil));
+
+const oceans = S.part("oceans", "Océans", {
+  etiquette: false,
+  texte: "L'eau se déforme sous l'effet des forces de marée : deux bourrelets, l'un tourné vers la Lune, l'autre à l'opposé, et un creux entre les deux. Le Soleil ajoute ses propres bourrelets, plus petits : alignés avec ceux de la Lune, ils les renforcent ; à angle droit, ils les atténuent. Ici, la hauteur d'eau est exagérée plusieurs millions de fois.",
+  chiffres: "En plein océan, marée de l'ordre de 0,5 m · elle s'amplifie près des côtes : 6 m à Brest, plus de 14 m en baie du Mont-Saint-Michel, 20 à 40 cm en Méditerranée",
+});
+const geoEau = new THREE.SphereGeometry(1, 96, 48);
+const unitaires = geoEau.attributes.position.array.slice();
+const eau = S.add(oceans, new THREE.Mesh(geoEau, M.eau(0.5)));
+eau.renderOrder = 1;
+const _n = new THREE.Vector3();
+let eLuneCalc = null;
+function deformerEau() {
+  const a = angleLune();
+  if (a === eLuneCalc) return;
+  eLuneCalc = a;
+  const p = geoEau.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    _n.fromArray(unitaires, i * 3);
+    const r = rEau(_n);
+    p.setXYZ(i, _n.x * r, _n.y * r, _n.z * r);
+  }
+  p.needsUpdate = true;
+  geoEau.computeVertexNormals();
+}
+const lblBourrelet = (texte, signe) => S.label(texte, () => uLune.clone().multiplyScalar(signe * (rEau(uLune) + 0.35)), { lumiere: true });
+lblBourrelet("Bourrelet côté Lune", 1);
+lblBourrelet("Bourrelet opposé", -1);
+S.label("Océans", () => { const n = dir(angleLune() + 90); return n.multiplyScalar(rEau(n) + 0.25); }, { partId: "oceans" });
+
+// ---------- Effets séparés : contour, à l'équateur, de l'eau sous la Lune seule et sous le Soleil seul ----------
+const NC = 160;
+const contour = (couleur, opacite) => {
+  const l = new THREE.LineLoop(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(NC * 3), 3)),
+    new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: opacite, depthWrite: false }));
+  l.frustumCulled = false; l.renderOrder = 2; S.scene.add(l); return l;
+};
+const cLune = contour(0xdfe6f0, 0.9), cSoleil = contour(COULEURS.ambre, 0.9), cSomme = contour(COULEURS.corail, 0.9);
+function majContours() {
+  for (const [l, aL, aS] of [[cLune, A_LUNE, 0], [cSoleil, 0, A_SOLEIL], [cSomme, A_LUNE, A_SOLEIL]]) {
+    const p = l.geometry.attributes.position;
+    for (let i = 0; i < NC; i++) {
+      dir(i / NC * 360, 1, _n);
+      const r = R_EAU + aL * P2(_n.dot(uLune)) + aS * P2(_n.dot(uSoleil));
+      p.setXYZ(i, _n.x * r, 0.01, _n.z * r);
+    }
+    p.needsUpdate = true;
+  }
+}
+const visSepares = () => S.state.separes;
+S.label("Effet de la Lune seule", () => uLune.clone().multiplyScalar(R_EAU + A_LUNE + 0.9).add(new THREE.Vector3(0, 0.5, 0)), { visible: visSepares });
+S.label("Effet du Soleil seul", () => new THREE.Vector3(-(R_EAU + A_SOLEIL + 0.9), -0.4, 0), { lumiere: true, visible: visSepares });
+
+// ---------- Forces de marée : flèches autour de l'équateur ----------
+const NF = 24, ECH_F = 0.2;
+const fleches = Array.from({ length: NF }, () => {
+  const f = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 1, COULEURS.corail, 0.14, 0.1);
+  f.renderOrder = 3; S.scene.add(f); return f;
+});
+const _f = new THREE.Vector3(), _o = new THREE.Vector3();
+/** Force de marée (unités relatives : 1 = Lune) au point de direction n. */
+function forceMaree(n, out) {
+  out.set(0, 0, 0);
+  for (const [u, k] of [[uLune, 1], [uSoleil, RAPPORT_SOLEIL]]) out.addScaledVector(u, 3 * k * n.dot(u)).addScaledVector(n, -k);
+  return out;
+}
+function majFleches() {
+  fleches.forEach((f, i) => {
+    dir(i / NF * 360 + 7.5, 1, _n);
+    forceMaree(_n, _f);
+    const len = Math.max(0.05, _f.length() * ECH_F), radial = _f.dot(_n) * ECH_F;
+    _o.copy(_n).multiplyScalar(rEau(_n) + 0.06 + Math.max(0, -radial)); // une flèche vers l'intérieur s'arrête à la surface
+    f.position.copy(_o);
+    f.setDirection(_f.normalize());
+    f.setLength(len, Math.min(0.14, len * 0.45), Math.min(0.1, len * 0.32));
+  });
+}
+
+// ---------- Attraction de la Lune en trois points (différences très exagérées) ----------
+const attractions = [[1, 1.3, "Plus attiré"], [0, 1, "Centre"], [-1, 0.77, "Moins attiré"]].map(([pos, k, nom]) => {
+  const f = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 1, 0xdfe6f0, 0.22, 0.14);
+  f.line.material.depthTest = f.cone.material.depthTest = false;
+  f.renderOrder = 4; S.scene.add(f);
+  const L0 = 1.15;
+  const origine = () => uLune.clone().multiplyScalar(pos * R_TERRE).add(new THREE.Vector3(0, 0.05, 0));
+  S.label(nom, () => origine().addScaledVector(uLune, k * L0 * 0.5).add(new THREE.Vector3(0, 0.45, 0)), { visible: () => S.state.attraction });
+  return { f, k, L0, origine };
+});
+
+// ---------- Glisser la Lune ou la Terre avec la souris ou le doigt ----------
+{
+  const cv = S.renderer.domElement, ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  const plan = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), pt = new THREE.Vector3();
+  let glisse = null;
+  const viser = (e) => {
+    const r = cv.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, S.camera);
+  };
+  cv.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    viser(e);
+    glisse = ray.intersectObject(lune, true).length ? "lune" : ray.intersectObject(terre, true).length ? "terre" : null;
+    if (!glisse) return;
+    S.controls.enabled = false; sim.anim = null;
+    cv.setPointerCapture(e.pointerId);
+  }, { capture: true });
+  cv.addEventListener("pointermove", (e) => {
+    if (!glisse) return;
+    viser(e);
+    if (!ray.ray.intersectPlane(plan, pt)) return;
+    const a = Math.atan2(-pt.z, pt.x) / DEG;
+    if (glisse === "lune") sim.age = mod(a - 180, 360) / 360 * LUNAISON;
+    else sim.heure = mod((a - 180) / 15 + 12, 24);
+  });
+  const lacher = () => { if (glisse) { glisse = null; S.controls.enabled = true; } };
+  cv.addEventListener("pointerup", lacher);
+  cv.addEventListener("pointercancel", lacher);
+}
+
+// ---------- Outils de dessin des encarts ----------
+function preparer(cv, ratio) {
+  const dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth, H = Math.round(W * ratio);
+  if (!W) return null;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  return { ctx, W, H };
+}
+const EAU = "#5fa8d3", ACCENT = css(COULEURS.accent), CORAIL = css(COULEURS.corail);
+const titreCanvas = (ctx, t, x, y) => { ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.font = "bold 9px Arial"; ctx.fillStyle = ACCENT; ctx.fillText(t, x, y); };
+/** Petite Lune dessinée (0 nouvelle, 0,5 pleine…) */
+function iconeLune(ctx, x, y, r, frac) {
+  ctx.save();
+  ctx.fillStyle = "#1a2234"; ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#eef3fa"; ctx.beginPath();
+  if (Math.abs(frac - 0.5) < 0.01) ctx.arc(x, y, r, 0, 2 * Math.PI);
+  else if (Math.abs(frac - 0.25) < 0.01) ctx.arc(x, y, r, -Math.PI / 2, Math.PI / 2);
+  else if (Math.abs(frac - 0.75) < 0.01) ctx.arc(x, y, r, Math.PI / 2, 3 * Math.PI / 2);
+  ctx.fill(); ctx.restore();
+}
+/** Prochain extrême de la marée (pleine mer si haut, basse mer sinon) : délai en heures. */
+function prochain(haut) {
+  const pas = 1 / 720; // 2 min
+  let prec = hBrest(0), cour = hBrest(pas);
+  for (let k = 2; k < 400; k++) {
+    const suiv = hBrest(k * pas);
+    if (haut ? (cour >= prec && cour > suiv) : (cour <= prec && cour < suiv)) return (k - 1) * pas * 24;
+    prec = cour; cour = suiv;
+  }
+  return null;
+}
+
+// ---------- Encart 1 : courbe de marée à Brest ----------
+const ap1 = S.apercus[0], ap2 = S.apercus[1];
+let leg1 = "", leg2 = "";
+const haut1 = { w: 0, h: 0 }; // hauteur réservée à la légende du premier encart
+function dessinerCourbe() {
+  const c = preparer(ap1.canvas, ap1.canvas.clientWidth < 260 ? 1.15 : 0.78);
+  if (!c) return;
+  const { ctx, W, H } = c, g = 8;
+  // -- bande du haut : la lunaison entière
+  const y0 = 16, h0 = H * 0.36, m0 = y0 + h0 / 2, k0 = (h0 / 2) / 3.1;
+  titreCanvas(ctx, "SUR UNE LUNAISON", g, 11);
+  const xA = (age) => g + age / LUNAISON * (W - 2 * g);
+  ctx.fillStyle = "rgba(95,168,211,0.14)"; ctx.beginPath();
+  for (let i = 0; i <= 120; i++) { const a = i / 120 * LUNAISON; ctx.lineTo(xA(a), m0 - amplitude(a) * k0); }
+  for (let i = 120; i >= 0; i--) { const a = i / 120 * LUNAISON; ctx.lineTo(xA(a), m0 + amplitude(a) * k0); }
+  ctx.fill();
+  ctx.strokeStyle = EAU; ctx.lineWidth = 0.8; ctx.beginPath();
+  const n = Math.round(W * 3);
+  for (let i = 0; i <= n; i++) { const a = i / n * LUNAISON; ctx.lineTo(xA(a), m0 - hBrest(a - sim.age) * k0); }
+  ctx.stroke();
+  for (const [a, f] of [[0, 0], [7.38, 0.25], [14.77, 0.5], [22.15, 0.75], [LUNAISON, 0]]) iconeLune(ctx, Math.min(W - g - 5, Math.max(g + 5, xA(a))), y0 + h0 + 9, 4.5, f);
+  ctx.strokeStyle = CORAIL; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xA(sim.age), y0); ctx.lineTo(xA(sim.age), y0 + h0); ctx.stroke();
+  // -- bande du bas : deux jours autour de l'instant affiché
+  const petit = W < 260; // encart réduit (téléphone) : moins de graduations
+  const y1 = y0 + h0 + 36, h1 = H - y1 - 14, m1 = y1 + h1 / 2, k1 = (h1 / 2) / 3.2, x1 = petit ? g : g + 26;
+  titreCanvas(ctx, petit ? "DEUX JOURS" : "DEUX JOURS AUTOUR DE L'HEURE CHOISIE", g, y1 - 8);
+  const xT = (tau) => x1 + (tau + 1) / 2 * (W - x1 - g);
+  ctx.font = "9px Arial"; ctx.fillStyle = "#8b9ab0"; ctx.textBaseline = "middle"; ctx.textAlign = "right";
+  for (const m of [-2, 0, 2]) {
+    const y = m1 - m * k1;
+    ctx.strokeStyle = m ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.25)"; ctx.lineWidth = 1;
+    ctx.setLineDash(m ? [2, 3] : []); ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(W - g, y); ctx.stroke(); ctx.setLineDash([]);
+    if (!petit) ctx.fillText(m ? (m > 0 ? "+" : "−") + Math.abs(m) + " m" : "0", x1 - 4, y);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  const pasH = petit ? 12 : 6, debut = Math.ceil((sim.heure - 24) / pasH) * pasH;
+  for (let h = debut; h <= sim.heure + 24; h += pasH) {
+    const x = xT((h - sim.heure) / 24);
+    ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, y1 + h1); ctx.stroke();
+    ctx.fillText(mod(h, 24) + " h", x, y1 + h1 + 11);
+  }
+  ctx.strokeStyle = EAU; ctx.lineWidth = 1.6; ctx.beginPath();
+  for (let i = 0; i <= 240; i++) { const tau = -1 + i / 120; ctx.lineTo(xT(tau), m1 - hBrest(tau) * k1); }
+  ctx.stroke();
+  const hc = hBrest(0);
+  ctx.fillStyle = CORAIL; ctx.beginPath(); ctx.arc(xT(0), m1 - hc * k1, 4, 0, 2 * Math.PI); ctx.fill();
+  // -- légende
+  const coef = coefficient(), monte = hBrest(0.01) > hc;
+  const tendance = coefficient(sim.age + 0.5) > coef ? "en hausse" : "en baisse";
+  let nom, texte;
+  if (coef >= 80) { nom = "Vives-eaux"; texte = "Le Soleil et la Lune sont presque alignés avec la Terre : leurs effets s'ajoutent, la marée est forte."; }
+  else if (coef <= 55) { nom = "Mortes-eaux"; texte = "Le Soleil et la Lune sont presque à angle droit vu de la Terre : leurs effets se contrarient, la marée est faible."; }
+  else { nom = "Marée moyenne"; texte = `Entre vives-eaux et mortes-eaux : les coefficients sont ${tendance}.`; }
+  const pm = prochain(true), bm = prochain(false);
+  const html = `<h2>${nom}</h2><p class="spec">Coefficient ≈ ${coef} · marnage ≈ ${fmt1(2 * amplitude())} m · ${fmtHeure(sim.heure)}</p><p style="min-height:3em">${texte}</p><p style="min-height:3em">Mer ${monte ? "montante" : "descendante"} : pleine mer dans ${fmtDuree(pm)}, basse mer dans ${fmtDuree(bm)}.</p>`;
+  if (html !== leg1) {
+    // hauteur fixe : chaque paragraphe garde la place de deux lignes, et la légende ne rétrécit jamais
+    // (sur un encart étroit, un texte peut dépasser deux lignes) : l'encart du dessous ne bouge pas
+    ap1.legende.innerHTML = html; leg1 = html;
+    const L = ap1.legende, w = L.clientWidth;
+    if (w !== haut1.w) { haut1.w = w; haut1.h = 0; L.style.minHeight = ""; }
+    haut1.h = Math.max(haut1.h, L.offsetHeight);
+    L.style.minHeight = haut1.h + "px";
+  }
+}
+
+// ---------- Encart 2 : le littoral, la mer monte et descend ----------
+const melange = (a, b, t) => `rgb(${[16, 8, 0].map((s) => Math.round(((a >> s) & 255) * (1 - t) + ((b >> s) & 255) * t)).join(",")})`;
+const ETOILES = (() => { const r = alea(5); return Array.from({ length: 30 }, () => [r(), r(), 0.3 + r() * 0.9]); })();
+function dessinerLittoral(time) {
+  const c = preparer(ap2.canvas, 0.58);
+  if (!c) return;
+  const { ctx, W, H } = c;
+  const yM = H * 0.5, kM = H * 0.075, y = (m) => yM - m * kM; // hauteur (m, / niveau moyen) → pixels
+  const hc = hBrest(0), a = amplitude();
+  // ciel : jour ou nuit selon la hauteur du Soleil
+  const hS = 90 - Math.abs(wrap(angleObs() - 180)), jour = Math.min(1, Math.max(0, (hS + 8) / 20));
+  const gc = ctx.createLinearGradient(0, 0, 0, H);
+  gc.addColorStop(0, melange(0x04070e, 0x2c5b8e, jour)); gc.addColorStop(1, melange(0x0c1528, 0x86b1d8, jour));
+  ctx.fillStyle = gc; ctx.fillRect(0, 0, W, H);
+  if (jour < 1) { ctx.fillStyle = `rgba(220,228,240,${(1 - jour) * 0.8})`; for (const [x, yy, s] of ETOILES) ctx.fillRect(x * W, yy * H * 0.35, s, s); }
+  // plage en pente (l'estran) puis la dune
+  const plage = [[0.2 * W, y(-4.6)], [0.78 * W, y(3.9)], [0.84 * W, y(4.5)], [W, y(4.5)]];
+  ctx.fillStyle = "#a88f62"; ctx.beginPath(); ctx.moveTo(0.2 * W, H);
+  for (const [px, py] of plage) ctx.lineTo(px, py);
+  ctx.lineTo(W, H); ctx.fill();
+  ctx.fillStyle = "#34462f"; ctx.fillRect(0.82 * W, y(4.5) - 2, W, 4);
+  // phare sur la dune
+  const xp = 0.92 * W, bas = y(4.5), haut = bas - H * 0.3, lp = W * 0.028;
+  ctx.fillStyle = "#e9edf2"; ctx.beginPath(); ctx.moveTo(xp - lp, bas); ctx.lineTo(xp - lp * 0.7, haut); ctx.lineTo(xp + lp * 0.7, haut); ctx.lineTo(xp + lp, bas); ctx.fill();
+  ctx.fillStyle = CORAIL; ctx.fillRect(xp - lp * 0.86, bas - (bas - haut) * 0.55, lp * 1.72, (bas - haut) * 0.14);
+  ctx.fillStyle = "#1b1d22"; ctx.fillRect(xp - lp * 0.8, haut - lp * 1.1, lp * 1.6, lp * 1.1);
+  ctx.fillStyle = jour < 0.5 ? "#ffd98a" : "#c4d0e0"; ctx.fillRect(xp - lp * 0.5, haut - lp * 0.9, lp, lp * 0.7);
+  // la mer, translucide pour deviner l'estran recouvert, avec de petites vagues
+  const yE = y(hc);
+  ctx.fillStyle = "rgba(31,79,120,0.88)"; ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 4) ctx.lineTo(x, yE + Math.sin(x * 0.09 + time * 2.2) * 1.4);
+  ctx.lineTo(W, H); ctx.fill();
+  ctx.strokeStyle = "rgba(200,225,245,0.6)"; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = 0; x <= W; x += 4) ctx.lineTo(x, yE + Math.sin(x * 0.09 + time * 2.2) * 1.4);
+  ctx.stroke();
+  // niveaux de pleine mer et de basse mer du jour
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 1;
+  ctx.font = "9px Arial"; ctx.fillStyle = "#eef3fa"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  for (const [m, t] of [[a, "Pleine mer du jour"], [-a, "Basse mer du jour"]]) {
+    ctx.beginPath(); ctx.moveTo(0.11 * W, y(m)); ctx.lineTo(0.8 * W, y(m)); ctx.stroke();
+    if (W >= 260) ctx.fillText(t, 0.36 * W, y(m) - 2);
+  }
+  ctx.setLineDash([]);
+  // quai et échelle de marée graduée (0 = niveau moyen)
+  ctx.fillStyle = "#5d6470"; ctx.fillRect(0, y(4.9), 0.08 * W, H);
+  const xe = 0.08 * W;
+  ctx.fillStyle = "#f6f9fd"; ctx.fillRect(xe, y(4), 4, 8 * kM);
+  ctx.fillStyle = "#f6f9fd"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  for (let m = -4; m <= 4; m++) {
+    ctx.fillRect(xe + 4, y(m) - 0.5, m % 2 ? 3 : 6, 1);
+    if (W >= 260 && !(m % 2)) ctx.fillText((m > 0 ? "+" : m < 0 ? "−" : "") + Math.abs(m), xe + 12, y(m));
+  }
+  // bateau amarré au quai, qui monte et descend avec l'eau
+  const xb = 0.2 * W, yb = yE + Math.sin(xb * 0.09 + time * 2.2) * 1.4, lb = W * 0.07;
+  ctx.strokeStyle = "rgba(220,228,240,0.6)"; ctx.beginPath(); ctx.moveTo(0.08 * W, y(4.9)); ctx.quadraticCurveTo(0.14 * W, Math.max(y(4.9), yb) + 6, xb - lb * 0.8, yb - 3); ctx.stroke();
+  ctx.fillStyle = "#e9edf2"; ctx.beginPath(); ctx.moveTo(xb - lb, yb - 4); ctx.lineTo(xb + lb, yb - 4); ctx.lineTo(xb + lb * 0.7, yb + 3); ctx.lineTo(xb - lb * 0.7, yb + 3); ctx.fill();
+  ctx.strokeStyle = "#c4d0e0"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(xb, yb - 4); ctx.lineTo(xb, yb - H * 0.2); ctx.stroke();
+  // légende
+  const monte = hBrest(0.01) > hc;
+  const html = `<p class="spec">Mer ${monte ? "montante" : "descendante"} · ${signe(hc)} m par rapport au niveau moyen</p><p>Entre la basse mer et la pleine mer, la plage se couvre et se découvre : c'est l'estran. Aux vives-eaux, la mer monte plus haut et descend plus bas qu'aux mortes-eaux.</p>`;
+  if (html !== leg2) { ap2.legende.innerHTML = html; leg2 = html; }
+}
+
+// ---------- Animation ----------
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const affiche = {};
+function recaler(id, v) {
+  const r = Math.round(v * 100);
+  if (affiche[id] === r) return;
+  affiche[id] = r; pilote = true; S.regler(id, v); pilote = false;
+}
+let tPrec = 0;
+const _p = new THREE.Vector3();
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (sim.anim) {
+    sim.anim.t = S.reduced ? 1 : Math.min(1, sim.anim.t + dt / 1.4);
+    sim.age = sim.anim.age + sim.anim.dAge * ease(sim.anim.t);
+    if (sim.anim.t >= 1) sim.anim = null;
+  } else if (S.state.temps && S.controls.enabled) {
+    sim.heure += dtt * VITESSE;
+    sim.age += dtt * VITESSE / 24;
+  }
+  sim.age = mod(sim.age, LUNAISON); sim.heure = mod(sim.heure, 24);
+  recaler("age", sim.age); recaler("heure", sim.heure);
+
+  // positions
+  terre.rotation.y = angleObs() * DEG;
+  dir(angleLune(), 1, uLune);
+  dir(angleLune(), R_ORBITE, lune.position);
+  lune.rotation.y = (angleLune() + 180) * DEG; // même face toujours tournée vers la Terre
+  deformerEau();
+
+  // flotteur de Brest : à la surface de l'eau, le long du mât
+  _p.copy(nBrest).applyQuaternion(terre.quaternion);
+  flotteur.position.copy(nBrest).multiplyScalar(Math.min(HAUT_MAT - 0.05, Math.max(R_TERRE + 0.03, rEau(_p))));
+
+  // effets séparés, forces, attraction
+  for (const l of [cLune, cSoleil, cSomme]) l.visible = S.state.separes;
+  if (S.state.separes) majContours();
+  for (const f of fleches) f.visible = S.state.forces;
+  if (S.state.forces) majFleches();
+  for (const a of attractions) {
+    a.f.visible = S.state.attraction;
+    if (!S.state.attraction) continue;
+    a.f.position.copy(a.origine());
+    a.f.setDirection(uLune);
+    a.f.setLength(a.k * a.L0, 0.22, 0.14);
+  }
+
+  // raccourci de la phase proche
+  for (const p of PHASES) {
+    const d = Math.abs(mod(p.age - sim.age + LUNAISON / 2, LUNAISON) - LUNAISON / 2);
+    const el = document.getElementById("r-" + p.id), on = String(d < 0.75);
+    if (el.getAttribute("aria-pressed") !== on) el.setAttribute("aria-pressed", on);
+  }
+  dessinerCourbe();
+  dessinerLittoral(time);
+});
+
+S.start();
+</script>
+</body>
+</html>
