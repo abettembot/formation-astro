@@ -559,7 +559,10 @@ const MOBILE = 760;
  *  - vues : [{ id, label, pos:[x,y,z], cible:[x,y,z] }] — la première est la vue de départ
  *           pos et cible peuvent être des fonctions (renvoyant un tableau ou un Vector3).
  *           Options : fov (champ en degrés, 38 par défaut), exacte:true (pas de recul sur mobile),
- *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue)
+ *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue),
+ *           immersif:true (vue « par les yeux » : la caméra reste au point pos et tourne sur elle-même ;
+ *           glisser oriente le regard, la molette ou le pincement élargit ou resserre le champ,
+ *           entre fovMin et fovMax, 30° et 120° par défaut ; implique exacte)
  *  - eclate : true pour afficher le curseur « Vue éclatée »
  *  - animation : false pour retirer le bouton « Animation » (schéma sans rien d'animé)
  *  - commandes : [{ type:"bascule", id, label, actif, onChange(v) }
@@ -884,9 +887,50 @@ export function createSchema(cfg) {
   const vec = (x) => { const r = typeof x === "function" ? x() : x; return r.isVector3 ? r.clone() : new THREE.Vector3(...r); };
   function cadrage(v) {
     const to = { pos: vec(v.pos), target: vec(v.cible), fov: v.fov ?? FOV };
-    if (innerWidth < MOBILE && !v.exacte) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
+    // vue immersive : la cible est posée juste devant l'œil, la caméra tourne donc sur elle-même
+    if (v.immersif) to.target.sub(to.pos).setLength(0.01).add(to.pos);
+    else if (innerWidth < MOBILE && !v.exacte) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
     return to;
   }
+  // ---------- Vue immersive (par les yeux) ----------
+  // réglages des commandes du schéma, mis de côté pendant la vue immersive
+  let immersif = null, orbite = null;
+  function entrerImmersif(v) {
+    if (!orbite) orbite = { minDistance: controls.minDistance, rotateSpeed: controls.rotateSpeed, zoom: controls.enableZoom, pan: controls.enablePan };
+    immersif = v;
+    controls.minDistance = 0;
+    controls.enableZoom = controls.enablePan = false;
+    controls.rotateSpeed = -0.35; // négatif : le ciel suit la souris ou le doigt
+  }
+  /** distance:false garde la distance libre (fin du trajet de la caméra qui sort de la vue immersive). */
+  function quitterImmersif(distance = true) {
+    if (immersif) { controls.enableZoom = orbite.zoom; controls.enablePan = orbite.pan; controls.rotateSpeed = orbite.rotateSpeed; immersif = null; }
+    if (distance && orbite) { controls.minDistance = orbite.minDistance; orbite = null; }
+  }
+  function changerChamp(k) {
+    if (!immersif || camAnim) return;
+    const fov = Math.min(immersif.fovMax ?? 120, Math.max(immersif.fovMin ?? 30, camera.fov * k));
+    if (fov !== camera.fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  }
+  renderer.domElement.addEventListener("wheel", (e) => {
+    if (!immersif) return;
+    e.preventDefault();
+    changerChamp(Math.exp(e.deltaY * 0.001));
+  }, { passive: false });
+  const doigts = new Map();
+  let ecartPrec = 0;
+  const ecart = () => { const [a, b] = [...doigts.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+  renderer.domElement.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch") return;
+    doigts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (doigts.size === 2) ecartPrec = ecart();
+  });
+  renderer.domElement.addEventListener("pointermove", (e) => {
+    if (!doigts.has(e.pointerId)) return;
+    doigts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (doigts.size === 2) { const d = ecart(); if (ecartPrec > 0 && d > 0) changerChamp(ecartPrec / d); ecartPrec = d; }
+  });
+  for (const t of ["pointerup", "pointercancel"]) renderer.domElement.addEventListener(t, (e) => { doigts.delete(e.pointerId); ecartPrec = 0; });
   function applyCam(c) {
     camera.position.copy(c.pos); controls.target.copy(c.target);
     if (camera.fov !== c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
@@ -894,6 +938,9 @@ export function createSchema(cfg) {
   function goView(id, instant = false) {
     const v = cfg.vues.find((x) => x.id === id) || cfg.vues[0];
     vueSuivie = v.suivre ? v : null;
+    // en entrant dans une vue immersive, on libère tout de suite la distance ; en en sortant, à la fin du trajet
+    if (v.immersif) entrerImmersif(v);
+    else quitterImmersif(instant || reduced);
     const to = cadrage(v);
     if (instant || reduced) { applyCam(to); return; }
     camAnim = { v, from: { pos: camera.position.clone(), target: controls.target.clone(), fov: camera.fov }, to, t: 0 };
@@ -964,7 +1011,7 @@ export function createSchema(cfg) {
         controls.target.lerpVectors(camAnim.from.target, camAnim.to.target, k);
         const fov = camAnim.from.fov + (camAnim.to.fov - camAnim.from.fov) * k;
         if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
-        if (camAnim.t >= 1) camAnim = null;
+        if (camAnim.t >= 1) { if (!camAnim.v.immersif) quitterImmersif(); camAnim = null; }
       } else if (vueSuivie) applyCam(cadrage(vueSuivie));
       ciel.material.size = TAILLE_ETOILE * camera.fov / FOV; // taille apparente constante quand on zoome
       controls.update();

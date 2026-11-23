@@ -130,10 +130,12 @@ const S = createSchema({
   ],
   vues: [
     { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [27, 30, 54] : [14, 15, 28], cible: [0, 1.5, 0] },
-    { id: "nord", label: "Face au nord", fov: 80, exacte: true, pos: OEIL, cible: () => viseeVers(0, Math.min(45, Math.max(25, Math.abs(sim.lat) - 10))) },
-    { id: "sud", label: "Face au sud", fov: 80, exacte: true, pos: OEIL, cible: () => viseeVers(180, 30) },
-    { id: "est", label: "Face à l'est", fov: 80, exacte: true, pos: OEIL, cible: () => viseeVers(90, 30) },
+    // par les yeux de l'observateur : on tourne la tête sans quitter sa place, champ large comme à l'œil nu
+    { id: "nord", label: "Face au nord", fov: 95, immersif: true, pos: OEIL, cible: () => viseeVers(0, Math.min(45, Math.max(25, Math.abs(sim.lat) - 10))) },
+    { id: "sud", label: "Face au sud", fov: 95, immersif: true, pos: OEIL, cible: () => viseeVers(180, 30) },
+    { id: "est", label: "Face à l'est", fov: 95, immersif: true, pos: OEIL, cible: () => viseeVers(90, 30) },
   ],
+  aide: "3/4 : glisser pour tourner autour, molette ou pincer pour zoomer · Face au… : vous êtes l'observateur, glisser pour regarder autour, molette ou pincer pour élargir le champ · Cliquer un élément : l'expliquer",
   intro: () => `
     <div class="eyebrow">Ce qu'on voit dans le ciel</div>
     <p>Au fil de la nuit, toutes les étoiles tournent ensemble autour d'un point fixe du ciel, tout près de l'étoile Polaire. C'est la Terre qui tourne sur elle-même, en 23 h 56 min. Vues d'un lieu donné, les étoiles se rangent en trois familles :</p>
@@ -244,7 +246,7 @@ S.label("Zénith", () => new THREE.Vector3(0, R + 0.3, 0), { visible: () => S.st
 // ---------- Observateur ----------
 const obs = S.part("observateur", "Observateur", {
   etiquette: false,
-  texte: "Il est au centre de la sphère céleste. Tout se passe comme si les étoiles étaient fixées sur une immense sphère qui tourne autour de lui en un peu moins de 24 heures. En réalité, elles sont à des distances très différentes, mais si lointaines que leurs positions entre elles ne changent pas à l'œil, même en une vie.",
+  texte: "Il est au centre de la sphère céleste. Tout se passe comme si les étoiles étaient fixées sur une immense sphère qui tourne autour de lui en un peu moins de 24 heures. En réalité, elles sont à des distances très différentes, mais si lointaines que leurs positions entre elles ne changent pas à l'œil, même en une vie. Les vues « Face au… » vous mettent à sa place.",
   chiffres: "Étoile la plus proche visible à l'œil nu : Alpha du Centaure, à 4,4 années-lumière",
 });
 {
