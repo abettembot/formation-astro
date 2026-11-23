@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chaîne de traitement</title>
+<meta name="description" content="Schéma 3D interactif du prétraitement en astrophotographie : offsets, darks, flats, calibration, alignement et empilement, avec une caméra refroidie ou un APN.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, faisceau, halo, alea, legende } from "../commun/schema.js";
+
+// ---------- Échelle ----------
+// Schéma de principe : chaque image est une plaque de 2,4 × 1,6 unités (format 3:2 d'un capteur APS-C), sans échelle réelle.
+// Les images sont simulées sur 180 × 120 pixels, en électrons (e⁻) par pose de 180 s.
+const W = 180, H = 120, NPX = W * H;
+const PW = 2.4, PD = 1.6, EP = 0.05;       // plaque : largeur, profondeur, épaisseur
+const POSE = 180;                      // durée d'une pose (s)
+const N_OFF = 50, N_DARK = 30, N_FLAT = 30;
+const CIEL = 400;                      // fond de ciel par pose (e⁻)
+
+// Caméras. Les niveaux sont en électrons ; « g » convertit les niveaux du fichier (ADU) en électrons.
+const CAMERAS = {
+  froide: {
+    nom: "Caméra refroidie IMX571", bouton: "Refroidie −10 °C",
+    g: 1, biais: 500, motif: 1.5, lecture: 1.5,
+    thermique: 0.4,       // signal thermique d'une pose de 180 s à −10 °C (e⁻)
+    rapportDark: 1,       // darks à la même température : ils retirent tout le signal thermique
+    fracChauds: 0.0012, maxChaud: 1500,
+    flat: 30000, sat: 65535,
+  },
+  apn: {
+    nom: "APN non refroidi", bouton: "APN non refroidi",
+    g: 0.4, biais: 2048, motif: 4, lecture: 4,
+    thermique: 27,        // ≈ 0,15 e⁻/s à 24 °C
+    rapportDark: 0.5,     // darks pris 6 °C plus froids : signal thermique divisé par 2
+    fracChauds: 0.006, maxChaud: 2500,
+    flat: 8000, sat: 16383,
+  },
+};
+const st = { cam: "froide" };
+const v = (x, d = 1) => x.toFixed(d).replace(".", ",");
+const ent = (x) => Math.round(x).toLocaleString("fr-FR");
+
+// ---------- Générateurs ----------
+function gaussien(r) {
+  let reste = null;
+  return () => {
+    if (reste !== null) { const s = reste; reste = null; return s; }
+    const u = Math.max(r(), 1e-12), w = r(), m = Math.sqrt(-2 * Math.log(u));
+    reste = m * Math.sin(2 * Math.PI * w);
+    return m * Math.cos(2 * Math.PI * w);
+  };
+}
+function champGauss(graine, n) { const g = gaussien(alea(graine)), a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = g(); return a; }
+
+// texture douce (bruit de valeur sur plusieurs octaves) pour les volutes de la nébuleuse
+function fbm(graine) {
+  const r = alea(graine), n = 12, grilles = [];
+  for (let o = 0; o < 4; o++) { const t = new Float32Array((n + 1) * (n + 1)); for (let i = 0; i < t.length; i++) t[i] = r(); grilles.push(t); }
+  const lisse = (t) => t * t * (3 - 2 * t);
+  return (u, w) => {
+    let s = 0, a = 0.5, f = 1, tot = 0;
+    for (const t of grilles) {
+      const x = (u * f * 4) % n, y = (w * f * 4) % n, i = Math.floor(x), j = Math.floor(y), fx = lisse(x - i), fy = lisse(y - j);
+      const k = (a2, b2) => t[(b2 % (n + 1)) * (n + 1) + (a2 % (n + 1))];
+      s += a * ((k(i, j) * (1 - fx) + k(i + 1, j) * fx) * (1 - fy) + (k(i, j + 1) * (1 - fx) + k(i + 1, j + 1) * fx) * fy);
+      tot += a; a *= 0.5; f *= 2;
+    }
+    return s / tot;
+  };
+}
+
+// ---------- Le ciel photographié : nébuleuse inspirée de M42 et étoiles (e⁻ par pose, sans le fond de ciel) ----------
+const OBJ = new Float32Array(NPX * 3);
+{
+  const rose = [1, 0.42, 0.6], coeur = [0.92, 1, 0.9], bleu = [0.55, 0.72, 1];
+  const nuages = [
+    { cx: 0.70, cy: 0.58, sx: 0.05, sy: 0.05, a: 0, amp: 3800, col: coeur, tex: false },
+    { cx: 0.68, cy: 0.56, sx: 0.16, sy: 0.11, a: 0.3, amp: 1100, col: rose },
+    { cx: 0.56, cy: 0.67, sx: 0.28, sy: 0.08, a: -0.6, amp: 520, col: rose },
+    { cx: 0.86, cy: 0.67, sx: 0.22, sy: 0.07, a: 0.7, amp: 430, col: rose },
+    { cx: 0.72, cy: 0.36, sx: 0.18, sy: 0.07, a: 0.2, amp: 300, col: rose },
+    { cx: 0.83, cy: 0.21, sx: 0.045, sy: 0.04, a: 0, amp: 620, col: rose },
+    { cx: 0.50, cy: 0.45, sx: 0.26, sy: 0.2, a: 0, amp: 130, col: bleu },
+  ];
+  const tex = fbm(7);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const u = x / H, w = y / H, i = y * W + x;
+    const t = 0.35 + 1.1 * tex(u, w);
+    const baie = 1 - 0.65 * Math.exp(-((u - 0.78) ** 2 + (w - 0.47) ** 2) / (2 * 0.045 ** 2)); // baie sombre
+    for (const n of nuages) {
+      const c = Math.cos(n.a), s = Math.sin(n.a), du = u - n.cx, dw = w - n.cy;
+      const p = (du * c + dw * s) / n.sx, q = (-du * s + dw * c) / n.sy;
+      const f = 0.45 * n.amp * Math.exp(-(p * p + q * q) / 2) * (n.tex === false ? 1 : t) * baie;
+      for (let k = 0; k < 3; k++) OBJ[i * 3 + k] += f * n.col[k];
+    }
+  }
+  const r = alea(42), teintes = [[1, 0.86, 0.72], [1, 0.96, 0.9], [0.84, 0.9, 1], [1, 0.74, 0.55], [0.95, 0.95, 1]];
+  const etoile = (x0, y0, pic, col) => {
+    for (let y = Math.max(0, Math.floor(y0) - 3); y <= Math.min(H - 1, Math.floor(y0) + 3); y++)
+      for (let x = Math.max(0, Math.floor(x0) - 3); x <= Math.min(W - 1, Math.floor(x0) + 3); x++) {
+        const f = pic * Math.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * 0.8 ** 2));
+        for (let k = 0; k < 3; k++) OBJ[(y * W + x) * 3 + k] += f * col[k];
+      }
+  };
+  for (let k = 0; k < 170; k++) etoile(r() * W, r() * H, Math.min(90000, 140 * Math.pow(r(), -1.25)), teintes[Math.floor(r() * teintes.length)]);
+  for (const [dx, dy] of [[0, 0], [2.2, 1.4], [-1.6, 2.4], [1.2, -2.2]]) etoile(0.70 * H + dx, 0.58 * H + dy, 30000, [0.85, 0.92, 1]); // le Trapèze
+}
+
+// ---------- Défauts du train optique : vignettage × poussières (ce que mesure le flat) ----------
+const VD = new Float32Array(NPX);
+const POUSSIERES = [[38, 30, 9], [120, 84, 11], [150, 26, 7.5]];
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+  const rn = Math.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2)) / Math.SQRT2;
+  let f = 1 - 0.35 * rn * rn;
+  for (const [cx, cy, R] of POUSSIERES) {
+    const d = Math.hypot(x - cx, y - cy);
+    f *= 1 - 0.15 * Math.exp(-(((d - R) / 2.2) ** 2)) - 0.05 / (1 + Math.exp((d - R) / 1.2));
+  }
+  VD[y * W + x] = f;
+}
+
+// ---------- Motif de colonnes de l'électronique, bruits, intrus ----------
+const MOTIF = champGauss(3, W);
+const G_BRUTE = champGauss(11, NPX * 3), G_PILE = champGauss(13, NPX * 3), G_CAL = champGauss(17, NPX);
+const INTRUS = new Float32Array(NPX); // traînée de satellite et rayons cosmiques, sur une seule pose
+{
+  const x1 = -5, y1 = 18, x2 = W + 5, y2 = 98, L = Math.hypot(x2 - x1, y2 - y1);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const d = Math.abs((x2 - x1) * (y1 - y) - (x1 - x) * (y2 - y1)) / L;
+    INTRUS[y * W + x] += 2600 * Math.exp(-d * d / (2 * 0.55 ** 2));
+  }
+  const r = alea(99);
+  for (let k = 0; k < 8; k++) {
+    const x = Math.floor(r() * (W - 1)), y = Math.floor(r() * (H - 1)), a = 1500 + 5000 * r();
+    INTRUS[y * W + x] += a;
+    if (r() < 0.5) INTRUS[y * W + x + 1] += a * 0.6;
+  }
+}
+// pixels chauds : position, intensité (e⁻ par pose de 180 s), teinte après dématriçage, décalages du dithering
+function pixelsChauds(cam, graine) {
+  const r = alea(graine), n = Math.round(NPX * cam.fracChauds), liste = [];
+  const teintes = [[1, 0.35, 0.35], [0.4, 1, 0.4], [0.4, 0.45, 1], [1, 1, 1]];
+  for (let k = 0; k < n; k++) {
+    const dec = [[0, 0]];
+    for (let q = 1; q < 8; q++) dec.push([Math.round((r() - 0.5) * 12), Math.round((r() - 0.5) * 12)]);
+    liste.push({ i: Math.floor(r() * NPX), a: cam.maxChaud * Math.pow(r(), 3) + 60, col: teintes[Math.floor(r() * 4)], dec });
+  }
+  return liste;
+}
+for (const [id, cam] of Object.entries(CAMERAS)) cam.chauds = pixelsChauds(cam, id === "froide" ? 5 : 8);
+
+// ---------- Calcul des images ----------
+const IMG = {
+  brute: new Float32Array(NPX * 3), calibree: new Float32Array(NPX * 3), empilee: new Float32Array(NPX * 3),
+  offset: new Float32Array(NPX), dark: new Float32Array(NPX), flat: new Float32Array(NPX),
+  offsetM: new Float32Array(NPX), darkM: new Float32Array(NPX), flatM: new Float32Array(NPX),
+};
+const sigma1 = (cam) => Math.sqrt(CIEL + cam.thermique + cam.lecture ** 2); // bruit du fond sur une pose (e⁻)
+
+/** Images de calibration : une pose de chaque type, et l'image maître (médiane : bruit ≈ divisé par √n). */
+function calculerCalibration(cam) {
+  const B = cam.biais * cam.g, F = cam.flat * cam.g, chaud = new Float32Array(NPX);
+  for (const h of cam.chauds) chaud[h.i] += h.a;
+  for (let i = 0; i < NPX; i++) {
+    const b = B + cam.motif * MOTIF[i % W], g = G_CAL[i], th = cam.thermique * cam.rapportDark + chaud[i] * cam.rapportDark;
+    const sOff = cam.lecture, sDark = Math.sqrt(th + cam.lecture ** 2), fl = F * VD[i], sFlat = Math.sqrt(fl + cam.lecture ** 2);
+    IMG.offset[i] = b + g * sOff;               IMG.offsetM[i] = b + g * sOff / Math.sqrt(N_OFF);
+    IMG.dark[i] = b + th + g * sDark;           IMG.darkM[i] = b + th + g * sDark / Math.sqrt(N_DARK);
+    IMG.flat[i] = b + fl + g * sFlat;           IMG.flatM[i] = fl + g * sFlat / Math.sqrt(N_FLAT); // flat maître : offset retiré
+  }
+}
+
+/** Brute, brute calibrée et pile empilée selon les étapes actives. */
+function calculerImages() {
+  const cam = CAMERAS[st.cam], s = S.state, N = s.poses;
+  const B = cam.biais * cam.g, F = cam.flat * cam.g, sat = cam.sat * cam.g;
+  const rd = cam.rapportDark, rejet = s.rejet && N >= 10, dith = s.dithering && N > 1;
+  // flat normalisé (moyenne 1) : divisé seulement si « Flats » est actif
+  const fn = new Float32Array(NPX);
+  if (s.flats) {
+    let somme = 0;
+    for (let i = 0; i < NPX; i++) { fn[i] = F * VD[i] + (s.offsets ? 0 : B + cam.motif * MOTIF[i % W]); somme += fn[i]; }
+    const moy = somme / NPX;
+    for (let i = 0; i < NPX; i++) fn[i] /= moy;
+  } else fn.fill(1);
+  const chaud = new Float32Array(NPX);
+  for (const h of cam.chauds) chaud[h.i] += h.a;
+  const lec2 = cam.lecture ** 2;
+  for (let i = 0; i < NPX; i++) {
+    const bp = B + cam.motif * MOTIF[i % W];
+    // ce que l'on retire : le dark maître (qui contient l'offset), ou à défaut l'offset maître
+    const retraitLisse = s.darks ? bp + cam.thermique * rd : s.offsets ? bp : 0;
+    const retraitChaud = s.darks ? chaud[i] * rd : 0;
+    // ce qui reste, fixe sur le capteur : il ne s'efface qu'avec le dithering
+    const resteLisse = (dith ? B : bp) + cam.thermique - (s.darks ? (dith ? B : bp) + cam.thermique * rd : s.offsets ? (dith ? B : bp) : 0);
+    for (let c = 0; c < 3; c++) {
+      const k = i * 3 + c;
+      const lum = Math.min((OBJ[k] + CIEL) * VD[i], sat - bp - cam.thermique);
+      const bruit = Math.sqrt(lum + cam.thermique + lec2);
+      const brute = Math.min(sat, bp + lum + cam.thermique + chaud[i] + G_BRUTE[k] * bruit + INTRUS[i]);
+      IMG.brute[k] = brute;
+      IMG.calibree[k] = (brute - retraitLisse - retraitChaud) / fn[i];
+      IMG.empilee[k] = (lum + resteLisse + G_PILE[k] * bruit / Math.sqrt(N)) / fn[i]
+        + (N === 1 ? INTRUS[i] / fn[i] : rejet ? 0 : INTRUS[i] / N / fn[i]);
+    }
+  }
+  // pixels chauds restants : au même endroit sans dithering ; dispersés (÷ N) avec ; rejetés si en plus le rejet est actif
+  for (const h of cam.chauds) {
+    const reste = (h.a - (s.darks ? h.a * rd : 0)) / fn[h.i];
+    if (reste <= 0) continue;
+    const copies = !dith ? [[0, 0]] : rejet ? [] : h.dec.slice(0, Math.min(N, 8));
+    const a = !dith ? reste : reste / N;
+    for (const [dx, dy] of copies) {
+      const x = (h.i % W) + dx, y = Math.floor(h.i / W) + dy;
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      for (let c = 0; c < 3; c++) IMG.empilee[(y * W + x) * 3 + c] += a * h.col[c];
+    }
+  }
+}
+
+// ---------- Affichage : même étirement pour les trois images (fond calé sur sa médiane, comme l'étirement automatique de Siril) ----------
+function mediane(arr, pas, n = 1) {
+  const t = [];
+  for (let i = 0; i < arr.length / n; i += pas) { let s = 0; for (let c = 0; c < n; c++) s += arr[i * n + c]; t.push(s / n); }
+  t.sort((a, b) => a - b);
+  return (p) => t[Math.min(t.length - 1, Math.floor(p * t.length))];
+}
+function versCanvas(cv, remplir) {
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(W, H);
+  for (let i = 0; i < NPX; i++) { const [r, g, b] = remplir(i); img.data[i * 4] = r * 255; img.data[i * 4 + 1] = g * 255; img.data[i * 4 + 2] = b * 255; img.data[i * 4 + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+}
+function dessinerCouleur(cv, arr) {
+  const s1 = sigma1(CAMERAS[st.cam]), noir = mediane(arr, 5, 3)(0.5) - 2.8 * s1, R = 16000, t = 0.1;
+  const x0 = 2.8 * s1 / R, m = x0 * (1 - t) / (x0 - 2 * t * x0 + t);
+  const mtf = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : ((m - 1) * x) / ((2 * m - 1) * x - m));
+  versCanvas(cv, (i) => [0, 1, 2].map((c) => mtf((arr[i * 3 + c] - noir) / R)));
+}
+function dessinerGris(cv, arr) {
+  const q = mediane(arr, 3), lo = q(0.005), hi = Math.max(q(0.995), lo + 1);
+  versCanvas(cv, (i) => { const g = Math.min(1, Math.max(0, (arr[i] - lo) / (hi - lo))); return [g, g, g]; });
+}
+const CANVAS = {}, TEX = {};
+for (const k of Object.keys(IMG)) {
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  CANVAS[k] = cv;
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace; t.magFilter = THREE.NearestFilter; t.anisotropy = 4;
+  TEX[k] = t;
+}
+function rafraichirTextures(cles) {
+  for (const k of cles) {
+    if (IMG[k].length === NPX * 3) dessinerCouleur(CANVAS[k], IMG[k]); else dessinerGris(CANVAS[k], IMG[k]);
+    TEX[k].needsUpdate = true;
+  }
+}
+
+// ---------- Schéma ----------
+// Sur ordinateur, l'encart occupe la droite de l'écran : les vues d'ensemble visent un point décalé vers la droite
+// pour que la chaîne tienne entre le panneau et l'encart. Sur téléphone, elles visent le milieu de la chaîne, de plus loin.
+const decale = (ecart, cibleOrdi) => {
+  const tel = innerWidth < 760, c = tel ? [0.6, 0, cibleOrdi[2]] : cibleOrdi;
+  return c.map((x, i) => x + ecart[i] * (tel ? 1.7 : 1)); // écran étroit : on recule pour voir toute la chaîne
+};
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+const S = createSchema({
+  surtitre: "Support de formation · Astrophotographie",
+  titre: "Chaîne de traitement",
+  sousTitre: "Exemple : 60 poses de 180 s · caméra refroidie à −10 °C",
+  distanceMax: 70,
+  commandes: [
+    { type: "raccourcis", id: "cams", label: "Caméra", boutons: Object.entries(CAMERAS).map(([id, c]) => ({ id: "ca-" + id, label: c.bouton, onClick: () => choisirCamera(id) })) },
+    { type: "curseur", id: "poses", label: "Nombre de poses", min: 1, max: 120, pas: 1, valeur: 60, format: (n) => `${n} × 180 s`, onInput: () => maj() },
+    { type: "bascule", id: "offsets", label: "Offsets", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "darks", label: "Darks", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "flats", label: "Flats", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "dithering", label: "Dithering", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "rejet", label: "Rejet des intrus", actif: true, onChange: () => maj() },
+    { type: "bascule", id: "trajet", label: "Trajet des images", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => decale([7.8, 19.6, 26], [4.4, 0, -0.4]), cible: () => decale([0, 0, 0], [4.4, 0, -0.4]) },
+    { id: "dessus", label: "Dessus", pos: () => decale([0, 29, 1.4], [4.2, 0, -0.8]), cible: () => decale([0, 0, 0], [4.2, 0, -0.8]) },
+    { id: "calibration", label: "Calibration", pos: [-0.2, 10.5, 13.6], cible: [-1.6, 0, -0.8], fov: 34 },
+    { id: "brute", label: "Une pose brute", pos: [-4.2, 6.2, 6.8], cible: [-5.2, 0.5, 1.9], fov: 32 },
+  ],
+  apercu: { titre: "Brute, calibrée, empilée" },
+  intro: () => `
+    <div class="eyebrow">Du fichier brut à l'image propre</div>
+    ${legende([
+      { couleur: SEG[0], texte: "Chaque pose brute contient le signal du ciel, mais aussi des défauts : niveau de base de l'électronique, pixels chauds, vignettage, poussières, bruit." },
+      { couleur: SEG[1], texte: "Les offsets, darks et flats enregistrent ces défauts seuls. On en tire des images maîtres, presque sans bruit." },
+      { couleur: SEG[2], texte: "Calibration : on retire le dark maître de chaque brute, puis on la divise par le flat maître." },
+      { couleur: SEG[3], texte: "Les poses calibrées sont alignées sur les étoiles, puis empilées : le bruit baisse, les intrus sont rejetés." },
+    ])}
+    <p class="spec">Calibrée = (brute − dark maître) ÷ flat maître · rapport signal sur bruit × √N après N poses</p>
+    <p>Éteignez une étape pour voir le défaut qu'elle corrige revenir sur l'image empilée. Changez de caméra pour comparer.</p>`,
+});
+
+// ---------- Plaques d'images ----------
+const matPlan = (tex) => new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, transparent: true });
+/** Une plaque : tranche noire (cliquable et surlignée) et image posée dessus. */
+function plaque(part, tex, x, y, z, l = PW, p = PD) {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.BoxGeometry(l, EP, p), M.noir()));
+  const plan = mesh(new THREE.PlaneGeometry(l - 0.08, p - 0.08).rotateX(-Math.PI / 2), matPlan(tex), 0, EP / 2 + 0.003, 0);
+  g.add(plan);
+  g.position.set(x, y, z);
+  S.add(part, g);
+  return g;
+}
+function pile(part, tex, x, z, n) {
+  const r = alea(Math.round(x * 13 + z * 7 + 500));
+  for (let k = 0; k < n; k++) {
+    const g = plaque(part, tex, x + (r() - 0.5) * 0.06, EP / 2 + k * 0.075, z + (r() - 0.5) * 0.06);
+    g.rotation.y = (r() - 0.5) * 0.04;
+  }
+  return EP + (n - 1) * 0.075;
+}
+
+const XC = { off: -6.6, dark: -3.4, flat: -0.2 };
+const ZA = -4.4, ZM = -1.3, ZB = 2.2;               // rangées : calibration, maîtres, brutes
+const NOEUD = new THREE.Vector3(-3.4, 0.35, ZB);       // calibration
+const XCAL = 0, XALI = 3.4, XFIN = 7.3;
+const nbPlaques = (n) => Math.max(1, Math.min(24, Math.round(n / 4)));
+
+const pOff = S.part("offsets", "Offsets", { ancre: [XC.off - PW / 2 + 0.3, 0.9, ZA - PD / 2] });
+const pDark = S.part("darks", "Darks", { ancre: [XC.dark - PW / 2 + 0.3, 0.6, ZA - PD / 2] });
+const pFlat = S.part("flats", "Flats", { ancre: [XC.flat - PW / 2 + 0.3, 0.6, ZA - PD / 2] });
+const hOff = pile(pOff, TEX.offset, XC.off, ZA, nbPlaques(N_OFF) - 2);
+const hDark = pile(pDark, TEX.dark, XC.dark, ZA, nbPlaques(N_DARK) - 1);
+const hFlat = pile(pFlat, TEX.flat, XC.flat, ZA, nbPlaques(N_FLAT) - 1);
+pOff.ancre.y = hOff + 0.15; pDark.ancre.y = hDark + 0.15; pFlat.ancre.y = hFlat + 0.15;
+
+const pOffM = S.part("offsetM", "Offset maître", { ancre: [XC.off - PW / 2 + 0.3, 0.45, ZM - PD / 2] });
+const pDarkM = S.part("darkM", "Dark maître", { ancre: [XC.dark - PW / 2 + 0.3, 0.45, ZM - PD / 2] });
+const pFlatM = S.part("flatM", "Flat maître", { ancre: [XC.flat - PW / 2 + 0.3, 0.45, ZM - PD / 2] });
+for (const [p, k, x] of [[pOffM, "offsetM", XC.off], [pDarkM, "darkM", XC.dark], [pFlatM, "flatM", XC.flat]]) {
+  plaque(p, TEX[k], x, 0.3, ZM);
+  S.add(p, mesh(new THREE.CylinderGeometry(0.5, 0.65, 0.28, 32), M.alu(), x, 0.14, ZM)); // socle : une seule image, plus soignée
+}
+
+const pBrutes = S.part("brutes", "Poses brutes", { ancre: [XC.off - PW / 2 + 0.3, 1, ZB - PD / 2] });
+const pCal = S.part("calibration", "Calibration", { ancre: [NOEUD.x, NOEUD.y + 0.55, NOEUD.z - 0.75] });
+S.add(pCal, mesh(new THREE.TorusGeometry(0.75, 0.08, 16, 64).rotateX(Math.PI / 2), M.alu(), NOEUD.x, NOEUD.y, NOEUD.z));
+const haloNoeud = halo(COULEURS.orange, 1.6); haloNoeud.position.copy(NOEUD).add(new THREE.Vector3(0, 0.1, 0)); S.scene.add(haloNoeud);
+const pCalib = S.part("calibrees", "Poses calibrées", { ancre: [XCAL - PW / 2 + 0.3, 1, ZB - PD / 2] });
+const pAli = S.part("alignement", "Alignement", { ancre: [XALI - PW / 2 + 0.2, 1.9, ZB - PD / 2] });
+const pFin = S.part("empilement", "Empilement", { ancre: [XFIN, 2.9, ZB - 1.1] });
+
+// alignement : 5 poses empilées en l'air, décalées puis superposées
+const ALI = [];
+{
+  const r = alea(321);
+  for (let k = 0; k < 5; k++) {
+    const g = plaque(pAli, TEX.calibree, XALI, 0.3 + k * 0.36, ZB);
+    g.children[1].material.opacity = k === 4 ? 1 : 0.55;
+    ALI.push({ g, dx: (r() - 0.5) * 2, dz: (r() - 0.5) * 2, rot: (r() - 0.5) * 2 });
+  }
+  for (let k = 0; k < 4; k++) S.add(pAli, mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.8, 8), M.alu(), XALI + (k % 2 ? 1 : -1) * (PW / 2 + 0.12), 1.0, ZB + (k < 2 ? 1 : -1) * (PD / 2 + 0.1)));
+}
+// image empilée : grande plaque inclinée vers le spectateur, sur un pied
+const FL = 4, FP = 2.67;
+{
+  const g = plaque(pFin, TEX.empilee, 0, 0, 0, FL, FP);
+  g.position.set(XFIN, 1.5, ZB - 0.2); g.rotation.x = 0.95;
+  S.add(pFin, mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.3, 12), M.alu(), XFIN, 0.65, ZB - 0.65));
+  S.add(pFin, mesh(new THREE.CylinderGeometry(0.55, 0.7, 0.12, 32), M.noir(), XFIN, 0.06, ZB - 0.65));
+}
+
+// étiquettes de rangées et de l'opération
+const toujours = () => true;
+S.label("Images de calibration", () => new THREE.Vector3(XC.dark, 1.6, ZA - 1.3), { lumiere: true, visible: toujours });
+S.label("Images maîtres", () => new THREE.Vector3(XC.dark, 1.25, ZM - 1.2), { lumiere: true, visible: toujours });
+const lblOp = S.label("", () => NOEUD.clone().add(new THREE.Vector3(0, 0.25, 1.15)), { lumiere: true });
+const lblN = S.label("", () => new THREE.Vector3(XFIN, 0.2, ZB + 1.6), { lumiere: true });
+
+// ---------- Trajet des images ----------
+const flux = faisceau(0.4, 0.34, 220);
+S.scene.add(flux.group);
+const Y0 = 0.25;
+function poserTrajets(hBrutes, hCal) {
+  const s = S.state, t = [];
+  const de = (x, z, h = Y0) => [x, h, z];
+  if (s.offsets) t.push({ pts: [de(XC.off, ZA, hOff + 0.1), de(XC.off, ZA + 1.4), de(XC.off, ZM - 0.9)], cols: [SEG[1], SEG[1]] });
+  if (s.darks) t.push({ pts: [de(XC.dark, ZA, hDark + 0.1), de(XC.dark, ZA + 1.4), de(XC.dark, ZM - 0.9)], cols: [SEG[1], SEG[1]] });
+  if (s.flats) t.push({ pts: [de(XC.flat, ZA, hFlat + 0.1), de(XC.flat, ZA + 1.4), de(XC.flat, ZM - 0.9)], cols: [SEG[1], SEG[1]] });
+  if (s.offsets && s.flats) t.push({ pts: [de(XC.off + 1.2, ZM, 0.5), de(XC.off + 2, ZM, 1.4), de(XC.flat - 2, ZM, 1.4), de(XC.flat - 1.3, ZM, 0.5)], cols: [SEG[1], SEG[1], SEG[1]] });
+  const vers = (x, z) => ({ pts: [de(x, ZM + 1.1, 0.4), de(x, ZM + 2.2), [NOEUD.x + Math.sign(x - NOEUD.x) * 0.6, Y0 + 0.15, NOEUD.z - 0.5]], cols: [SEG[2], SEG[2]] });
+  if (s.darks) t.push(vers(XC.dark));
+  else if (s.offsets) t.push(vers(XC.off));
+  if (s.flats) t.push(vers(XC.flat));
+  // la chaîne des brutes
+  t.push({ pts: [de(XC.off + PW / 2, ZB, hBrutes), [NOEUD.x - 0.8, NOEUD.y + 0.1, NOEUD.z], [NOEUD.x + 0.8, NOEUD.y + 0.1, NOEUD.z], de(XCAL - PW / 2, ZB, hCal)], cols: [SEG[0], SEG[2], SEG[2]] });
+  t.push({ pts: [de(XCAL + PW / 2, ZB, hCal), de(XALI - PW / 2 - 0.1, ZB, 1.0)], cols: [SEG[2]] });
+  t.push({ pts: [de(XALI + PW / 2 + 0.1, ZB, 1.0), de(XFIN - FL / 2 + 0.2, ZB, 1.6)], cols: [SEG[3]] });
+  flux.poser(t);
+}
+
+// ---------- Mise à jour ----------
+let nbBrutes = -1;
+function estomper(part, actif) {
+  part.group.traverse((o) => {
+    if (!o.isMesh) return;
+    const m = o.material;
+    if (m.userData.op0 === undefined) m.userData.op0 = m.opacity;
+    m.transparent = true; m.opacity = actif ? m.userData.op0 : 0.18; m.depthWrite = actif;
+  });
+}
+function choisirCamera(id) {
+  st.cam = id;
+  calculerCalibration(CAMERAS[id]);
+  rafraichirTextures(["offset", "dark", "flat", "offsetM", "darkM", "flatM"]);
+  maj();
+}
+
+const CHIFFRES = {
+  froide: {
+    brutes: (N) => `${N} poses × 180 s = ${dureeTotale(N)} · gain 100 · capteur à −10 °C · FITS 16 bits`,
+    offsets: "50 poses à la durée minimale · niveau de base ≈ 500 sur 65 535",
+    darks: "30 poses × 180 s, gain 100, −10 °C · signal thermique < 1 e⁻ par pose : il reste surtout les pixels chauds",
+    flats: "30 poses de quelques secondes · histogramme vers la moitié, soit ≈ 30 000 sur 65 535",
+  },
+  apn: {
+    brutes: (N) => `${N} poses × 180 s = ${dureeTotale(N)} · ISO 800 · capteur ≈ 24 °C · RAW 14 bits`,
+    offsets: "50 poses à la vitesse la plus rapide (1/4000 s) · niveau de base 2 048 sur 16 383 (Canon récents)",
+    darks: "30 poses × 180 s, bouchon sur l'objectif · capteur à 24 °C pendant les brutes, 18 °C pendant les darks : signal thermique divisé par 2",
+    flats: "30 poses en mode Av · histogramme vers la moitié, soit ≈ 8 000 sur 16 383",
+  },
+};
+function dureeTotale(N) { const m = N * 3; return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? " " + String(m % 60).padStart(2, "0") : ""}`; }
+
+function maj() {
+  const cam = CAMERAS[st.cam], s = S.state, N = s.poses;
+  for (const k in CAMERAS) document.getElementById(`r-ca-${k}`).setAttribute("aria-pressed", String(k === st.cam));
+  calculerImages();
+  rafraichirTextures(["brute", "calibree", "empilee"]);
+  // piles des brutes et des calibrées : hauteur selon le nombre de poses
+  const n = nbPlaques(N);
+  if (n !== nbBrutes) {
+    nbBrutes = n;
+    S.viderElement(pBrutes); S.viderElement(pCalib);
+    const hB = pile(pBrutes, TEX.brute, XC.off, ZB, n), hC = pile(pCalib, TEX.calibree, XCAL, ZB, n);
+    pBrutes.ancre.y = hB + 0.15; pCalib.ancre.y = hC + 0.15;
+    pBrutes.h = hB; pCalib.h = hC;
+  }
+  estomper(pOff, s.offsets); estomper(pOffM, s.offsets);
+  estomper(pDark, s.darks); estomper(pDarkM, s.darks);
+  estomper(pFlat, s.flats); estomper(pFlatM, s.flats);
+  poserTrajets(pBrutes.h, pCalib.h);
+  lblOp.el.textContent = s.darks ? (s.flats ? "(brute − dark) ÷ flat" : "brute − dark") : s.offsets ? (s.flats ? "(brute − offset) ÷ flat" : "brute − offset") : s.flats ? "brute ÷ flat" : "brute non corrigée";
+  lblN.el.textContent = `${N} pose${N > 1 ? "s" : ""} · signal/bruit × ${v(Math.sqrt(N))}`;
+  // fiches
+  const ch = CHIFFRES[st.cam];
+  pBrutes.chiffres = ch.brutes(N); pOff.chiffres = ch.offsets; pDark.chiffres = ch.darks; pFlat.chiffres = ch.flats;
+  pDark.texte = TEXTE_DARKS + (st.cam === "froide" ? TEXTE_DARKS_FROIDE : TEXTE_DARKS_APN);
+  pFin.chiffres = `${N} pose${N > 1 ? "s" : ""} → rapport signal sur bruit × ${v(Math.sqrt(N))} · temps de pose total ${dureeTotale(N)}`;
+  S.notice(s.rejet && N > 1 && N < 10 ? "Le rejet des intrus a besoin d'au moins une dizaine de poses : il ne s'applique pas ici." : null);
+  dessinerApercu();
+  S.refreshInfo();
+}
+
+// ---------- Fiches ----------
+pBrutes.texte = "Les photos de l'objet, toutes prises avec les mêmes réglages. Chacune contient le signal recherché, mêlé au niveau de base de l'électronique, au signal thermique, aux pixels chauds, au vignettage, à l'ombre des poussières et au bruit. Une pose seule est trop bruitée : on en accumule des dizaines.";
+pOff.texte = "Des poses les plus courtes possible, sans lumière (capteur obturé). Elles enregistrent le niveau de base que l'électronique ajoute à chaque pixel avant même de compter la lumière, avec un léger motif en colonnes. Elles servent surtout à corriger les flats.";
+const TEXTE_DARKS = "Des poses de même durée, même gain et même température que les brutes, mais sans lumière. Elles enregistrent le signal thermique et les pixels chauds, qui reviennent au même endroit à chaque pose. On les soustrait aux brutes. ";
+const TEXTE_DARKS_FROIDE = "Avec une caméra refroidie, la température est toujours la même : une bibliothèque de darks resservira pendant des mois.";
+const TEXTE_DARKS_APN = "Sur un APN, le capteur n'est pas refroidi : sa température change pendant la nuit, et le signal thermique double environ tous les 6 °C. Des darks pris à une autre température corrigent mal : le dithering et le rejet doivent finir le travail.";
+pFlat.texte = "Des poses d'une surface uniformément éclairée (écran lumineux, ciel au crépuscule), sans rien changer au train optique : même mise au point, même orientation de la caméra. Elles enregistrent le vignettage et l'ombre des poussières. En divisant les brutes par le flat, les coins sombres et les anneaux disparaissent.";
+pOffM.texte = "La médiane des 50 offsets, pixel par pixel. Le bruit de lecture s'efface : il ne reste que le niveau de base de chaque pixel. On le retire du flat. Il est inutile de le retirer en plus aux brutes : le dark maître le contient déjà.";
+pOffM.chiffres = "Médiane de 50 poses : bruit divisé par ≈ 7";
+pDarkM.texte = "La médiane des 30 darks. Elle garde ce qui revient à chaque pose (niveau de base, signal thermique, pixels chauds) et écarte les rayons cosmiques tombés sur un seul dark.";
+pDarkM.chiffres = "Médiane de 30 poses : bruit divisé par ≈ 5,5 · à refaire si la durée, le gain ou la température changent";
+pFlatM.texte = "La médiane des 30 flats, après retrait de l'offset maître, ramenée à une moyenne de 1. Un pixel à 0,7 reçoit 30 % de lumière en moins que la moyenne : la division le remet à niveau. Sans le retrait de l'offset, la correction est trop faible.";
+pFlatM.chiffres = "Ici : coins à ≈ 0,65 · anneaux de poussière à ≈ 0,88 · à refaire dès que l'on touche au train optique";
+pCal.texte = "Chaque brute passe par la même opération : on lui retire le dark maître, puis on la divise par le flat maître. Elle se fait sur le fichier brut, avant le dématriçage de la matrice de Bayer. Les logiciels l'automatisent : Siril (gratuit, en français), DeepSkyStacker, PixInsight.";
+pCal.chiffres = "Calibrée = (brute − dark maître) ÷ flat maître";
+pCalib.texte = "Les brutes, une fois calibrées : fond uniforme, coins et poussières corrigés, pixels chauds retirés. Elles restent aussi bruitées qu'avant : la calibration retire les défauts fixes, pas le bruit, qui change à chaque pose.";
+pAli.texte = "D'une pose à l'autre, l'image bouge un peu : suivi imparfait, ou décalage volontaire de quelques pixels, le dithering. Le logiciel repère les étoiles de chaque pose et les superpose à celles d'une pose de référence, au dixième de pixel près. Avec le dithering, les défauts du capteur ne tombent plus au même endroit du ciel : l'empilement peut les écarter.";
+pAli.chiffres = "Dithering : quelques pixels de décalage toutes les 1 à 3 poses · alignement sur des dizaines d'étoiles";
+pFin.texte = "Pour chaque pixel, on fait la moyenne des poses alignées. Le signal reste le même, le bruit, aléatoire, se compense en partie : le rapport signal sur bruit est multiplié par √N. Le rejet (sigma clipping) écarte d'abord les valeurs trop éloignées des autres : traînée de satellite, rayon cosmique, pixel chaud resté. Le résultat est prêt pour le traitement : retrait du gradient, étirement, couleurs.";
+
+// ---------- Animation : alignement des poses, flux des images ----------
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+S.onFrame(({ time }) => {
+  flux.group.visible = S.state.trajet;
+  flux.photons.visible = S.state.anim && !S.reduced;
+  if (S.state.trajet) flux.animer(time, 4);
+  haloNoeud.visible = S.state.trajet;
+  // cycle de 6 s : poses décalées, puis superposées
+  const fige = S.reduced || !S.state.anim;
+  const c = time % 6, a = fige ? 1 : c < 1.5 ? 0 : c < 3.5 ? ease((c - 1.5) / 2) : 1;
+  const amp = S.state.dithering ? 0.35 : 0.06;
+  for (const p of ALI) {
+    p.g.position.x = XALI + p.dx * amp * (1 - a);
+    p.g.position.z = ZB + p.dz * amp * (1 - a);
+    p.g.rotation.y = p.rot * 0.05 * (1 - a);
+  }
+});
+
+// ---------- Encart ----------
+function dessinerApercu() {
+  const ap = S.apercu, cv = ap.canvas, W0 = cv.clientWidth, cam = CAMERAS[st.cam], s = S.state, N = s.poses;
+  if (W0) {
+    const dpr = Math.min(devicePixelRatio, 2), gap = 8, lab = 18;
+    const w1 = Math.floor((W0 - gap) / 2), h1 = Math.round(w1 / 1.5), h2 = Math.round(W0 / 1.5);
+    const Ht = h1 + lab + gap + h2 + lab;
+    cv.width = Math.round(W0 * dpr); cv.height = Math.round(Ht * dpr); cv.style.height = Ht + "px";
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W0, Ht);
+    const petit = W0 < 300;
+    const vues = [
+      { img: CANVAS.brute, x: 0, y: 0, w: w1, h: h1, t: petit ? "Brute" : "Pose brute" },
+      { img: CANVAS.calibree, x: w1 + gap, y: 0, w: w1, h: h1, t: petit ? "Calibrée" : "Pose calibrée" },
+      { img: CANVAS.empilee, x: 0, y: h1 + lab + gap, w: W0, h: h2, t: `Empilement de ${N} pose${N > 1 ? "s" : ""}` },
+    ];
+    for (const vu of vues) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(vu.img, vu.x, vu.y, vu.w, vu.h);
+      ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1; ctx.strokeRect(vu.x + 0.5, vu.y + 0.5, vu.w - 1, vu.h - 1);
+      ctx.font = `${petit ? 10 : 11.5}px Arial`; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
+      ctx.fillText(vu.t, vu.x + vu.w / 2, vu.y + vu.h + 13);
+    }
+  }
+  // bilan : ce qui reste sur l'image empilée
+  const s1 = sigma1(cam), rejet = s.rejet && N >= 10, dith = s.dithering && N > 1, restes = [];
+  if (!s.darks && !s.offsets) restes.push(s.flats ? "Niveau de base non retiré : divisé par le flat, il éclaircit les coins." : "Niveau de base non retiré.");
+  if (!s.darks) restes.push(dith && rejet ? "Pas de darks : les pixels chauds sont quand même écartés, grâce au dithering et au rejet." : "Pas de darks : les pixels chauds restent." );
+  else if (cam.rapportDark < 1) restes.push(dith && rejet ? "Darks trop froids : la moitié du signal des pixels chauds reste sur chaque pose, mais le dithering et le rejet l'écartent." : "Darks trop froids de 6 °C : la moitié du signal des pixels chauds reste.");
+  if (!s.flats) restes.push("Pas de flats : coins sombres et anneaux de poussière.");
+  else if (!s.offsets) restes.push(st.cam === "apn" ? "Flats sans retrait de l'offset (2 048 pour des flats à 8 000) : vignettage nettement sous-corrigé." : "Flats sans retrait de l'offset (500 pour des flats à 30 000) : vignettage à peine sous-corrigé.");
+  if (N === 1) restes.push("Une seule pose : rien n'est empilé, la traînée du satellite reste.");
+  else if (rejet) restes.push("Traînée de satellite et rayons cosmiques rejetés.");
+  else restes.push(`Traînée de satellite moyennée (÷ ${N}) : affaiblie, mais visible.`);
+  if (!dith && N > 1 && (!s.darks || cam.rapportDark < 1)) restes.push("Sans dithering, les défauts du capteur tombent toujours au même endroit : le rejet ne peut pas les repérer.");
+  ap.legende.innerHTML = `<h2>${cam.nom} · ${N} × 180 s</h2>
+    <p class="spec">Bruit du fond : ${v(s1)} e⁻ sur une pose → ${v(s1 / Math.sqrt(N))} e⁻ après empilement · signal/bruit × ${v(Math.sqrt(N))}</p>
+    <p>${restes.join(" ")}</p>
+    <p>Images simulées, étirées de la même façon.</p>`;
+}
+let largeur = 0;
+S.onFrame(() => { const w = S.apercu.canvas.clientWidth; if (w !== largeur) { largeur = w; dessinerApercu(); } });
+
+calculerCalibration(CAMERAS[st.cam]);
+rafraichirTextures(["offset", "dark", "flat", "offsetM", "darkM", "flatM"]);
+S.start();
+</script>
+</body>
+</html>
