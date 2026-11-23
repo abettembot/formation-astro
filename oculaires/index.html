@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Oculaires</title>
+<meta name="description" content="Schéma 3D interactif des oculaires : Huygens, Plössl et Nagler en coupe, trajet de la lumière, champ apparent, pupille de sortie et dégagement oculaire sur un Newton 200/1000.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, mesh, lentille, faisceau, halo, alea, legende, vider } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 10 mm ----------
+// Calculs en mm le long de l'axe optique : z = 0 au foyer du télescope, z croissant vers l'œil.
+// Dans la scène, la lumière arrive de +X : x = −z / 10.
+// Optique : tracé paraxial en lentilles minces (une déviation par lentille, au centre de chaque verre),
+// formules réglées pour retrouver la focale, le champ apparent et le dégagement de chaque oculaire.
+// Épaisseurs et courbures des verres dessinées de façon schématique.
+const FT = 1000, DT = 200;            // Newton 200/1000 · f/5
+const Z_DEPART = -55;                  // début des rayons dessinés (cône du télescope)
+const Z_BAS = -30, Z_EPAULE = 3;       // bas du coulant, épaulement (même cote pour tous : oculaires parfocaux)
+const R_COULANT = 15.875, R_COULANT_INT = 14.6;
+const PUPILLE_OEIL = 3.5;              // rayon de la pupille de l'œil la nuit (Ø 7 mm)
+const X = (z) => -z / 10;
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+const virgule = (v, d = 1) => v.toFixed(d).replace(".", ",").replace(/,0+$/, "");
+
+// Formes des verres : pc plan-convexe (bombé côté télescope) · bicx biconvexe ·
+// dbAv doublet flint puis crown · dbAr doublet crown puis flint · smyth doublet divergent
+const MODELES = {
+  h25: {
+    bouton: "Huygens 25", nom: "Huygens H25", f: 25, afov: 40, rCorps: 17,
+    gamme: "Bas de gamme", prix: "souvent fourni avec les télescopes premier prix",
+    defauts: { astig: 1, chroma: 1, voile: 1 },
+    lentilles: [
+      { z: 0, f: 50, t: 4, R: 12, forme: "pc", groupe: "avant" },
+      { z: 33.333, f: 16.667, t: 3, R: 6.5, forme: "pc", groupe: "oeil" },
+    ],
+    resume: "Deux lentilles simples en verre ordinaire, souvent sans traitement antireflet efficace. Cette formule du XVII<sup>e</sup> siècle convient aux lunettes très peu ouvertes (f/15 et plus). Sur un Newton à f/5, le cône de lumière est trop ouvert : hors du centre, les étoiles s'étirent et se colorent.",
+    avant: ["Lentille de champ : une seule lentille plan-convexe, placée avant le foyer du télescope. Elle resserre le faisceau et rabat les rayons du bord du champ vers la lentille d'œil. L'image se forme donc à l'intérieur de l'oculaire, entre les deux lentilles.",
+      "1 lentille plan-convexe · focale ≈ 50 mm · verre simple, couleurs non corrigées"],
+    oeil: ["Lentille d'œil : une petite lentille plan-convexe qui sert de loupe. Petite et très proche de l'image, elle impose un dégagement court. Avec deux lentilles simples, ni les couleurs ni les défauts hors de l'axe ne sont corrigés.",
+      "1 lentille plan-convexe · focale ≈ 17 mm · Ø ≈ 13 mm"],
+    diaphragme: "Ici, il est entre les deux lentilles, là où se forme l'image : on voit son bord à travers la seule lentille d'œil.",
+  },
+  p25: {
+    bouton: "Plössl 25", nom: "Plössl 25 mm", f: 25, afov: 52, rCorps: 18.5,
+    gamme: "Bonne qualité, prix modeste", prix: "≈ 30 à 50 €",
+    defauts: { astig: 0.18, chroma: 0.08, voile: 0 },
+    lentilles: [
+      { z: 0, f: 44.4, t: 7, R: 15, forme: "dbAv", groupe: "avant" },
+      { z: 9.95, f: 44.4, t: 7, R: 13, forme: "dbAr", groupe: "oeil" },
+    ],
+    resume: "Deux doublets achromatiques presque identiques, montés tête-bêche, avec des traitements antireflets multicouches. Une formule simple et bon marché, qui donne une image nette presque jusqu'au bord et des couleurs corrigées, même à f/5.",
+    avant: ["Premier doublet achromatique : une lentille convergente en verre « crown » collée à une lentille divergente en verre « flint ». Les deux verres dispersent les couleurs différemment : le collage corrige ainsi les couleurs. Il est placé juste après le foyer du télescope.",
+      "Doublet crown + flint collés · focale ≈ 44 mm"],
+    oeil: ["Second doublet, semblable au premier mais retourné : les deux faces bombées se font face. Cette symétrie corrige bien la plupart des défauts. Sur un Plössl, le dégagement vaut environ 0,7 fois la focale.",
+      "Doublet crown + flint · dégagement ≈ 0,7 × focale"],
+    diaphragme: "Il est placé exactement au foyer du télescope, juste avant le premier doublet.",
+  },
+  p10: {
+    bouton: "Plössl 10", nom: "Plössl 10 mm", f: 10, afov: 52, rCorps: 16.5,
+    gamme: "Bonne qualité, prix modeste", prix: "≈ 30 à 50 €",
+    defauts: { astig: 0.15, chroma: 0.06, voile: 0 },
+    lentilles: [
+      { z: 0, f: 17.76, t: 2.4, R: 6.5, forme: "dbAv", groupe: "avant" },
+      { z: 3.98, f: 17.76, t: 2.4, R: 6.5, forme: "dbAr", groupe: "oeil" },
+    ],
+    resume: "Le même Plössl en 10 mm : toutes ses lentilles sont 2,5 fois plus petites, et le dégagement aussi. Il faut presque coller l'œil contre la lentille : c'est inconfortable, et impossible avec des lunettes de vue.",
+    avant: ["Premier doublet achromatique (crown + flint collés), placé juste après le foyer du télescope. Toutes les dimensions sont celles du Plössl 25 mm divisées par 2,5.",
+      "Doublet crown + flint collés · focale ≈ 18 mm"],
+    oeil: ["Second doublet, retourné. Sa petite taille et sa position imposent un dégagement court : environ 0,7 fois la focale, soit ≈ 7 mm. C'est la limite des Plössl en courte focale.",
+      "Doublet crown + flint · Ø ≈ 13 mm"],
+    diaphragme: "Il est placé exactement au foyer du télescope, juste avant le premier doublet.",
+  },
+  n9: {
+    bouton: "Nagler 9", nom: "Nagler 9 mm · 82°", f: 9, afov: 82, rCorps: 19.5,
+    gamme: "Haut de gamme, grand champ", prix: "≈ 300 € (équivalents 82° dès ≈ 100 €)",
+    defauts: { astig: 0.12, chroma: 0.05, voile: 0 },
+    lentilles: [
+      { z: 0, f: -16, t: 5, R: 9, forme: "smyth", groupe: "avant" },
+      { z: 14, f: 30, t: 5.5, R: 16, forme: "dbAr", groupe: "oeil" },
+      { z: 21, f: 30, t: 4.5, R: 16, forme: "bicx", groupe: "oeil" },
+      { z: 27, f: 30, t: 3, R: 13.5, forme: "pc", groupe: "oeil" },
+    ],
+    resume: "Formule à grand champ créée par Al Nagler en 1980, ici avec 6 lentilles en 4 groupes. Un groupe divergent à l'entrée agit comme une petite lentille de Barlow intégrée : le groupe d'œil peut être plus grand, d'où un champ apparent de 82° et un dégagement confortable malgré la courte focale.",
+    avant: ["Groupe de Smyth : un doublet divergent placé avant le foyer du télescope. Comme une petite Barlow intégrée, il ouvre le cône de lumière et repousse le foyer plus loin dans l'oculaire. C'est lui qui permet à la fois une courte focale, un grand champ et un dégagement correct.",
+      "Doublet divergent · focale ≈ −16 mm · effet Barlow ≈ ×1,4"],
+    oeil: ["Groupe d'œil : trois éléments convergents de grand diamètre (un doublet et deux lentilles). Ils reprennent l'image comme une loupe et renvoient des faisceaux très inclinés, jusqu'à 41° de l'axe, tout en gardant les étoiles nettes jusqu'au bord.",
+      "4 lentilles · Ø jusqu'à ≈ 32 mm"],
+    diaphragme: "Ici, il est entre le groupe de Smyth et le groupe d'œil, là où le foyer a été repoussé.",
+  },
+};
+
+let modele = "h25", m = MODELES[modele];
+let opt;          // résultats du calcul optique du modèle courant
+let dOeil;        // distance lentille d'œil → pupille de l'œil (mm)
+
+// ---------- Calcul optique (paraxial, lentilles minces) ----------
+function systeme(L) { // focale et foyer objet d'une suite de lentilles minces
+  let M2 = [1, 0, 0, 1], z = L[0].z; // matrice [A, B, C, D] agissant sur (hauteur, pente)
+  const mul = (P, Q) => [P[0] * Q[0] + P[1] * Q[2], P[0] * Q[1] + P[1] * Q[3], P[2] * Q[0] + P[3] * Q[2], P[2] * Q[1] + P[3] * Q[3]];
+  for (const l of L) { M2 = mul([1, l.z - z, 0, 1], M2); z = l.z; M2 = mul([1, 0, -1 / l.f, 1], M2); }
+  return { efl: -1 / M2[2], s: -M2[3] / M2[2] };     // focale, foyer objet à s avant la 1re lentille
+}
+function calculer() {
+  // formule mise à l'échelle pour donner exactement la focale annoncée
+  const k = m.f / systeme(m.lentilles).efl, L = m.lentilles.map((l) => ({ ...l, z: l.z * k, f: l.f * k }));
+  const { efl, s } = systeme(L);
+  const lent = L.map((l) => ({ ...l, z: l.z - L[0].z + s })); // foyer objet placé au foyer du télescope (mise au point)
+  const trace = (h, y0) => {                          // rayon issu du primaire (hauteur y0) visant le point h du foyer
+    let y = y0 + (h - y0) * (Z_DEPART + FT) / FT, t = (h - y0) / FT, zz = Z_DEPART;
+    const pts = [[zz, y]];
+    for (const l of lent) { y += t * (l.z - zz); zz = l.z; pts.push([zz, y]); t -= y / l.f; }
+    return { pts, y, t, z: zz };
+  };
+  const th = Math.tan(m.afov / 2 * Math.PI / 180);
+  const hBord = th / trace(1, 0).t;                    // point du foyer vu au bord du champ
+  const ch = trace(hBord, 0);
+  const zPup = ch.z - ch.y / ch.t;                     // pupille de sortie : croisement des rayons principaux
+  const der = lent[lent.length - 1], zArr = der.z + der.t / 2; // face arrière de la lentille d'œil
+  // diaphragme : là où le rayon marginal du centre du champ recoupe l'axe (image intermédiaire)
+  const mg = trace(0, DT / 2).pts;
+  let zStop = 0;
+  for (let i = 0; i < mg.length - 1; i++) if (mg[i][1] * mg[i + 1][1] <= 0) { zStop = mg[i][0] + (mg[i + 1][0] - mg[i][0]) * mg[i][1] / (mg[i][1] - mg[i + 1][1]); break; }
+  const ySeg = (pts, zq) => { for (let i = 0; i < pts.length - 1; i++) if (zq <= pts[i + 1][0]) return pts[i][1] + (pts[i + 1][1] - pts[i][1]) * (zq - pts[i][0]) / (pts[i + 1][0] - pts[i][0]); return 0; };
+  const rStop = Math.abs(ySeg(ch.pts, zStop));
+  const G = FT / efl;
+  return { efl, lent, trace, hBord, zPup, zArr, zStop, rStop, G, PS: DT / G, ER: zPup - zArr, tReel: m.afov / G, th };
+}
+const murInterieur = (z) => (z < Z_EPAULE ? R_COULANT_INT : m.rCorps - 1.2);
+
+// ---------- Coupe ----------
+const COUPE = { cyl: [Math.PI / 2, Math.PI], anneau: [-Math.PI / 2, Math.PI] };
+const cylindre = (r, z0, z1, mat) => { // cylindre ouvert d'axe X entre z0 et z1 (mm)
+  const g = S.state.coupe ? new THREE.CylinderGeometry(r / 10, r / 10, (z1 - z0) / 10, 64, 1, true, ...COUPE.cyl)
+                          : new THREE.CylinderGeometry(r / 10, r / 10, (z1 - z0) / 10, 64, 1, true);
+  const o = mesh(axeX(g), mat, X((z0 + z1) / 2));
+  o.material.side = THREE.DoubleSide;
+  return o;
+};
+const anneau = (r0, r1, z, mat) => { // anneau plat perpendiculaire à l'axe, à la cote z (mm)
+  const g = S.state.coupe ? new THREE.RingGeometry(r0 / 10, r1 / 10, 64, 1, ...COUPE.anneau) : new THREE.RingGeometry(r0 / 10, r1 / 10, 64);
+  g.rotateY(Math.PI / 2);
+  const o = mesh(g, mat, X(z));
+  o.material.side = THREE.DoubleSide;
+  return o;
+};
+
+// ---------- Schéma ----------
+// centre des vues d'ensemble : décalé vers les rayons sur ordinateur (l'encart couvre la droite), centré sur mobile
+const mobile = () => innerWidth < 760, cx = () => (mobile() ? -2.4 : 1.6);
+opt = calculer();
+const cmdOeil = {
+  type: "curseur", id: "oeil", label: "Position de l'œil", min: 0, max: 35, pas: 0.5, valeur: 8,
+  format: (v) => `${virgule(v)} mm`, retour: "Au bon dégagement",
+  onInput: (v) => { dOeil = v; placerOeil(); },
+};
+const S = createSchema({
+  surtitre: "Support de formation · Optique",
+  titre: "Oculaires",
+  sousTitre: "Exemple : Newton 200/1000 · f/5",
+  eclate: true,
+  apercu: { titre: "Dans l'oculaire" },
+  commandes: [
+    { type: "raccourcis", id: "modeles", label: "Oculaire", boutons: Object.entries(MODELES).map(([id, x]) => ({ id, label: x.bouton, onClick: () => choisir(id) })) },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "champ", label: "Champ apparent", actif: true },
+    { type: "bascule", id: "coupe", label: "Oculaire en coupe", actif: true, onChange: () => construire() },
+    cmdOeil,
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => (mobile() ? [12, 10.5, 28] : [9, 6.5, 17.5]), cible: () => [cx(), -0.4, 0] },
+    { id: "profil", label: "Profil", pos: () => [cx(), 0.3, mobile() ? 30 : 17], cible: () => [cx(), 0, 0] },
+    { id: "oeil", label: "Côté œil", pos: () => [X(opt.zPup) - 6.5, 1.6, 3.2], cible: () => [X(opt.zArr), 0, 0] },
+    { id: "pupille", label: "Pupille de sortie", pos: () => [X(opt.zPup) + 0.3, 0.4, 4.6], cible: () => [X(opt.zPup) + 0.4, 0, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Le trajet de la lumière</div>
+    ${legende([
+      { couleur: SEG[0], texte: "Le télescope fait converger la lumière : l'image du ciel se forme à son foyer, à l'entrée de l'oculaire." },
+      { couleur: SEG[1], texte: "Dans l'oculaire, un diaphragme posé sur cette image découpe le bord net du champ. Les lentilles la reprennent comme une loupe." },
+      { couleur: SEG[2], texte: "Chaque étoile ressort en un faisceau de rayons parallèles. Tous ces faisceaux se croisent dans un petit disque : la pupille de sortie." },
+      { couleur: SEG[3], texte: "L'œil se place dans cette pupille, au dégagement oculaire. Il voit l'image sous un grand angle : le champ apparent." },
+    ])}
+    <p><strong>${m.nom}</strong> · ${m.gamme.toLowerCase()} · ${m.prix}. ${m.resume}</p>
+    <p class="spec">Sur le 200/1000 : ${Math.round(opt.G)}× · champ apparent ${m.afov}° · champ réel ${virgule(opt.tReel, 2)}° · pupille de sortie ${virgule(opt.PS)} mm · dégagement ≈ ${Math.round(opt.ER)} mm.</p>
+    <p>Comparez le Huygens et le Plössl de 25 mm (même grossissement), puis le Plössl 10 et le Nagler 9 : le Nagler grossit plus et montre pourtant plus de ciel.</p>`,
+});
+S.controls.maxDistance = 45;
+
+// ---------- Éléments (reconstruits à chaque changement de modèle) ----------
+const coulant = S.part("coulant", "Coulant", {
+  eclate: [0, -2.8, 0], ancre: [X(-22), R_COULANT / 10 + 0.08, 0],
+  texte: "Tube chromé qui s'enfonce dans le porte-oculaire, où une vis le bloque. Au standard 31,75 mm (1¼ pouce), le diaphragme ne peut pas dépasser ≈ 27 mm : cela limite le champ réel des oculaires de longue focale. Les plus grands champs passent au coulant de 50,8 mm (2 pouces). Le bas est fileté pour visser un filtre.",
+  chiffres: "Coulant 31,75 mm · filetage filtre M28,5 × 0,6",
+});
+const corps = S.part("corps", "Corps", {
+  eclate: [0, 2.6, 0],
+  texte: "Il porte les lentilles et les garde centrées sur l'axe. L'épaulement, à la jonction avec le coulant, vient en butée sur le porte-oculaire. Dans une même série, il est placé pour que la mise au point change à peine d'un oculaire à l'autre : on dit que les oculaires sont parfocaux.",
+});
+const diaphragme = S.part("diaphragme", "Diaphragme de champ", { eclate: [0.9, 0, 0] });
+const avant = S.part("avant", "Groupe avant", { eclate: [2.0, 0, 0] });
+const oeilGr = S.part("oeilGr", "Groupe d'œil", { eclate: [-0.7, 0, 0] });
+const bonnette = S.part("bonnette", "Œilleton", {
+  eclate: [-0.9, 2.6, 0],
+  texte: "Anneau de caoutchouc posé contre l'arcade du sourcil. Il aide à placer l'œil à la bonne distance et arrête la lumière parasite. Sur les oculaires à long dégagement, il se rabat ou se rentre pour observer avec des lunettes de vue.",
+});
+const pupille = S.part("pupille", "Pupille de sortie", {
+  texte: "Petit disque lumineux où se croisent tous les faisceaux qui sortent de l'oculaire : c'est l'image du miroir primaire. On la voit flotter derrière la lentille d'œil en visant un ciel clair, oculaire tenu à bout de bras. Son diamètre vaut le diamètre du télescope divisé par le grossissement. Au-delà de ≈ 7 mm, l'œil ne peut pas tout recevoir.",
+});
+const oeil = S.part("oeil", "Œil", {
+  eclate: [-2.0, 0, 0],
+  texte: "L'œil doit placer sa pupille dans la pupille de sortie, à une distance de la lentille appelée dégagement oculaire. Trop près ou trop loin, les faisceaux du bord manquent la pupille : le champ se rétrécit, des zones sombres apparaissent. Avec des lunettes de vue, il faut au moins 15 à 20 mm de dégagement.",
+  chiffres: "Pupille de l'œil la nuit : ≈ 7 mm vers 20 ans, ≈ 5 mm vers 60 ans",
+});
+
+// œil : globe, iris, cristallin, déplacés par le curseur « Position de l'œil »
+const oeilMobile = new THREE.Group();
+{
+  const globe = mesh(new THREE.SphereGeometry(1.2, 48, 32), M.oeil(), -0.9);
+  oeilMobile.add(globe);
+  const iris = anneauFixe(PUPILLE_OEIL / 10, 0.62, M.noir());
+  oeilMobile.add(iris);
+  oeilMobile.add(lentille(0.42, -0.02, 0.38, 0.12, 0.16));
+  S.add(oeil, oeilMobile); // recense les meshes ajoutés (sélection, surbrillance)
+}
+function anneauFixe(r0, r1, mat) {
+  const g = new THREE.RingGeometry(r0, r1, 48); g.rotateY(Math.PI / 2);
+  const o = new THREE.Mesh(g, mat); o.material.side = THREE.DoubleSide; return o;
+}
+
+function dessinerVerre(part, l) {
+  const T = l.t / 10, R = l.R / 10, xv = X(l.z) + T / 2;
+  const flint = (o) => { o.material.opacity = 0.72; return o; };
+  if (l.forme === "pc") S.add(part, lentille(R, xv, T, 0.6 * T, 0));
+  else if (l.forme === "bicx") S.add(part, lentille(R, xv, T, 0.3 * T, 0.3 * T));
+  else if (l.forme === "dbAv") { // flint devant, crown derrière (face bombée vers l'autre doublet)
+    S.add(part, flint(lentille(R, xv, 0.35 * T, 0, -0.25 * T)));
+    S.add(part, lentille(R, xv - 0.35 * T, 0.65 * T, 0.25 * T, 0.25 * T));
+  } else if (l.forme === "dbAr") { // crown devant, flint derrière
+    S.add(part, lentille(R, xv, 0.65 * T, 0.25 * T, 0.25 * T));
+    S.add(part, flint(lentille(R, xv - 0.65 * T, 0.35 * T, -0.25 * T, 0)));
+  } else if (l.forme === "smyth") { // biconcave + ménisque convergent
+    S.add(part, flint(lentille(R, xv, 0.55 * T, -0.2 * T, -0.2 * T)));
+    S.add(part, lentille(R, xv - 0.55 * T, 0.45 * T, 0.2 * T, -0.1 * T));
+  }
+  // bague de maintien jusqu'à la paroi
+  const mur = murInterieur(l.z);
+  if (mur > l.R + 0.3) S.add(part, anneau(l.R, mur, l.z - l.t / 2 + 0.4, M.noir()));
+}
+
+let zHaut, hBonnette;
+function construire() {
+  for (const p of [coulant, corps, diaphragme, avant, oeilGr, bonnette]) S.viderElement(p);
+  const o = opt, rc = m.rCorps;
+  zHaut = o.zArr + 1.5;
+  hBonnette = Math.max(1.5, o.ER - 6);
+  // coulant chromé + filetage
+  S.add(coulant, cylindre(R_COULANT, Z_BAS, Z_EPAULE, M.alu()));
+  S.add(coulant, cylindre(R_COULANT_INT, Z_BAS, Z_EPAULE, M.noir()));
+  S.add(coulant, anneau(R_COULANT_INT, R_COULANT, Z_BAS, M.alu()));
+  S.add(coulant, cylindre(R_COULANT - 0.6, Z_BAS, Z_BAS + 4, M.noir()));
+  // corps noir, épaulement, bague supérieure
+  S.add(corps, cylindre(rc, Z_EPAULE, zHaut, M.noir()));
+  S.add(corps, cylindre(rc - 1.2, Z_EPAULE, zHaut, M.noir()));
+  S.add(corps, anneau(R_COULANT_INT, rc, Z_EPAULE, M.noir()));
+  const dern = o.lent[o.lent.length - 1];
+  S.add(corps, anneau(dern.R, rc, zHaut, M.noir()));
+  if (modele !== "h25") S.add(corps, cylindre(rc + 0.15, zHaut - 9, zHaut - 6, M.caoutchouc())); // bague de préhension
+  // œilleton
+  S.add(bonnette, cylindre(rc + 0.4, zHaut, zHaut + hBonnette, M.caoutchouc()));
+  S.add(bonnette, anneau(rc - 2, rc + 0.4, zHaut + hBonnette, M.caoutchouc()));
+  // diaphragme de champ
+  S.add(diaphragme, anneau(o.rStop, murInterieur(o.zStop), o.zStop, M.noir()));
+  // lentilles
+  for (const l of o.lent) dessinerVerre(l.groupe === "avant" ? avant : oeilGr, l);
+  // étiquettes
+  const av = o.lent.filter((l) => l.groupe === "avant"), oe = o.lent.filter((l) => l.groupe === "oeil");
+  const zAv = (av[0].z + av[av.length - 1].z) / 2, zOe = (oe[0].z + oe[oe.length - 1].z) / 2;
+  avant.ancre.set(X(zAv), Math.max(...av.map((l) => l.R)) / 10 + 0.05, 0);
+  oeilGr.ancre.set(X(zOe), -Math.max(...oe.map((l) => l.R)) / 10 - 0.05, 0);
+  diaphragme.ancre.set(X(o.zStop), -o.rStop / 10 - 0.1, 0);
+  corps.ancre.set(X((Z_EPAULE + zHaut) / 2), -rc / 10 - 0.08, 0);
+  bonnette.ancre.set(X(zHaut + hBonnette / 2), rc / 10 + 0.1, 0);
+}
+
+// ---------- Pupille de sortie, champ apparent, lumière ----------
+const disquePupille = new THREE.Mesh(new THREE.CircleGeometry(1, 48).rotateY(Math.PI / 2), M.lumineux(COULEURS.ambre, 0.45));
+S.add(pupille, disquePupille);
+const haloPupille = halo(COULEURS.ambre, 0.5);
+pupille.group.add(haloPupille);
+
+const champ = new THREE.Group();
+S.scene.add(champ);
+function construireChamp() {
+  vider(champ);
+  const R = 3.2, a = m.afov / 2 * Math.PI / 180, n = 48;
+  const pos = [0, 0, 0], idx = [];
+  for (let i = 0; i <= n; i++) { const t = -a + 2 * a * i / n; pos.push(R * Math.cos(t), R * Math.sin(t), 0); if (i) idx.push(0, i, i + 1); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+  champ.add(new THREE.Mesh(g, M.lumineux(COULEURS.ambre, 0.07)));
+  const bord = [];
+  for (let i = 0; i <= n; i++) { const t = -a + 2 * a * i / n; bord.push(new THREE.Vector3(R * Math.cos(t), R * Math.sin(t), 0)); }
+  champ.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), ...bord, new THREE.Vector3()]),
+    new THREE.LineBasicMaterial({ color: COULEURS.ambre, transparent: true, opacity: 0.5, depthWrite: false })));
+  champ.position.set(X(opt.zPup), 0, 0);
+}
+
+const lumiere = faisceau(0.6, 0.3, 80);
+S.scene.add(lumiere.group);
+function poserRayons() {
+  const o = opt, zE = o.zArr + dOeil, liste = [];
+  for (const h of [0, o.hBord, -o.hBord]) for (const y0 of [-80, 0, 80]) {
+    const r = o.trace(h, y0);
+    const pts = r.pts.map(([z, y]) => [X(z), y / 10, 0]);
+    const cols = [];
+    for (let i = 0; i < pts.length - 1; i++) cols.push(i === 0 ? SEG[0] : SEG[1]);
+    // vers l'œil : jusqu'à la pupille de l'œil, puis jusqu'à la rétine si le rayon passe
+    const yE = r.y + r.t * (zE - r.z);
+    pts.push([X(zE), yE / 10, 0]); cols.push(SEG[2]);
+    if (Math.abs(yE) <= PUPILLE_OEIL) { // le cristallin fait converger le faisceau sur la rétine (sphère de 11,5 mm)
+      const n = Math.hypot(1, r.t);
+      pts.push([X(zE + 9 + 11.5 / n), 11.5 * r.t / n / 10, 0]); cols.push(SEG[3]);
+    }
+    liste.push({ pts, cols });
+  }
+  lumiere.poser(liste);
+}
+
+function placerOeil() {
+  oeilMobile.position.x = X(opt.zArr + dOeil);
+  oeil.ancre.set(X(opt.zArr + dOeil) - 0.9, 1.35, 0);
+  poserRayons();
+  dessinerApercu();
+  S.refreshInfo();
+}
+
+// ---------- Fiches propres au modèle ----------
+function fiches() {
+  const o = opt;
+  avant.texte = m.avant[0]; avant.chiffres = m.avant[1];
+  oeilGr.texte = m.oeil[0]; oeilGr.chiffres = m.oeil[1];
+  diaphragme.texte = "Anneau noir placé exactement là où se forme l'image du télescope. Il découpe le bord net et rond du champ : plus il est large, plus le champ réel est grand. " + m.diaphragme;
+  diaphragme.chiffres = `Champ réel ≈ champ apparent ÷ grossissement = ${m.afov}° ÷ ${Math.round(o.G)} = ${virgule(o.tReel, 2)}°`;
+  corps.chiffres = `${m.nom} · Ø du corps ≈ ${Math.round(2 * m.rCorps)} mm · ${m.prix}`;
+  bonnette.chiffres = `Dégagement de cet oculaire ≈ ${Math.round(o.ER)} mm`;
+  pupille.chiffres = `Ø = ${DT} ÷ ${Math.round(o.G)} = ${virgule(o.PS)} mm · à ≈ ${Math.round(o.ER)} mm de la lentille d'œil`;
+}
+
+function choisir(id) {
+  modele = id; m = MODELES[id];
+  opt = calculer();
+  for (const k in MODELES) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === id));
+  construire();
+  construireChamp();
+  const r = opt.PS / 20;
+  disquePupille.scale.set(1, r, r); disquePupille.position.x = X(opt.zPup);
+  haloPupille.position.x = X(opt.zPup); haloPupille.scale.setScalar(Math.max(0.25, opt.PS / 8));
+  pupille.ancre.set(X(opt.zPup), -Math.max(0.3, r) - 0.15, 0);
+  fiches();
+  lblChamp.el.textContent = `Champ apparent ${m.afov}°`;
+  cmdOeil.valeur = Math.round(opt.ER * 2) / 2;
+  S.regler("oeil", cmdOeil.valeur); // replace l'œil au bon dégagement (appelle placerOeil)
+}
+
+// ---------- Encart « Dans l'oculaire » ----------
+const ciel = (() => { // étoiles d'un coin de ciel : position vraie (degrés) et éclat
+  const r = alea(29), et = [];
+  for (let i = 0; i < 340; i++) {
+    const rr = 0.75 * Math.sqrt(r()), a = r() * 2 * Math.PI, u = r();
+    et.push({ x: rr * Math.cos(a), y: rr * Math.sin(a), b: 0.08 + Math.pow(u, 4) * 1.1, t: r() });
+  }
+  return et;
+})();
+function recouvrement(r1, r2, d) { // aire commune de deux disques
+  if (d >= r1 + r2) return 0;
+  if (d <= Math.abs(r1 - r2)) return Math.PI * Math.min(r1, r2) ** 2;
+  const a = Math.acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1)), b = Math.acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2));
+  return r1 * r1 * a + r2 * r2 * b - 0.5 * Math.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2));
+}
+// part de la lumière d'un faisceau incliné de alpha (degrés) qui entre dans l'œil
+const transmis = (alpha) => {
+  const rb = opt.PS / 2, dec = Math.abs(dOeil - opt.ER) * Math.tan(alpha * Math.PI / 180);
+  return recouvrement(rb, PUPILLE_OEIL, dec) / (Math.PI * rb * rb);
+};
+function dessinerApercu() {
+  const ap = S.apercu, cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  const o = opt, d = m.defauts, A_MAX = 43, amax = m.afov / 2;
+  if (W) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(W * dpr); cv.style.height = W + "px";
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, W);
+    const c = W / 2, k = (c - 2) / A_MAX, Rf = amax * k, u = W / 320;
+    // repère : champ de 82° en pointillés, pour comparer
+    if (m.afov < 82) {
+      ctx.setLineDash([3, 4]); ctx.strokeStyle = "rgba(196,208,224,0.28)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(c, c, 41 * k, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+      ctx.font = `${Math.max(10, 11 * u)}px Arial`; ctx.fillStyle = "rgba(196,208,224,0.55)"; ctx.textAlign = "center";
+      ctx.fillText("82°", c, c - 41 * k + 13 * u);
+    }
+    ctx.save();
+    ctx.beginPath(); ctx.arc(c, c, Rf, 0, 2 * Math.PI); ctx.clip();
+    // fond de ciel : plus sombre quand la pupille de sortie diminue ; assombri au bord si l'œil est mal placé
+    const fond = 0.05 + 0.1 * Math.min(o.PS, 7) ** 2 / 49 + 0.035 * d.voile;
+    const gr = ctx.createRadialGradient(c, c, 0, c, c, Rf);
+    for (let i = 0; i <= 10; i++) { const v = fond * transmis(amax * i / 10); gr.addColorStop(i / 10, `rgb(${Math.round(120 * v)},${Math.round(135 * v)},${Math.round(165 * v)})`); }
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, W, W);
+    ctx.globalCompositeOperation = "lighter";
+    for (const s of ciel) {
+      const ax = s.x * o.G, ay = s.y * o.G, al = Math.hypot(ax, ay);
+      if (al > amax + 1) continue;
+      const v = transmis(al);
+      if (v < 0.02) continue;
+      const q = al / amax, phi = Math.atan2(ay, ax);
+      const r0 = (0.5 + 1.2 * s.b) * u, q3 = q ** 2.5, lg = 1 + d.astig * 2 * q3, lr = 1 + d.astig * 0.25 * q3;
+      const dec = d.chroma * 2.4 * q ** 1.5 * u;
+      const lum = Math.min(1, (0.35 + s.b) * v / Math.sqrt(lg));
+      const teinte = s.t < 0.25 ? [255, 215, 175] : s.t > 0.8 ? [200, 220, 255] : [255, 248, 235];
+      for (const [ch, off] of [[0, dec], [1, 0], [2, -dec]]) {
+        const col = [0, 0, 0]; col[ch] = teinte[ch];
+        ctx.save();
+        ctx.translate(c + ax * k + Math.cos(phi) * off, c + ay * k + Math.sin(phi) * off);
+        ctx.rotate(phi); ctx.scale(lg, lr); // étirement radial (astigmatisme)
+        const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r0 * 1.8);
+        g.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${lum})`);
+        g.addColorStop(0.35, `rgba(${col[0]},${col[1]},${col[2]},${lum * 0.55})`);
+        g.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r0 * 1.8, 0, 2 * Math.PI); ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.strokeStyle = "rgba(255,255,255,0.16)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(c, c, Rf, 0, 2 * Math.PI); ctx.stroke();
+  }
+  const ecart = dOeil - o.ER;
+  const place = transmis(amax) >= 0.9 ? "Œil au bon dégagement : tout le champ est visible."
+    : ecart < 0 ? "Œil trop près : les faisceaux du bord manquent la pupille, le tour du champ s'assombrit."
+    : "Œil trop loin : on ne voit plus qu'une partie du champ, comme par le trou d'une serrure.";
+  const qualite = modele === "h25" ? " Hors du centre, les étoiles s'étirent et se colorent : le Huygens supporte mal un télescope ouvert à f/5." : "";
+  ap.legende.innerHTML = `<h2>${m.nom} · ${Math.round(o.G)}×</h2>
+    <p class="spec">Champ apparent ${m.afov}° · champ réel ${virgule(o.tReel, 2)}° · pupille de sortie ${virgule(o.PS)} mm · dégagement ≈ ${Math.round(o.ER)} mm</p>
+    <p>${place}${qualite}</p>`;
+}
+
+// ---------- Étiquettes et animation ----------
+const lumVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière du télescope", () => new THREE.Vector3(X(Z_DEPART) - 0.3, 0.9, 0), { lumiere: true, visible: lumVisible });
+const lblChamp = S.label("Champ apparent", () => new THREE.Vector3(X(opt.zPup) + 2.2, 3.2 * Math.sin(m.afov / 2 * Math.PI / 180) + 0.35, 0), { lumiere: true, visible: () => champ.visible });
+
+let largeur = 0;
+S.onFrame(({ time }) => {
+  const vis = lumVisible();
+  lumiere.group.visible = vis;
+  pupille.group.visible = vis;
+  champ.visible = S.state.champ && S.state.explode < 0.01;
+  S.notice((S.state.lumiere || S.state.champ) && S.state.explode >= 0.01 ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière." : null);
+  lumiere.photons.visible = S.state.anim || S.reduced;
+  if (vis) lumiere.animer(time, 5);
+  const W = S.apercu.canvas.clientWidth;
+  if (W !== largeur) { largeur = W; dessinerApercu(); }
+});
+
+dOeil = 8;
+choisir(modele);
+S.start();
+</script>
+</body>
+</html>

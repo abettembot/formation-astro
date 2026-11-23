@@ -43,6 +43,8 @@ export const materiaux = {
   // eau de mer (océans, enveloppe déformée par la marée) : bleu sourd, translucide pour laisser voir le globe
   eau: (opacite = 0.5) => new THREE.MeshStandardMaterial({ color: 0x6aa8d8, roughness: 0.35, metalness: 0, transparent: true, opacity: opacite, depthWrite: false, envMapIntensity: 0 }),
   lentille: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
+  // globe oculaire (œil de l'observateur) : blanc laiteux translucide, laisse voir les rayons à l'intérieur
+  oeil: () => new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.45, metalness: 0, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }),
   // silicium d'un capteur (photodiodes) : gris bleuté, translucide pour laisser voir les charges à l'intérieur
   silicium: () => new THREE.MeshStandardMaterial({ color: 0x5a6478, roughness: 0.3, metalness: 0.4, transparent: true, opacity: 0.4, depthWrite: false }),
   // filtre coloré (matrice de Bayer, filtre d'imagerie) : couleur vive, à peine translucide.
