@@ -34,8 +34,9 @@ const JOUR_SIDERAL = 0.99726957;              // 23 h 56 min 4 s, en jours solai
 const OEIL = new THREE.Vector3(0, 0.2, 0);    // point de vue « par les yeux » : au ras du sol, au centre
 
 // ---------- Position du Soleil (formules de l'Almanach astronomique, précision ≈ 0,01°) ----------
-function soleilDuJour(j) {
-  const n = (Date.UTC(ANNEE, 0, 1 + j, 12) - J2000) / 864e5;
+/** Le Soleil le jour j (0 = 1er janvier), à l'heure solaire h (12 h à 36 h : jusqu'à midi le lendemain). */
+function soleilDuJour(j, h = 12) {
+  const n = (Date.UTC(ANNEE, 0, 1 + j, 12) - J2000) / 864e5 + (h - 12) / 24;
   const g = (357.529 + 0.98560028 * n) * DEG;
   const lam = (280.459 + 0.98564736 * n + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * DEG;
   const eps = (23.439 - 0.00000036 * n) * DEG;
@@ -117,8 +118,10 @@ const S = createSchema({
   commandes: [
     { type: "curseur", id: "date", label: "Date", min: 0, max: 364, pas: 1, valeur: sim.j,
       format: (v) => fmtDate(v, "short"), onInput: (v) => { if (!pilote) { sim.j = v; dateSale = true; } } },
-    { type: "curseur", id: "heure", label: "Heure solaire", min: 0, max: 24, pas: 0.25, valeur: sim.heure,
-      format: fmtHeure, onInput: (v) => { if (!pilote) sim.heure = v; } },
+    // une nuit entière d'observation : de midi le jour choisi à midi le lendemain
+    { type: "curseur", id: "heure", label: "Heure solaire", min: 12, max: 36, pas: 0.25, valeur: sim.heure,
+      format: (v) => v < 24 ? fmtHeure(v) : `${fmtHeure(v)} · le ${fmtDate(sim.j + 1, "short").replace(/ .*/, "")}`,
+      onInput: (v) => { if (!pilote) sim.heure = v; } },
     { type: "curseur", id: "lat", label: "Latitude", min: -90, max: 90, pas: "any", valeur: LAT_CLUB,
       format: fmtLat, onInput: (v) => { if (!pilote) { sim.lat = v; latSale = true; } } },
     { type: "raccourcis", id: "jours", label: "Aller au", boutons: JOURS.map((d) => ({ id: d.id, label: d.label, onClick: () => regler("date", d.j) })) },
@@ -517,16 +520,17 @@ let tPrec = 0, introPrec = "";
 S.onFrame(({ time }) => {
   const dtt = time - tPrec; tPrec = time;
   if (latSale) { orienterSphere(); majZones(); }
-  let sj = soleilDuJour(sim.j);
-  // le temps passe : le ciel tourne, plus vite de jour ; à minuit, on passe au lendemain
+  // le temps passe : le ciel tourne, plus vite de jour ; à midi le lendemain, on enchaîne sur la nuit suivante
   if (dtt > 0) {
-    const hS = hauteur(sim.lat, sj.dec, (sim.heure - 12) * 15);
-    sim.heure += dtt * (hS > 0 ? 2 : 0.8);
-    if (sim.heure >= 24) { sim.heure -= 24; sim.j = (sim.j + 1) % 365; dateSale = true; recaler("date", sim.j); sj = soleilDuJour(sim.j); }
+    const s0 = soleilDuJour(sim.j, sim.heure);
+    sim.heure += dtt * (hauteur(sim.lat, s0.dec, (sim.heure - 12) * 15) > 0 ? 2 : 0.8);
+    if (sim.heure >= 36) { sim.heure -= 24; sim.j = (sim.j + 1) % 365; dateSale = true; recaler("date", sim.j); affiche.heure = null; }
   }
+  const sj = soleilDuJour(sim.j, sim.heure);
+  if (dateSale) affiche.heure = null; // l'heure affiche la date du lendemain après minuit
   recaler("heure", sim.heure);
   voute.rotation.y = -tsl(sj.ad, sim.heure) * DEG;
-  if (dateSale) soleil.position.copy(surVoute(sj.ad, sj.dec, R * 0.97));
+  soleil.position.copy(surVoute(sj.ad, sj.dec, R * 0.97));
   sphere.updateMatrixWorld(true);
 
   // jour ou nuit
