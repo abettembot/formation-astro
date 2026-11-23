@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mouvement apparent des étoiles</title>
+<meta name="description" content="Schéma 3D interactif du mouvement apparent des étoiles : étoiles circumpolaires, lever et coucher selon la latitude, ciel des solstices et des équinoxes, avec la vraie carte du ciel.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, legende, halo } from "../commun/schema.js";
+import { ETOILES, TRACES, CONSTELLATIONS } from "./ciel.js";
+
+// ---------- Échelle et repères ----------
+// 1 unité = 1 m autour de l'observateur. La sphère céleste (rayon 10 m) est symbolique :
+// elle porte les directions dans lesquelles on voit les étoiles, toutes à des distances immenses.
+// Repère local : sol = plan XZ, zénith = +Y, nord = −Z, sud = +Z, est = +X, ouest = −X.
+// Sphère céleste : groupe « sphere » dont l'axe Y local est l'axe du monde (vers le pôle nord céleste) ;
+// le groupe « voute » tourne autour de cet axe et porte les étoiles, placées par ascension droite (α) et déclinaison (δ).
+const DEG = Math.PI / 180;
+const R = 10, R_SOL = 11.5;
+const LAT_CLUB = 49 + 38 / 60 + 55 / 3600;   // Rouvroy, commune du club : 49° 38′ 55″ N
+const ANNEE = 2026, J2000 = Date.UTC(2000, 0, 1, 12);
+const JOUR_SIDERAL = 0.99726957;              // 23 h 56 min 4 s, en jours solaires
+const OEIL = new THREE.Vector3(0, 0.2, 0);    // point de vue « par les yeux » : au ras du sol, au centre
+
+// ---------- Position du Soleil (formules de l'Almanach astronomique, précision ≈ 0,01°) ----------
+function soleilDuJour(j) {
+  const n = (Date.UTC(ANNEE, 0, 1 + j, 12) - J2000) / 864e5;
+  const g = (357.529 + 0.98560028 * n) * DEG;
+  const lam = (280.459 + 0.98564736 * n + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * DEG;
+  const eps = (23.439 - 0.00000036 * n) * DEG;
+  return {
+    dec: Math.asin(Math.sin(eps) * Math.sin(lam)) / DEG,
+    ad: mod(Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam)) / DEG, 360),
+  };
+}
+/** Heure sidérale locale (degrés) pour une ascension droite du Soleil et une heure solaire vraie. */
+const tsl = (adSoleil, heure) => mod(adSoleil + (heure - 12) * 15, 360);
+/** Hauteur (degrés) d'un astre de déclinaison dec, à l'angle horaire H (degrés), pour la latitude phi. */
+function hauteur(phi, dec, H) {
+  const p = phi * DEG, d = dec * DEG;
+  return Math.asin(Math.sin(p) * Math.sin(d) + Math.cos(p) * Math.cos(d) * Math.cos(H * DEG)) / DEG;
+}
+/** Azimut (degrés, depuis le nord vers l'est). */
+function azimut(phi, dec, H) {
+  const p = phi * DEG, d = dec * DEG, h = H * DEG;
+  return mod(Math.atan2(-Math.cos(d) * Math.sin(h), Math.cos(p) * Math.sin(d) - Math.sin(p) * Math.cos(d) * Math.cos(h)) / DEG, 360);
+}
+/** Le comportement d'une étoile à une latitude : circumpolaire, levée et couchée, ou jamais visible. */
+function parcours(phi, dec) {
+  const haute = 90 - Math.abs(phi - dec);           // culmination supérieure
+  const basse = Math.abs(phi + dec) - 90;           // culmination inférieure
+  if (basse >= 0) return { type: "circ", haute, basse };
+  if (haute < 0) return { type: "jamais", haute, basse };
+  const c = -Math.tan(phi * DEG) * Math.tan(dec * DEG);
+  const H0 = Math.acos(Math.min(1, Math.max(-1, c))) / DEG;
+  const cA = Math.min(1, Math.max(-1, Math.sin(dec * DEG) / Math.cos(phi * DEG)));
+  return { type: "leve", haute, basse, duree: 2 * H0 / 15 * JOUR_SIDERAL, azLever: Math.acos(cA) / DEG };
+}
+/** Durée du jour (lever et coucher du Soleil, réfraction et demi-diamètre compris). */
+function journee(phi, dec) {
+  const p = phi * DEG, d = dec * DEG, h0 = -0.833 * DEG;
+  const c = (Math.sin(h0) - Math.sin(p) * Math.sin(d)) / (Math.max(Math.cos(p), 1e-9) * Math.cos(d));
+  if (c >= 1) return { nuit: true };
+  if (c <= -1) return { jour: true };
+  const H0 = Math.acos(c) / DEG / 15;
+  return { lever: 12 - H0, coucher: 12 + H0 };
+}
+
+// ---------- Mise en forme ----------
+function mod(v, m) { return ((v % m) + m) % m; }
+const dateDe = (j) => new Date(Date.UTC(ANNEE, 0, 1 + Math.round(j)));
+const fmtDate = (j, mois = "long") => dateDe(j).toLocaleDateString("fr-FR", { day: "numeric", month: mois, timeZone: "UTC" });
+const fmt = (v, n = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+const fmtSigne = (v, n = 1) => (v >= 0 ? "+" : "−") + fmt(Math.abs(v), n);
+const fmtHeure = (h) => { const m = Math.round(mod(h, 24) * 60) % 1440; return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmtDuree = (h) => { const m = Math.round(h * 60); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmtLat = (v) => Math.abs(v) < 0.05 ? "0° (équateur)" : `${fmt(Math.abs(v), 1)}° ${v > 0 ? "N" : "S"}`;
+const POINTS = ["nord", "nord-est", "est", "sud-est", "sud", "sud-ouest", "ouest", "nord-ouest"];
+const direction = (az) => POINTS[Math.round(mod(az, 360) / 45) % 8];
+
+// ---------- Dates clés 2026 et lieux ----------
+const JOURS = [
+  { id: "mars", label: "Équinoxe de mars", j: 78 },     // 20 mars 2026
+  { id: "juin", label: "Solstice de juin", j: 171 },    // 21 juin 2026
+  { id: "sept", label: "Équinoxe de sept.", j: 265 },   // 23 septembre 2026
+  { id: "dec", label: "Solstice de déc.", j: 354 },     // 21 décembre 2026
+];
+const LIEUX = [
+  { id: "pole", label: "Pôle Nord", lat: 90 },
+  { id: "rouvroy", label: "Rouvroy", lat: LAT_CLUB },
+  { id: "equateur", label: "Équateur", lat: 0 },
+  { id: "sydney", label: "Sydney", lat: -33.87 },
+];
+
+// ---------- État ----------
+const sim = { j: 354, heure: 22, lat: LAT_CLUB };
+let pilote = false, latSale = true, dateSale = true;
+
+const limite = () => 90 - Math.abs(sim.lat); // déclinaison limite des circumpolaires (en valeur absolue)
+
+const S = createSchema({
+  surtitre: "Support de formation · Ciel",
+  titre: "Mouvement apparent des étoiles",
+  sousTitre: "Exemple : Rouvroy, latitude 49° 39′ N",
+  distanceMax: 100,
+  commandes: [
+    { type: "curseur", id: "date", label: "Date", min: 0, max: 364, pas: 1, valeur: sim.j,
+      format: (v) => fmtDate(v, "short"), onInput: (v) => { if (!pilote) { sim.j = v; dateSale = true; } } },
+    { type: "curseur", id: "heure", label: "Heure solaire", min: 0, max: 24, pas: 0.25, valeur: sim.heure,
+      format: fmtHeure, onInput: (v) => { if (!pilote) sim.heure = v; } },
+    { type: "curseur", id: "lat", label: "Latitude", min: -90, max: 90, pas: "any", valeur: LAT_CLUB,
+      format: fmtLat, onInput: (v) => { if (!pilote) { sim.lat = v; latSale = true; } } },
+    { type: "raccourcis", id: "jours", label: "Aller au", boutons: JOURS.map((d) => ({ id: d.id, label: d.label, onClick: () => regler("date", d.j) })) },
+    { type: "raccourcis", id: "lieux", label: "Lieu", boutons: LIEUX.map((l) => ({ id: l.id, label: l.label, onClick: () => regler("lat", l.lat) })) },
+    { type: "bascule", id: "constellations", label: "Constellations", actif: true },
+    { type: "bascule", id: "trajets", label: "Trajectoires", actif: true },
+    { type: "bascule", id: "zones", label: "Zones", actif: true },
+    { type: "bascule", id: "reperes", label: "Repères", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [27, 30, 54] : [14, 15, 28], cible: [0, 1.5, 0] },
+    { id: "nord", label: "Face au nord", fov: 80, exacte: true, pos: OEIL, cible: () => viseeVers(0, Math.min(45, Math.max(25, Math.abs(sim.lat) - 10))) },
+    { id: "sud", label: "Face au sud", fov: 80, exacte: true, pos: OEIL, cible: () => viseeVers(180, 30) },
+    { id: "est", label: "Face à l'est", fov: 80, exacte: true, pos: OEIL, cible: () => viseeVers(90, 30) },
+  ],
+  intro: () => `
+    <div class="eyebrow">Ce qu'on voit dans le ciel</div>
+    <p>Au fil de la nuit, toutes les étoiles tournent ensemble autour d'un point fixe du ciel, tout près de l'étoile Polaire. C'est la Terre qui tourne sur elle-même, en 23 h 56 min. Vues d'un lieu donné, les étoiles se rangent en trois familles :</p>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "Les circumpolaires, autour de la Polaire, ne se couchent jamais : la Grande Ourse, Cassiopée, Céphée. On les voit toutes les nuits de l'année." },
+      { couleur: COULEURS.ambre, texte: "Les autres se lèvent à l'est, culminent au sud, puis se couchent à l'ouest, comme le Soleil : Orion, le Lion, le Scorpion…" },
+      { couleur: COULEURS.corail, texte: "Les plus proches du pôle sud céleste ne se lèvent jamais chez nous : la Croix du Sud et Canopus restent sous l'horizon." },
+    ])}
+    <div class="eyebrow">Selon la latitude</div>
+    <p>La hauteur du pôle céleste au-dessus de l'horizon est égale à la latitude. Au pôle Nord, la Polaire est au zénith : toutes les étoiles visibles sont circumpolaires. À l'équateur, elle est sur l'horizon : toutes se lèvent et se couchent.</p>
+    <div class="eyebrow">Selon la saison</div>
+    <p>Le Soleil glisse devant les étoiles d'environ 1° par jour et fait le tour du ciel en un an. Les constellations proches de lui sont dans le ciel de jour, donc invisibles. À heure fixe, le ciel du soir prend 2 h d'avance par mois : Orion brille les soirs d'hiver, le Scorpion les soirs d'été.</p>
+    <p class="spec">${limitesTexte()}</p>
+    ${ceSoir()}`,
+});
+
+// ---------- Réglages pilotés par le script (raccourcis, animation) ----------
+const affiche = {};
+function recaler(id, v) {
+  const r = Math.round(v * 100);
+  if (affiche[id] === r) return;
+  affiche[id] = r; pilote = true; S.regler(id, v); pilote = false;
+}
+function regler(id, v) {
+  if (id === "date") { sim.j = v; dateSale = true; }
+  if (id === "lat") { sim.lat = v; latSale = true; }
+  recaler(id, v);
+}
+function viseeVers(az, h) {
+  const a = az * DEG, e = h * DEG;
+  return new THREE.Vector3(Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e)).multiplyScalar(R).add(OEIL);
+}
+const parSesYeux = () => S.camera.position.length() < 1.5;
+
+// ---------- Fond et éclairage ----------
+S.ciel.visible = false;                       // le ciel de fond aléatoire céderait la place à la vraie carte
+S.scene.environmentIntensity = 0.25;
+S.lumieres.contre.intensity = 0;
+
+// uniforms partagés par les étoiles et les lignes du ciel
+const U = {
+  sous: { value: 0.15 },   // visibilité de ce qui est sous l'horizon (vue de l'extérieur : estompé ; par les yeux : caché)
+  nuit: { value: 1 },      // 0 en plein jour, 1 en nuit noire (vue par les yeux seulement)
+  echelle: { value: 1 },   // taille des points en pixels
+};
+const FONDU = "mix(sous, 1.0, smoothstep(-0.08, 0.08, w.y))";
+function matLigne(couleur, opacite) {
+  return new THREE.ShaderMaterial({
+    uniforms: { couleur: { value: new THREE.Color(couleur) }, opacite: { value: opacite }, sous: U.sous },
+    vertexShader: `uniform float sous; varying float vA;
+      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vA = ${FONDU}; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform vec3 couleur; uniform float opacite; varying float vA;
+      void main() { float a = opacite * vA; if (a < 0.003) discard; gl_FragColor = vec4(couleur, a);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false,
+  });
+}
+const ligne = (pts, couleur, op) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), matLigne(couleur, op));
+/** Cercle de déclinaison dec, dans le repère de la sphère céleste. */
+const cercleDec = (dec, n = 160) => Array.from({ length: n + 1 }, (_, i) => {
+  const a = i / n * 2 * Math.PI, c = Math.cos(dec * DEG);
+  return new THREE.Vector3(Math.cos(a) * c, Math.sin(dec * DEG), Math.sin(a) * c).multiplyScalar(R);
+});
+/** Position d'une étoile dans le repère de la voûte (qui tourne). */
+const surVoute = (ad, dec, r = R) => new THREE.Vector3(Math.cos(dec * DEG) * Math.cos(ad * DEG), Math.sin(dec * DEG), -Math.cos(dec * DEG) * Math.sin(ad * DEG)).multiplyScalar(r);
+/** Position dans le repère de la sphère (fixe) : déclinaison et angle horaire. */
+const surSphere = (dec, H, r = R) => new THREE.Vector3(Math.cos(dec * DEG) * Math.cos(H * DEG), Math.sin(dec * DEG), Math.cos(dec * DEG) * Math.sin(H * DEG)).multiplyScalar(r);
+
+// ---------- Sphère céleste ----------
+const sphere = new THREE.Group(), voute = new THREE.Group();
+sphere.add(voute); S.scene.add(sphere);
+function orienterSphere() {
+  const p = sim.lat * DEG;
+  const A = new THREE.Vector3(0, Math.cos(p), Math.sin(p));   // équateur céleste au méridien sud
+  const C = new THREE.Vector3(0, Math.sin(p), -Math.cos(p));  // pôle nord céleste
+  const B = new THREE.Vector3(-1, 0, 0);                      // équateur céleste à l'ouest
+  sphere.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(A, C, B));
+  sphere.updateMatrixWorld(true);
+}
+const versMonde = (g, v) => g.localToWorld(v.clone());
+
+// ---------- Sol, horizon et points cardinaux ----------
+const sol = S.part("horizon", "Horizon", {
+  etiquette: false,
+  texte: "Le sol cache la moitié de la sphère céleste : on ne voit que ce qui est au-dessus de l'horizon. Une étoile se lève quand elle franchit l'horizon et se couche quand elle repasse dessous. Le point juste au-dessus de la tête s'appelle le zénith.",
+  chiffres: "Hauteur : 0° sur l'horizon, 90° au zénith · azimut compté depuis le nord, vers l'est",
+});
+const matSol = M.sol(); matSol.transparent = true;
+const disqueSol = S.add(sol, mesh(new THREE.CircleGeometry(R_SOL, 96).rotateX(-Math.PI / 2), matSol));
+disqueSol.renderOrder = -2;
+S.scene.add(ligne(Array.from({ length: 129 }, (_, i) => new THREE.Vector3(Math.cos(i / 64 * Math.PI) * R, 0.02, Math.sin(i / 64 * Math.PI) * R)), 0xc4d0e0, 0.55));
+for (const [nom, x, z] of [["Nord", 0, -1], ["Est", 1, 0], ["Sud", 0, 1], ["Ouest", -1, 0]]) {
+  S.label(nom, () => new THREE.Vector3(x * (R + 0.4), 0.1, z * (R + 0.4)), { partId: "horizon" });
+}
+
+// ---------- Repères : hauteurs, méridien, zénith ----------
+const reperes = new THREE.Group(); S.scene.add(reperes);
+{
+  const cercleH = (h) => Array.from({ length: 129 }, (_, i) => new THREE.Vector3(Math.cos(i / 64 * Math.PI) * R * Math.cos(h * DEG), R * Math.sin(h * DEG), Math.sin(i / 64 * Math.PI) * R * Math.cos(h * DEG)));
+  for (const h of [30, 60]) reperes.add(ligne(cercleH(h), 0x8b9ab0, 0.22));
+  const meridien = []; for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI; meridien.push(new THREE.Vector3(0, Math.sin(a) * R, -Math.cos(a) * R)); }
+  reperes.add(ligne(meridien, 0x8b9ab0, 0.3));
+}
+for (const h of [30, 60]) S.label(h + "°", () => new THREE.Vector3(0, R * Math.sin(h * DEG) + 0.15, R * Math.cos(h * DEG)), { visible: () => S.state.reperes });
+S.label("Zénith", () => new THREE.Vector3(0, R + 0.3, 0), { visible: () => S.state.reperes && !parSesYeux() });
+
+// ---------- Observateur ----------
+const obs = S.part("observateur", "Observateur", {
+  etiquette: false,
+  texte: "Il est au centre de la sphère céleste. Tout se passe comme si les étoiles étaient fixées sur une immense sphère qui tourne autour de lui en un peu moins de 24 heures. En réalité, elles sont à des distances très différentes, mais si lointaines que leurs positions entre elles ne changent pas à l'œil, même en une vie.",
+  chiffres: "Étoile la plus proche visible à l'œil nu : Alpha du Centaure, à 4,4 années-lumière",
+});
+{
+  const mat = () => M.peinture();
+  for (const s of [-1, 1]) {
+    S.add(obs, mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.85, 12), mat(), s * 0.1, 0.43, 0));
+    const bras = S.add(obs, mesh(new THREE.CylinderGeometry(0.05, 0.045, 0.62, 12), mat(), s * 0.27, 1.12, 0));
+    bras.rotation.z = s * 0.18;
+  }
+  S.add(obs, mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.65, 16), mat(), 0, 1.17, 0));
+  S.add(obs, mesh(new THREE.SphereGeometry(0.14, 20, 14), mat(), 0, 1.65, 0));
+}
+S.label("Observateur", () => new THREE.Vector3(0, 2.05, 0), { partId: "observateur", visible: () => !parSesYeux() });
+
+// ---------- Axe du monde et équateur céleste ----------
+const pAxe = S.part("axe", "Axe du monde", {
+  etiquette: false,
+  texte: "Le prolongement de l'axe de rotation de la Terre. Il perce le ciel au pôle nord céleste, à moins de 1° de l'étoile Polaire. Tout le ciel tourne autour de cet axe, de l'est vers l'ouest. Sa hauteur au-dessus de l'horizon nord est égale à la latitude du lieu.",
+  extra: () => `<p class="spec">Ici (${fmtLat(sim.lat)}) : pôle ${sim.lat >= 0 ? "nord" : "sud"} céleste à ${fmt(Math.abs(sim.lat), 1)}° au-dessus de l'horizon ${sim.lat >= 0 ? "nord" : "sud"}.</p>`,
+});
+{
+  const axe = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -R, 0), new THREE.Vector3(0, R * 1.08, 0)]),
+    new THREE.LineDashedMaterial({ color: COULEURS.etoile, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.6, depthWrite: false }));
+  axe.computeLineDistances();
+  sphere.add(axe);
+}
+const poleN = new THREE.Vector3(0, R, 0), poleS = new THREE.Vector3(0, -R, 0);
+const lblPoleN = S.label("Pôle nord céleste", () => versMonde(sphere, poleN.clone().multiplyScalar(1.1)), { partId: "axe", visible: () => S.state.reperes && !parSesYeux() });
+S.label("Pôle sud céleste", () => versMonde(sphere, poleS.clone().multiplyScalar(1.05)), { partId: "axe", visible: () => S.state.reperes && Math.abs(sim.lat) > 1 && (versMonde(sphere, poleS).y > 0 || !parSesYeux()) });
+
+const pEquateur = S.part("equateur", "Équateur céleste", {
+  etiquette: false,
+  texte: "Le prolongement de l'équateur terrestre sur le ciel. Il coupe l'horizon exactement à l'est et à l'ouest. Une étoile placée dessus reste 12 heures au-dessus de l'horizon, comme le Soleil le jour des équinoxes. Les étoiles au nord de l'équateur céleste restent visibles plus de 12 heures (dans l'hémisphère Nord), celles au sud moins.",
+  extra: () => `<p class="spec">Déclinaison 0° · ici (${fmtLat(sim.lat)}) : il culmine à ${fmt(90 - Math.abs(sim.lat), 1)}° au-dessus de l'horizon ${sim.lat >= 0 ? "sud" : "nord"}.</p>`,
+});
+const equateur = ligne(cercleDec(0), 0x8b9ab0, 0.7);
+sphere.add(equateur);
+const posEquateur = surSphere(0, -45);
+S.label("Équateur céleste", () => versMonde(sphere, posEquateur), { partId: "equateur", visible: () => S.state.reperes && (versMonde(sphere, posEquateur).y > 0 || !parSesYeux()) });
+
+// ---------- Zones : circumpolaires, levées et couchées, jamais visibles ----------
+const COUL_ZONE = { circ: COULEURS.etoile, leve: COULEURS.ambre, jamais: COULEURS.corail };
+const zones = new THREE.Group(); sphere.add(zones);
+const pCirc = S.part("circ", "Étoiles circumpolaires", {
+  etiquette: false, parent: zones,
+  texte: "Assez proches du pôle céleste, ces étoiles décrivent tout leur cercle au-dessus de l'horizon : elles ne se couchent jamais. On les voit toutes les nuits de l'année, hautes ou basses selon l'heure et la saison. Plus on va vers le pôle, plus cette calotte grandit.",
+  extra: () => {
+    const L = limite();
+    if (L >= 89.9) return `<p class="spec">À l'équateur, aucune étoile n'est circumpolaire : toutes se lèvent et se couchent.</p>`;
+    return `<p class="spec">Déclinaison au-delà de ${fmtSigne(sim.lat >= 0 ? L : -L)}° (90° − latitude) · ici, ${fmt(100 * (1 - Math.sin(L * DEG)) / 2, 0)} % du ciel.</p>`;
+  },
+});
+const pLeve = S.part("leve", "Étoiles qui se lèvent et se couchent", {
+  etiquette: false, parent: zones,
+  texte: "Leur cercle est coupé par l'horizon. Elles se lèvent du côté est, culminent plein sud (dans l'hémisphère Nord), puis se couchent du côté ouest. Plus une étoile est au nord, plus elle reste longtemps au-dessus de l'horizon.",
+  extra: () => {
+    const L = limite();
+    return `<p class="spec">Déclinaison entre −${fmt(L, 1)}° et +${fmt(L, 1)}° · ici, ${fmt(100 * Math.sin(L * DEG), 0)} % du ciel · une étoile de l'équateur céleste reste 12 h levée.</p>`;
+  },
+});
+const pJamais = S.part("jamais", "Étoiles jamais visibles", {
+  etiquette: false, parent: zones,
+  texte: "Trop proches du pôle céleste qui reste sous l'horizon, ces étoiles ne se lèvent jamais. Pour les voir, il faut voyager vers l'équateur. Depuis la France, la Croix du Sud, Canopus et les Nuages de Magellan sont ainsi invisibles.",
+  extra: () => {
+    const L = limite();
+    if (L >= 89.9) return `<p class="spec">À l'équateur, toutes les étoiles du ciel finissent par se lever au cours de l'année.</p>`;
+    return `<p class="spec">Déclinaison au-delà de ${fmtSigne(sim.lat >= 0 ? -L : L)}° · ici, ${fmt(100 * (1 - Math.sin(L * DEG)) / 2, 0)} % du ciel reste toujours caché.</p>`;
+  },
+});
+const calottes = { circ: null, jamais: null }, bords = new THREE.Group(); zones.add(bords);
+function majZones() {
+  for (const k of ["circ", "jamais"]) {
+    const p = k === "circ" ? pCirc : pJamais;
+    S.viderElement(p);
+    const L = limite();
+    if (L >= 89.9) continue;
+    const vers = (k === "circ") === (sim.lat >= 0) ? 1 : -1; // calotte autour du pôle nord (+1) ou sud (−1)
+    const ouv = (90 - L) * DEG;
+    const g = vers > 0 ? new THREE.SphereGeometry(R * 0.995, 72, 18, 0, 2 * Math.PI, 0, ouv)
+                       : new THREE.SphereGeometry(R * 0.995, 72, 18, 0, 2 * Math.PI, Math.PI - ouv, ouv);
+    calottes[k] = S.add(p, mesh(g, M.lumineux(COUL_ZONE[k], k === "circ" ? 0.07 : 0.1)));
+  }
+  for (const o of bords.children) { o.geometry.dispose(); o.material.dispose(); }
+  bords.clear();
+  const L = limite();
+  if (L < 89.9) {
+    const s = sim.lat >= 0 ? 1 : -1;
+    bords.add(ligne(cercleDec(s * L), COUL_ZONE.circ, 0.75), ligne(cercleDec(-s * L), COUL_ZONE.jamais, 0.75));
+  }
+  const s = sim.lat >= 0 ? 1 : -1;
+  posZone.circ.copy(surSphere(s * (90 - (90 - L) * 0.45), 180));
+  posZone.leve.copy(surSphere(s * L * 0.35, -70));
+  posZone.jamais.copy(surSphere(-s * (90 - (90 - L) * 0.5), 0));
+}
+const posZone = { circ: new THREE.Vector3(), leve: new THREE.Vector3(), jamais: new THREE.Vector3() };
+for (const [k, nom] of [["circ", "Circumpolaires"], ["leve", "Se lèvent et se couchent"], ["jamais", "Jamais visibles"]]) {
+  S.label(nom, () => versMonde(sphere, posZone[k]), { partId: k, visible: () => S.state.zones && (k === "leve" || limite() < 89.9) && (versMonde(sphere, posZone[k]).y > 0 || !parSesYeux()) });
+}
+
+// ---------- Les étoiles : la vraie carte du ciel ----------
+function teinteBV(bv) {
+  const P = [[-0.3, 0.62, 0.72, 1], [0, 0.8, 0.86, 1], [0.6, 1, 0.96, 0.88], [1.0, 1, 0.85, 0.65], [1.6, 1, 0.7, 0.45]];
+  let k = 0; while (k < P.length - 2 && bv > P[k + 1][0]) k++;
+  const [a, b] = [P[k], P[k + 1]], t = Math.min(1, Math.max(0, (bv - a[0]) / (b[0] - a[0])));
+  return new THREE.Color().setRGB(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t, THREE.SRGBColorSpace);
+}
+{
+  const n = ETOILES.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), mag = new Float32Array(n);
+  ETOILES.forEach(([ad, dec, m, bv], i) => {
+    pos.set(surVoute(ad, dec, R * 0.99).toArray(), i * 3);
+    const c = teinteBV(bv); col.set([c.r, c.g, c.b], i * 3);
+    mag[i] = m;
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("teinte", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("mag", new THREE.BufferAttribute(mag, 1));
+  const etoiles = new THREE.Points(g, new THREE.ShaderMaterial({
+    uniforms: U,
+    vertexShader: `attribute float mag; attribute vec3 teinte; uniform float sous, nuit, echelle; varying vec3 vC; varying float vA;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        float a = clamp(1.3 - 0.16 * mag, 0.4, 1.0) * ${FONDU};
+        a *= clamp(nuit * 7.0 - (mag + 1.5), 0.0, 1.0);   // au crépuscule, seules les plus brillantes restent
+        vA = a; vC = teinte;
+        gl_PointSize = max(2.6, 11.0 - 1.7 * mag) * echelle;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `varying vec3 vC; varying float vA;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0; if (d > 1.0) discard;
+        float c = pow(1.0 - d, 1.6) + 0.6 * (1.0 - smoothstep(0.0, 0.35, d));   // halo doux et cœur net
+        gl_FragColor = vec4(vC, min(1.0, c) * vA * 1.4);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  etoiles.frustumCulled = false;
+  voute.add(etoiles);
+}
+
+// tracés et noms des constellations
+const constellations = new THREE.Group(); voute.add(constellations);
+{
+  const pts = [];
+  for (const t of TRACES) for (let i = 0; i + 3 < t.length; i += 2) pts.push(surVoute(t[i], t[i + 1], R * 0.992), surVoute(t[i + 2], t[i + 3], R * 0.992));
+  constellations.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), matLigne(0x8b9ab0, 0.5)));
+}
+function texteSprite(txt) {
+  const cv = document.createElement("canvas"), ctx = cv.getContext("2d"), H = 64;
+  ctx.font = `${H * 0.6}px Arial`;
+  cv.width = Math.ceil(ctx.measureText(txt).width) + 16; cv.height = H;
+  ctx.font = `${H * 0.6}px Arial`; ctx.fillStyle = "#c4d0e0"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(txt, cv.width / 2, H / 2);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.75, depthWrite: false }));
+  s.scale.set(0.42 * cv.width / H, 0.42, 1);
+  return s;
+}
+const noms = CONSTELLATIONS.filter((c) => c[3] <= 2).map(([nom, ad, dec]) => {
+  const s = texteSprite(nom); s.position.copy(surVoute(ad, dec, R * 0.97)); constellations.add(s); return s;
+});
+
+// ---------- Étoiles repères (fiche chiffrée) ----------
+const REPERES = [
+  { id: "polaire", nom: "Polaire", hip: 11767,
+    texte: "L'étoile brillante la plus proche du pôle nord céleste. Elle semble immobile : son cercle quotidien est minuscule. Elle indique le nord, et sa hauteur donne la latitude. Elle n'est pas très brillante : on la trouve en prolongeant cinq fois le bord de la « casserole » de la Grande Ourse.",
+    chiffres: "Magnitude 2,0 · déclinaison +89,3° · à ≈ 430 années-lumière" },
+  { id: "dubhe", nom: "Dubhe", hip: 54061,
+    texte: "L'une des deux étoiles du bord de la casserole de la Grande Ourse, celles qui pointent vers la Polaire. Chez nous, elle est circumpolaire : haute dans le ciel les soirs de printemps, basse au-dessus de l'horizon nord les soirs d'automne.",
+    chiffres: "Magnitude 1,8 · déclinaison +61,8° · à ≈ 120 années-lumière" },
+  { id: "vega", nom: "Véga", hip: 91262,
+    texte: "L'étoile brillante de la Lyre, l'un des trois sommets du Triangle d'été. À Rouvroy, elle est juste à la limite : elle passe sous l'horizon nord moins de 3 heures par jour, et si bas qu'on la croit presque circumpolaire.",
+    chiffres: "Magnitude 0,0 · déclinaison +38,8° · à 25 années-lumière" },
+  { id: "betelgeuse", nom: "Bételgeuse", hip: 27989,
+    texte: "La supergéante rouge de l'épaule d'Orion. Presque sur l'équateur céleste, elle se lève presque plein est, se couche presque plein ouest et reste un peu plus de 12 heures au-dessus de l'horizon. C'est une étoile des soirées d'hiver.",
+    chiffres: "Magnitude 0,5 (variable) · déclinaison +7,4° · à ≈ 550 années-lumière" },
+  { id: "sirius", nom: "Sirius", hip: 32349,
+    texte: "L'étoile la plus brillante du ciel nocturne, dans le Grand Chien. Bien au sud de l'équateur céleste, elle reste basse chez nous et ne passe qu'environ 9 heures au-dessus de l'horizon. Près de l'horizon, la turbulence la fait scintiller de toutes les couleurs.",
+    chiffres: "Magnitude −1,5 · déclinaison −16,7° · à 8,6 années-lumière" },
+  { id: "canopus", nom: "Canopus", hip: 30438,
+    texte: "La deuxième étoile la plus brillante du ciel. Trop au sud, elle ne se lève jamais en France métropolitaine. Il faut descendre sous 37° de latitude nord (sud de l'Espagne, Afrique du Nord) pour la voir raser l'horizon sud.",
+    chiffres: "Magnitude −0,6 · déclinaison −52,7° · à ≈ 310 années-lumière" },
+];
+const anneaux = [];
+const trajets = new THREE.Group(); sphere.add(trajets);
+for (const r of REPERES) {
+  const [ad, dec] = ETOILES.find((e) => e[4] === r.hip);
+  Object.assign(r, { ad, dec, pos: surVoute(ad, dec, R * 0.99) });
+  const p = S.part(r.id, r.nom, {
+    etiquette: false, parent: voute,
+    texte: r.texte, chiffres: r.chiffres,
+    extra: () => ficheEtoile(r),
+  });
+  // sphère invisible, pour pouvoir cliquer l'étoile
+  const cible = S.add(p, mesh(new THREE.SphereGeometry(0.28, 12, 8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })));
+  cible.position.copy(r.pos);
+  const an = halo(COULEURS.etoile, 1.1); an.position.copy(r.pos); an.visible = false; voute.add(an);
+  anneaux.push([r.id, an]);
+  S.label(r.nom, () => versMonde(voute, r.pos), { partId: r.id, visible: () => (versMonde(voute, r.pos).y > 0.1 || !parSesYeux()) });
+  // cercle quotidien de l'étoile, dans la sphère (fixe)
+  r.cercle = ligne(cercleDec(dec), COULEURS.ambre, 0.8);
+  trajets.add(r.cercle);
+}
+function ficheEtoile(r) {
+  const c = parcours(sim.lat, r.dec);
+  const ici = `Ici (${fmtLat(sim.lat)})`;
+  let txt;
+  if (c.type === "circ") txt = `${ici} : circumpolaire, jamais couchée · hauteur entre ${fmt(c.basse, 1)}° et ${fmt(Math.min(90, c.haute), 1)}°.`;
+  else if (c.type === "jamais") txt = `${ici} : ne se lève jamais · elle culmine à ${fmt(-c.haute, 1)}° sous l'horizon.`;
+  else txt = `${ici} : levée ${fmtDuree(c.duree)} par jour · se lève au ${direction(c.azLever)} · culmine à ${fmt(c.haute, 1)}°.`;
+  let date = "";
+  if (c.type !== "jamais") {
+    const sj = soleilDuJour(sim.j);
+    const hCulm = mod(12 + (r.ad - sj.ad) / 15, 24);     // heure solaire où l'étoile passe au méridien
+    const hSol = hauteur(sim.lat, sj.dec, (hCulm - 12) * 15);
+    date = `<p class="spec">Le ${fmtDate(sim.j)}, elle culmine à ${fmtHeure(hCulm)} (heure solaire)${hSol > -6 ? ", en plein jour" : ", en pleine nuit"}.</p>`;
+  }
+  return `<p class="spec">${txt}</p>${date}`;
+}
+
+// ---------- Soleil ----------
+const pSoleil = S.part("soleil", "Soleil", {
+  etiquette: false, parent: voute,
+  texte: "Il glisse devant les étoiles d'environ 1° par jour, vers l'est, et en fait le tour en un an. Les constellations proches de lui sont dans le ciel de jour : on ne les voit pas. Six mois plus tard, le Soleil est passé de l'autre côté du ciel et elles brillent à minuit.",
+  chiffres: "360° en 365,25 jours · une étoile se lève chaque jour 3 min 56 s plus tôt, soit 2 h par mois",
+  extra: () => {
+    const sj = soleilDuJour(sim.j), jr = journee(sim.lat, sj.dec);
+    const j = jr.nuit ? "nuit polaire : le Soleil ne se lève pas" : jr.jour ? "jour polaire : le Soleil ne se couche pas" : `lever à ${fmtHeure(jr.lever)}, coucher à ${fmtHeure(jr.coucher)} (heure solaire)`;
+    return `<p class="spec">Le ${fmtDate(sim.j)} : ${j}.</p>`;
+  },
+});
+const soleil = new THREE.Group();
+S.add(pSoleil, soleil);
+const disqueSoleil = mesh(new THREE.SphereGeometry(0.45, 32, 16), M.lumineux(0xffd98a, 0.999)); // transparent : estompé sous l'horizon
+soleil.add(disqueSoleil);
+const haloSoleil = halo(COULEURS.ambre, 3);
+soleil.add(haloSoleil);
+S.label("Soleil", () => soleil.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.6, 0)), { partId: "soleil", visible: () => soleil.getWorldPosition(new THREE.Vector3()).y > 0 || !parSesYeux() });
+
+// ciel de jour, vu par les yeux de l'observateur
+const ciel = new THREE.Mesh(new THREE.SphereGeometry(R + 0.4, 48, 24), M.lumineux(0x5d8fc4, 0.5));
+ciel.material.side = THREE.BackSide; ciel.renderOrder = -1;
+S.scene.add(ciel);
+
+// ---------- Ce soir-là, plein sud ----------
+function limitesTexte() {
+  const L = limite();
+  if (L >= 89.9) return `À l'équateur (${fmtLat(sim.lat)}) : toutes les étoiles se lèvent et se couchent, aucune n'est circumpolaire.`;
+  if (L <= 0.1) return `Au pôle (${fmtLat(sim.lat)}) : les étoiles tournent parallèlement à l'horizon, la moitié du ciel ne se couche jamais et l'autre ne se lève jamais.`;
+  const n = sim.lat >= 0;
+  return `${fmtLat(sim.lat)} : circumpolaires au-delà de ${fmtSigne(n ? L : -L)}° de déclinaison, jamais visibles au-delà de ${fmtSigne(n ? -L : L)}°.`;
+}
+function ceSoir() {
+  const sj = soleilDuJour(sim.j), T = tsl(sj.ad, 22);
+  const vus = CONSTELLATIONS.filter((c) => c[3] <= 2).map(([nom, ad, dec]) => {
+    const H = T - ad;
+    return { nom, h: hauteur(sim.lat, dec, H), az: azimut(sim.lat, dec, H) };
+  }).filter((c) => c.h > 15 && Math.abs(mod(c.az - (sim.lat >= 0 ? 180 : 0) + 180, 360) - 180) < 60)
+    .sort((a, b) => b.h - a.h).slice(0, 6).map((c) => c.nom);
+  if (!vus.length) return "";
+  return `<p class="spec">Le ${fmtDate(sim.j)} à 22 h, côté ${sim.lat >= 0 ? "sud" : "nord"} : ${vus.join(", ")}.</p>`;
+}
+
+// ---------- Animation ----------
+const _v = new THREE.Vector3();
+let tPrec = 0, introPrec = "";
+S.onFrame(({ time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (latSale) { orienterSphere(); majZones(); }
+  let sj = soleilDuJour(sim.j);
+  // le temps passe : le ciel tourne, plus vite de jour ; à minuit, on passe au lendemain
+  if (dtt > 0) {
+    const hS = hauteur(sim.lat, sj.dec, (sim.heure - 12) * 15);
+    sim.heure += dtt * (hS > 0 ? 2 : 0.8);
+    if (sim.heure >= 24) { sim.heure -= 24; sim.j = (sim.j + 1) % 365; dateSale = true; recaler("date", sim.j); sj = soleilDuJour(sim.j); }
+  }
+  recaler("heure", sim.heure);
+  voute.rotation.y = -tsl(sj.ad, sim.heure) * DEG;
+  if (dateSale) soleil.position.copy(surVoute(sj.ad, sj.dec, R * 0.97));
+  sphere.updateMatrixWorld(true);
+
+  // jour ou nuit
+  const hSol = hauteur(sim.lat, sj.dec, (sim.heure - 12) * 15);
+  const yeux = parSesYeux();
+  U.nuit.value = yeux ? Math.min(1, Math.max(0, -hSol / 12)) : 1;
+  U.sous.value = yeux ? 0 : 0.15;
+  const dist = S.camera.position.length();
+  U.echelle.value = S.renderer.getPixelRatio() * Math.min(1, Math.max(0.55, 18 / dist));
+  matSol.opacity = yeux ? 1 : 0.88;
+  matSol.depthWrite = yeux;
+  const jour = Math.min(1, Math.max(0, (hSol + 6) / 10));
+  ciel.visible = yeux && jour > 0;
+  ciel.material.opacity = 0.55 * jour;
+  S.lumieres.ambiance.intensity = 0.25 + 0.4 * jour;
+  S.lumieres.principale.intensity = 0.6 + 1.6 * jour;
+  S.notice(yeux && hSol > -6 ? (hSol > 0 ? "Il fait jour : les étoiles sont toujours là, mais la lumière du Soleil les cache." : "Crépuscule : seules les étoiles les plus brillantes apparaissent.") : null);
+  const soleilCache = soleil.getWorldPosition(_v).y < 0;
+  disqueSoleil.material.opacity = soleilCache ? 0.35 : 1;
+  haloSoleil.material.opacity = soleilCache ? 0.2 : 1;
+
+  // affichages
+  obs.group.visible = !yeux;
+  constellations.visible = S.state.constellations;
+  if (constellations.visible) for (const s of noms) s.visible = s.getWorldPosition(_v).y > 0.3;
+  trajets.visible = S.state.trajets;
+  zones.visible = S.state.zones;
+  reperes.visible = S.state.reperes;
+  equateur.visible = S.state.reperes;
+  if (latSale) for (const r of REPERES) r.cercle.material.uniforms.couleur.value.setHex(COUL_ZONE[parcours(sim.lat, r.dec).type]);
+  for (const [id, an] of anneaux) an.visible = id === S.state.selected || id === S.state.hovered;
+  lblPoleN.el.textContent = Math.abs(sim.lat) > 1 && sim.lat >= 0 ? "Pôle nord céleste · Polaire" : "Pôle nord céleste";
+
+  // raccourcis actifs
+  for (const d of JOURS) document.getElementById("r-" + d.id).setAttribute("aria-pressed", String(d.j === Math.round(sim.j)));
+  for (const l of LIEUX) document.getElementById("r-" + l.id).setAttribute("aria-pressed", String(Math.abs(l.lat - sim.lat) < 0.3));
+
+  // fiche : se met à jour si la date ou la latitude change
+  if (latSale || dateSale) {
+    const cle = sim.j + "|" + sim.lat.toFixed(2);
+    if (cle !== introPrec) { introPrec = cle; S.refreshInfo(); }
+  }
+  latSale = dateSale = false;
+});
+
+S.start();
+</script>
+</body>
+</html>
