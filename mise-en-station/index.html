@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mise en station</title>
+<meta name="description" content="Schéma 3D interactif de la mise en station d'une monture équatoriale EQ5 au viseur polaire : placer la Polaire selon l'heure, régler l'azimut et la latitude, et voir la dérive d'une étoile en pose longue.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, mesh, textureHalo, legende, css, alea } from "../commun/schema.js";
+
+// ---------- Échelle et constantes (1 unité = 100 mm) ----------
+// Repère : Y vers le zénith, -Z vers le nord, +X vers l'est.
+const DEG = Math.PI / 180, HEURE = 15 * DEG, MIN = DEG / 60;
+const LAT = 47, LON = 2;               // lieu : 47° N, 2° E
+const JOUR = Date.UTC(2026, 1, 15);    // nuit du 15 février 2026
+const FUSEAU = 1;                      // heure d'hiver : TU + 1
+const Y_SOL = -9.5;                    // sol : plateau du trépied à ≈ 95 cm
+const PIVOT = 1.4;                     // charnière de latitude au-dessus du plateau
+const YD = 1.85;                       // centre du corps de déclinaison, sur l'axe polaire
+const Y_OEIL = -1.6;                   // œil de l'observateur derrière le viseur polaire
+const Y_MIRE = 1.0;                    // plan de la mire du viseur, dans l'axe creux
+const R_CIEL = 1500;                   // sphère céleste, très loin : aucune parallaxe
+const OMEGA = 7.2921e-5;               // rotation de la Terre (rad/s) : 15,04″ d'arc par seconde
+const ECH = 206.265 * 3.76 / 750;      // Newton 150/750 + capteur APS-C 3,76 µm : 1,03″ par pixel
+const FWHM = 2.5;                      // taille d'une étoile sous un ciel moyen (″)
+const POSE_MAX = 300;                  // pose simulée de 5 min
+
+// Coordonnées : ascension droite en heures, déclinaison en degrés (Polaire 2026, autres J2000)
+const POLAIRE = { ad: 3.02, dec: 89.36 };   // à 0,64° du pôle
+const RHO = Math.tan((90 - POLAIRE.dec) * DEG);
+const CONSTELLATIONS = [
+  { nom: "Grande Ourse", lignes: [[0, 1], [1, 2], [2, 3], [3, 0], [3, 4], [4, 5], [5, 6]], etoiles: [
+    [11.062, 61.75, 1.8], [11.031, 56.38, 2.4], [11.897, 53.69, 2.4], [12.257, 57.03, 3.3],
+    [12.900, 55.96, 1.8], [13.399, 54.93, 2.2], [13.792, 49.31, 1.9]] },
+  { nom: "Cassiopée", lignes: [[0, 1], [1, 2], [2, 3], [3, 4]], etoiles: [
+    [0.153, 59.15, 2.3], [0.675, 56.54, 2.2], [0.945, 60.72, 2.4], [1.430, 60.24, 2.7], [1.907, 63.67, 3.4]] },
+  { nom: "Petite Ourse", lignes: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 3]], etoiles: [
+    [POLAIRE.ad, POLAIRE.dec, 2.0], [17.537, 86.59, 4.4], [16.766, 82.04, 4.2], [15.734, 77.79, 4.3],
+    [16.292, 75.76, 5.0], [15.345, 71.83, 3.0], [14.845, 74.16, 2.1]] },
+];
+// étoiles faibles autour du pôle, pour le champ du viseur
+const CHAMP_POLE = (() => { const r = alea(7); return Array.from({ length: 22 }, () => [r() * 24, 86.2 + r() * 3.7, 6 + r() * 2.5]); })();
+
+/** Temps sidéral local (heures) à une heure légale donnée de la nuit (18 → 30 = 6 h du matin). */
+function tsl(heure) {
+  const d0 = JOUR / 86400000 + 2440587.5 - 2451545.0;
+  const g = 6.697374558 + 0.06570982441908 * d0 + 1.00273790935 * (heure - FUSEAU) + LON / 15;
+  return ((g % 24) + 24) % 24;
+}
+const qVrai = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -(90 - LAT) * DEG);
+const POLE = new THREE.Vector3(0, 1, 0).applyQuaternion(qVrai);   // pôle céleste vrai
+/** Direction (monde) d'un astre à l'heure choisie. */
+function dirCiel(ad, dec, out = new THREE.Vector3()) {
+  const h = (tsl(S.state.heure) - ad) * HEURE, d = dec * DEG;
+  return out.set(-Math.cos(d) * Math.sin(h), Math.sin(d), Math.cos(d) * Math.cos(h)).applyQuaternion(qVrai);
+}
+const angleHoraire = () => (((tsl(S.state.heure) - POLAIRE.ad) % 24) + 24) % 24;
+/** Position de la Polaire sur le cadran du viseur (degrés, sens horaire depuis le haut). */
+const cadranPolaire = () => (((-angleHoraire() * 15) % 360) + 360) % 360;
+
+// ---------- Mécanique : chaque axe est un groupe emboîté ----------
+const azGroup = new THREE.Group();                                   // tête : réglage d'azimut
+const latGroup = new THREE.Group(); latGroup.position.y = PIVOT;     // axe polaire (Y local)
+const raGroup = new THREE.Group();                                   // partie tournante en AD
+azGroup.add(latGroup); latGroup.add(raGroup);
+const AX = new THREE.Vector3(1, 0, 0), AY = new THREE.Vector3(0, 1, 0);
+const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
+/** Orientation de l'axe polaire pour des erreurs d'azimut et de latitude (minutes d'arc). */
+function repere(az, lat, q = new THREE.Quaternion()) {
+  _qa.setFromAxisAngle(AY, -az * MIN);
+  _qb.setFromAxisAngle(AX, -(90 - (LAT + lat / 60)) * DEG);
+  return q.copy(_qa).multiply(_qb);
+}
+const _qi = new THREE.Quaternion(), _s = new THREE.Vector3();
+/** Position d'une direction dans le viseur (radians ; x vers la droite, y vers le haut). */
+function ecran(dir, q) {
+  _s.copy(dir).applyQuaternion(_qi.copy(q).invert());
+  return [_s.x / _s.y, _s.z / _s.y];
+}
+const cercleMire = (rot) => [RHO * Math.sin(rot * DEG), RHO * Math.cos(rot * DEG)];
+function poseMonture() {
+  azGroup.rotation.y = -S.state.az * MIN;
+  latGroup.rotation.x = -(90 - (LAT + S.state.lat / 60)) * DEG;
+  raGroup.rotation.y = S.state.rot * DEG;
+  azGroup.updateMatrixWorld(true);
+}
+const pointMonture = (y) => { latGroup.updateWorldMatrix(true, false); return latGroup.localToWorld(new THREE.Vector3(0, y, 0)); };
+/** Écart entre l'axe de la monture et le pôle vrai (radians). */
+const erreurAxe = () => new THREE.Vector3(0, 1, 0).applyQuaternion(repere(S.state.az, S.state.lat)).angleTo(POLE);
+
+// ---------- Les gestes : chaque étape anime un curseur ----------
+let etapes = [];
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const animer = (id, a) => { etapes = etapes.filter((e) => e.id !== id); etapes.push({ id, de: S.state[id], a, t: 0 }); };
+/** Résout une erreur pour amener la Polaire sur le petit cercle (axe 0 : gauche-droite, 1 : haut-bas). */
+function resoudre(id, axe) {
+  const p = dirCiel(POLAIRE.ad, POLAIRE.dec), cible = cercleMire(S.state.rot)[axe];
+  let v = S.state[id];
+  const f = (x) => ecran(p, id === "az" ? repere(x, S.state.lat) : repere(S.state.az, x))[axe] - cible;
+  for (let i = 0; i < 6; i++) v -= f(v) / ((f(v + 1) - f(v - 1)) / 2);
+  return Math.max(-120, Math.min(120, Math.round(v)));
+}
+const orienter = () => { const d = ((cadranPolaire() - S.state.rot + 540) % 360) - 180; animer("rot", S.state.rot + Math.round(d)); };
+function deregler() {
+  const r = Math.random, s = () => (r() < 0.5 ? -1 : 1);
+  animer("az", s() * Math.round(40 + r() * 70));
+  animer("lat", s() * Math.round(30 + r() * 60));
+  animer("rot", S.state.rot + s() * Math.round(70 + r() * 90));
+}
+
+const signe = (v) => {
+  const a = Math.abs(v), t = a >= 60 ? `${Math.floor(a / 60)}° ${String(a % 60).padStart(2, "0")}′` : `${a}′`;
+  return (v > 0 ? "+" : v < 0 ? "−" : "") + t;
+};
+const angleTexte = (rad) => { const m = Math.round(rad / MIN); return m >= 60 ? `${Math.floor(m / 60)}° ${String(m % 60).padStart(2, "0")}′` : `${m}′`; };
+const horloge = (deg) => {
+  let m = Math.round((((deg % 360) + 360) % 360) * 2); // minutes de cadran (360° = 12 h)
+  let h = Math.floor(m / 60); m -= h * 60; h %= 12;
+  return `${h || 12} h ${String(m).padStart(2, "0")}`;
+};
+const heureTexte = (v) => { const m = Math.round(v * 60) % 1440; return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const nombre = (v, d = 1) => v.toLocaleString("fr-FR", { maximumFractionDigits: d, minimumFractionDigits: d });
+
+const S = createSchema({
+  surtitre: "Support de formation · Instruments",
+  titre: "Mise en station",
+  sousTitre: "Exemple : EQ5 · 47° N · nuit du 15 février 2026",
+  distanceMax: 70,
+  commandes: [
+    { type: "curseur", id: "heure", label: "Heure", min: 18, max: 30, pas: 0.25, valeur: 22, format: heureTexte },
+    { type: "curseur", id: "rot", label: "Axe AD : petit cercle à", min: 0, max: 359, pas: 1, valeur: 0, format: horloge },
+    { type: "curseur", id: "az", label: "Erreur d'azimut", min: -120, max: 120, pas: 1, valeur: 75, format: signe },
+    { type: "curseur", id: "lat", label: "Erreur de latitude", min: -120, max: 120, pas: 1, valeur: -45, format: signe },
+    { type: "raccourcis", id: "etapes", label: "Étapes", boutons: [
+      { id: "orienter", label: "Orienter la mire", onClick: orienter },
+      { id: "corrAz", label: "Corriger l'azimut", onClick: () => animer("az", resoudre("az", 0)) },
+      { id: "corrLat", label: "Corriger la latitude", onClick: () => animer("lat", resoudre("lat", 1)) },
+      { id: "deregler", label: "Dérégler", onClick: deregler },
+    ] },
+    { type: "bascule", id: "reperes", label: "Repères", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [12, 5, 15], cible: [0, -1.5, -0.5] },
+    { id: "reglages", label: "Réglages", pos: [5, 3.6, -6.2], cible: [0, 1.1, -0.3] },
+    { id: "ciel", label: "Ciel nord", fov: 85, exacte: true, pos: [0, 1, 8], cible: [14,1 + 30 * Math.sin(LAT * DEG), 8 - 30 * Math.cos(LAT * DEG)] },
+    { id: "viseur", label: "Viseur polaire", fov: 6, exacte: true, suivre: true,
+      pos: () => pointMonture(Y_OEIL), cible: () => pointMonture(Y_OEIL + 20) },
+  ],
+  apercu: [{ titre: "Dans le viseur polaire" }, { titre: "Dérive pendant une pose" }],
+  intro: () => `
+    <div class="eyebrow">Le but</div>
+    <p>Mettre en station, c'est rendre l'axe d'ascension droite (AD) parallèle à l'axe de la Terre : il doit viser le pôle nord céleste. Aucune étoile ne marque le pôle. La Polaire en est à 0,64° et en fait le tour en 23 h 56 min : sa place autour du pôle dépend de l'heure.</p>
+    <div class="eyebrow">Au viseur polaire</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "Trépied de niveau, pied « N » vers le nord, axe incliné à la latitude (47°) avec l'échelle graduée. Axe de déclinaison à 90° pour dégager le trou du viseur." },
+      { couleur: COULEURS.ambre, texte: "Noter l'heure : une appli donne la position de la Polaire autour du pôle, comme sur un cadran (curseur « Heure »)." },
+      { couleur: COULEURS.orange, texte: "Tourner l'axe AD pour mettre le petit cercle de la mire à cette position (« Orienter la mire »)." },
+      { couleur: COULEURS.corail, texte: "Amener la Polaire dans le petit cercle : vis d'azimut pour la gauche et la droite, vis de latitude pour le haut et le bas." },
+    ])}
+    <p class="spec">En visuel, ±1° suffit. En photo sans autoguidage, visez moins de 5′ : avec 1° d'erreur, une étoile dérive jusqu'à 16″ par minute.</p>`,
+});
+S.scene.add(azGroup);
+S.camera.far = 4000; // la sphère céleste est à 1 500 unités
+
+/** Cylindre tendu entre deux points. */
+function barre(a, b, r, mat, seg = 16) {
+  const A = new THREE.Vector3(...a), B = new THREE.Vector3(...b), d = B.clone().sub(A);
+  const m = mesh(new THREE.CylinderGeometry(r, r, d.length(), seg), mat);
+  m.position.copy(A).add(B).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+  return m;
+}
+const ouvert = (m) => { m.material.side = THREE.DoubleSide; return m; };
+
+// ---------- Trépied (fixe) ----------
+const trepied = S.part("trepied", "Trépied", {
+  ancre: [-2.1, -5, 1.2],
+  texte: "Il doit être stable et de niveau : sinon, tourner la tête en azimut change aussi sa hauteur et les deux réglages se mélangent. Le pied marqué « N » se place vers le nord, ce qui oriente déjà la tête à quelques degrés près. Une fois la mise en station faite, on ne le touche plus.",
+  chiffres: "Bulle de niveau centrée · en France, la boussole donne le nord vrai à 1 ou 2° près",
+});
+S.add(trepied, mesh(new THREE.CylinderGeometry(0.8, 0.85, 0.3, 48), M.alu(), 0, -0.15, 0));
+S.add(trepied, mesh(new THREE.BoxGeometry(0.18, 0.25, 0.2), M.noir(), 0, 0.12, -0.9)); // ergot d'azimut
+for (let k = 0; k < 3; k++) {
+  const a = k * 120 * DEG, sx = Math.sin(a), sz = -Math.cos(a); // premier pied vers le nord
+  const top = [0.75 * sx, -0.3, 0.75 * sz], foot = [4 * sx, Y_SOL, 4 * sz];
+  const at = (f) => top.map((v, i) => v + (foot[i] - v) * f);
+  S.add(trepied, mesh(new THREE.BoxGeometry(0.42, 0.4, 0.42), M.noir(), top[0], -0.35, top[2]));
+  S.add(trepied, barre(top, at(0.55), 0.2, M.alu()));
+  S.add(trepied, barre(at(0.5), foot, 0.15, M.alu()));
+  S.add(trepied, barre(at(0.53), at(0.58), 0.25, M.noir()));
+  S.add(trepied, mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.2, 20), M.caoutchouc(), foot[0], Y_SOL + 0.1, foot[2]));
+  S.add(trepied, barre([0, -5, 0], at(0.511), 0.05, M.alu(), 8));
+}
+{
+  const plateau = new THREE.CylinderGeometry(1.3, 1.3, 0.08, 3); plateau.rotateY(Math.PI);
+  S.add(trepied, mesh(plateau, M.alu(), 0, -5, 0));
+}
+// rose des vents au sol
+{
+  const pts = [];
+  for (let i = 0; i <= 96; i++) { const a = i / 96 * 2 * Math.PI; pts.push(new THREE.Vector3(Math.cos(a) * 5.6, Y_SOL, Math.sin(a) * 5.6)); }
+  const mat = new THREE.LineBasicMaterial({ color: 0x8b9ab0, transparent: true, opacity: 0.3, depthWrite: false });
+  S.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+  S.scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, Y_SOL, -6.4), new THREE.Vector3(0, Y_SOL, 6.4), new THREE.Vector3(-6.4, Y_SOL, 0), new THREE.Vector3(6.4, Y_SOL, 0)]), mat));
+  S.label("Nord", () => new THREE.Vector3(0, Y_SOL, -6.6));
+}
+
+// ---------- Réglage d'azimut (tourne avec la tête) ----------
+const azimut = S.part("azimut", "Vis d'azimut", {
+  parent: azGroup, ancre: [0.72, 0.2, -0.9],
+  texte: "Deux vis opposées poussent un ergot fixé sur le trépied et font pivoter toute la tête vers l'est ou vers l'ouest. Dans le viseur, elles déplacent la Polaire de gauche à droite. On desserre d'abord une vis, on pousse avec l'autre, puis on bloque les deux l'une contre l'autre.",
+  chiffres: "Réglage fin sur quelques degrés · visuel : ±1° suffit · photo : moins de 5′",
+});
+S.add(azimut, mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.35, 48), M.peinture(), 0, 0.175, 0));
+const tetesAz = [];
+for (const s of [-1, 1]) {
+  S.add(azimut, mesh(new THREE.BoxGeometry(0.16, 0.3, 0.26), M.peinture(), s * 0.5, 0.18, -0.85));
+  S.add(azimut, mesh(axeX(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 12)), M.alu(), s * 0.35, 0.15, -0.9));
+  tetesAz.push(S.add(azimut, mesh(axeX(new THREE.CylinderGeometry(0.13, 0.13, 0.14, 6)), M.noir(), s * 0.66, 0.15, -0.9)));
+}
+
+// ---------- Réglage de latitude (tourne avec la tête) ----------
+const latitude = S.part("latitude", "Vis de latitude", {
+  parent: azGroup, ancre: [-0.3, 0.75, -0.45],
+  texte: "La vis en T incline l'axe polaire. L'échelle graduée donne un premier réglage à la latitude du lieu ; dans le viseur, la vis déplace ensuite la Polaire de haut en bas. Astuce : finir le réglage en remontant l'axe, pour que le poids de la tête appuie sur la vis et ne la fasse pas glisser.",
+  chiffres: "Axe incliné à la latitude · Lille 51° · Paris 49° · Lyon 46° · Marseille 43°",
+});
+for (const s of [-1, 1]) S.add(latitude, mesh(new THREE.BoxGeometry(0.08, 1.4, 1.15), M.peinture(), s * 0.5, 1.05, 0.05));
+S.add(latitude, barre([0, 0.35, -0.45], [0, 1.28, -0.45], 0.06, M.alu()));
+const poigneeLat = S.add(latitude, mesh(axeX(new THREE.CylinderGeometry(0.045, 0.045, 0.6, 12)), M.noir(), 0, 0.65, -0.45));
+{
+  const g = new THREE.RingGeometry(0.62, 0.8, 40, 1, 5 * DEG, 75 * DEG); g.rotateY(Math.PI / 2);
+  S.add(latitude, ouvert(mesh(g, M.alu(), 0.55, PIVOT, 0)));
+}
+
+// ---------- Axe d'ascension droite : boîtier fixe sur la tête ----------
+const ad = S.part("ad", "Axe d'ascension droite", {
+  parent: latGroup, ancre: [-0.42, -0.2, 0],
+  texte: "L'axe principal, aussi appelé axe polaire. Il est creux : le viseur polaire est logé dedans. Pour orienter la mire, on desserre son blocage et on le fait tourner. Bien mis en station, il vise le pôle céleste, pas la Polaire.",
+  chiffres: "Pôle céleste à 0,64° de la Polaire · 1 tour du ciel en 23 h 56 min",
+});
+S.add(ad, ouvert(mesh(new THREE.CylinderGeometry(0.42, 0.42, 2.1, 48, 1, true), M.peinture(), 0, 0.15, 0)));
+S.add(ad, ouvert(mesh(new THREE.CylinderGeometry(0.16, 0.16, 2.1, 24, 1, true), M.flocage(), 0, 0.15, 0)));
+for (const y of [-0.9, 1.2]) {
+  const g = new THREE.RingGeometry(0.16, 0.42, 48); g.rotateX(-Math.PI / 2);
+  S.add(ad, ouvert(mesh(g, M.peinture(), 0, y, 0)));
+}
+S.add(ad, mesh(new THREE.BoxGeometry(0.03, 0.22, 0.04), M.noir(), 0.565, 0.71, 0)); // index de l'échelle de latitude
+
+// ---------- Viseur polaire (tourne avec l'axe AD) ----------
+const viseur = S.part("viseur", "Viseur polaire", {
+  parent: raGroup, ancre: [0, -1.45, 0.15],
+  texte: "Petite lunette logée dans l'axe AD. Le centre de la croix montre où vise l'axe. Le grand cercle a pour rayon la distance entre la Polaire et le pôle ; le petit cercle marque la place de la Polaire. Beaucoup de viseurs donnent une image retournée : ici, la vue est montrée à l'endroit, comme le ciel à l'œil nu.",
+  chiffres: "Rayon du cercle : 0,64° · Polaire en 2026 : AD 3 h 01 min, déc. +89° 22′ · mire éclairée en rouge",
+  extra: () => `<div class="row"><button type="button" id="voirViseur">Regarder dans le viseur</button></div>`,
+  bind: (root) => root.querySelector("#voirViseur").addEventListener("click", () => S.vue("viseur")),
+});
+S.add(viseur, ouvert(mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.4, 32, 1, true), M.noir(), 0, -1.1, 0)));
+S.add(viseur, ouvert(mesh(new THREE.CylinderGeometry(0.125, 0.125, 0.5, 32, 1, true), M.flocage(), 0, -1.15, 0)));
+S.add(viseur, ouvert(mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.08, 32, 1, true), M.alu(), 0, -1.22, 0)));
+S.add(viseur, ouvert(mesh(new THREE.CylinderGeometry(0.16, 0.14, 0.12, 32, 1, true), M.caoutchouc(), 0, -1.36, 0)));
+// mire : croix, cercle de la Polaire gradué, petit cercle (en haut, axe AD à 0)
+/** Segments de la mire dans le repère de l'axe AD (x, z), en unités d'angle (tangente). */
+function segmentsMire() {
+  const p = [], cercle = (cx, cz, r, n = 64) => {
+    for (let i = 0; i < n; i++) {
+      const a = i / n * 2 * Math.PI, b = (i + 1) / n * 2 * Math.PI;
+      p.push([cx + r * Math.cos(a), cz + r * Math.sin(a), cx + r * Math.cos(b), cz + r * Math.sin(b)]);
+    }
+  };
+  const L = RHO * 1.9, g0 = RHO * 0.12;
+  p.push([-L, 0, -g0, 0], [g0, 0, L, 0], [0, -L, 0, -g0], [0, g0, 0, L]);
+  cercle(0, 0, RHO);
+  for (let i = 0; i < 12; i++) {
+    const a = i * 30 * DEG, r1 = RHO * (i % 3 ? 1.06 : 1.0), r2 = RHO * (i % 3 ? 1.16 : 1.28);
+    p.push([r1 * Math.sin(a), r1 * Math.cos(a), r2 * Math.sin(a), r2 * Math.cos(a)]);
+  }
+  cercle(0, RHO, RHO * 0.13, 24);
+  return p;
+}
+const MIRE = segmentsMire();
+{
+  const k = Y_MIRE - Y_OEIL, p = [];
+  for (const [x1, z1, x2, z2] of MIRE) p.push(x1 * k, Y_MIRE, z1 * k, x2 * k, Y_MIRE, z2 * k);
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(p, 3));
+  raGroup.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: COULEURS.corail, transparent: true, opacity: 0.9 })));
+}
+
+// ---------- Tête de déclinaison (tourne avec l'axe AD) ----------
+const dec = S.part("dec", "Tête de déclinaison", {
+  parent: raGroup, ancre: [0.55, 2.3, 0],
+  texte: "Sur une EQ5, le viseur polaire regarde à travers le corps de déclinaison, qui est percé. On tourne l'axe de déclinaison à 90° (tube vers le haut) pour aligner ce trou avec le viseur, sinon on ne voit rien. Le tube et le contrepoids sont retirés ici pour dégager la vue ; on peut faire la mise en station avec eux.",
+  chiffres: "Cercle de déclinaison sur 90° pendant la mise en station",
+});
+S.add(dec, ouvert(mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.12, 48, 1, true), M.alu(), 0, 1.26, 0)));
+S.add(dec, ouvert(mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.14, 48, 1, true), M.peinture(), 0, 1.38, 0)));
+{
+  const w = 0.65, d = 0.4, r = 0.12, s = new THREE.Shape();
+  s.moveTo(-w + r, -d); s.lineTo(w - r, -d); s.quadraticCurveTo(w, -d, w, -d + r); s.lineTo(w, d - r); s.quadraticCurveTo(w, d, w - r, d);
+  s.lineTo(-w + r, d); s.quadraticCurveTo(-w, d, -w, d - r); s.lineTo(-w, -d + r); s.quadraticCurveTo(-w, -d, -w + r, -d);
+  const trou = new THREE.Path(); trou.absarc(0, 0, 0.16, 0, 2 * Math.PI, true); s.holes.push(trou);
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.8, bevelEnabled: false, curveSegments: 24 }); g.rotateX(-Math.PI / 2);
+  S.add(dec, mesh(g, M.peinture(), 0, YD - 0.4, 0));
+  S.add(dec, ouvert(mesh(new THREE.CylinderGeometry(0.158, 0.158, 1.05, 32, 1, true), M.flocage(), 0, YD - 0.125, 0))); // trou du viseur
+  for (const sx of [-1, 1]) S.add(dec, mesh(axeX(new THREE.CylinderGeometry(0.4, 0.4, 0.15, 48)), M.peinture(), sx * 0.725, YD, 0));
+  S.add(dec, mesh(axeX(new THREE.CylinderGeometry(0.41, 0.41, 0.06, 48)), M.alu(), -0.84, YD, 0)); // cercle de déclinaison
+  S.add(dec, mesh(new THREE.BoxGeometry(0.12, 1.3, 0.55), M.alu(), -0.95, YD, 0));                  // selle vide
+}
+
+// ---------- Ciel : tourne autour du pôle céleste ----------
+// Centré sur l'œil au viseur polaire (monture bien réglée) : la Polaire y est vue sans parallaxe.
+const ciel = new THREE.Group();
+ciel.position.set(0, PIVOT, 0).addScaledVector(POLE, Y_OEIL);
+S.scene.add(ciel);
+const posLocale = (ad, decl) => {
+  const h = -ad * HEURE, d = decl * DEG;
+  return new THREE.Vector3(-Math.cos(d) * Math.sin(h), Math.sin(d), Math.cos(d) * Math.cos(h)).multiplyScalar(R_CIEL);
+};
+function etoile(ad, decl, taille, couleur = COULEURS.etoile) {
+  const g = new THREE.BufferGeometry().setFromPoints([posLocale(ad, decl)]);
+  const p = new THREE.Points(g, new THREE.PointsMaterial({ size: taille, sizeAttenuation: false, map: textureHalo(), color: couleur, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  p.frustumCulled = false;
+  ciel.add(p);
+}
+const tailleMag = (mag) => Math.max(3, 13 - 1.7 * mag);
+{
+  const segs = [], mat = new THREE.LineBasicMaterial({ color: 0x8b9ab0, transparent: true, opacity: 0.28, depthWrite: false });
+  for (const c of CONSTELLATIONS) {
+    for (const [ad, decl, mag] of c.etoiles) etoile(ad, decl, tailleMag(mag) + (ad === POLAIRE.ad ? 2 : 0));
+    for (const [i, j] of c.lignes) segs.push(posLocale(c.etoiles[i][0], c.etoiles[i][1]), posLocale(c.etoiles[j][0], c.etoiles[j][1]));
+  }
+  const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs), mat);
+  l.frustumCulled = false; ciel.add(l);
+  for (const [ad, decl] of CHAMP_POLE) etoile(ad, decl, 3, 0xcfd8e6);
+}
+const qCiel = (q) => q.copy(qVrai).multiply(new THREE.Quaternion().setFromAxisAngle(AY, -tsl(S.state.heure) * HEURE));
+
+// ---------- Repères : axe polaire et étiquettes du ciel ----------
+const ligneAxe = (() => {
+  const g = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+  const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: COULEURS.etoile, transparent: true, opacity: 0.45, depthWrite: false }));
+  l.frustumCulled = false; S.scene.add(l); return l;
+})();
+const enVue = () => S.camera.fov > 15;
+const auViseur = () => S.camera.fov <= 15;
+const posCiel = (ad, decl) => dirCiel(ad, decl).multiplyScalar(R_CIEL).add(ciel.position);
+S.label("Polaire", () => posCiel(POLAIRE.ad, POLAIRE.dec), { lumiere: true });
+S.label("Pôle céleste", () => posCiel(0, 90), { lumiere: true, visible: () => auViseur() && S.state.reperes });
+for (const c of CONSTELLATIONS.slice(0, 2)) {
+  const [ad, decl] = c.etoiles[Math.floor(c.etoiles.length / 2)];
+  S.label(c.nom, () => posCiel(ad, decl - 3), { lumiere: true, visible: enVue });
+}
+S.label("Petite Ourse", () => posCiel(16.3, 77), { lumiere: true, visible: enVue });
+S.label("Axe polaire", () => pointMonture(9), { lumiere: true, visible: () => enVue() && S.state.reperes });
+
+function majReperes() {
+  ligneAxe.visible = S.state.reperes;
+  const base = pointMonture(2.4), axe = pointMonture(3.4).sub(base).normalize();
+  const a = ligneAxe.geometry.attributes.position, b = base.clone().addScaledVector(axe, R_CIEL);
+  a.setXYZ(0, base.x, base.y, base.z); a.setXYZ(1, b.x, b.y, b.z); a.needsUpdate = true;
+}
+
+// ---------- Encart 1 : la vue dans le viseur polaire ----------
+const CHAMP_VISEUR = 2.6 * DEG; // demi-champ montré dans l'encart
+const _d = new THREE.Vector3();
+function dessinerViseur() {
+  const ap = S.apercus[0], cv = ap.canvas, W = cv.clientWidth;
+  const q = repere(S.state.az, S.state.lat), rot = S.state.rot * DEG;
+  const pol = ecran(dirCiel(POLAIRE.ad, POLAIRE.dec, _d), q), pole = ecran(POLE, q), mc = cercleMire(S.state.rot);
+  if (W) {
+    const H = W, dpr = Math.min(devicePixelRatio, 2);
+    if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px"; }
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const cx = W / 2, cy = H / 2, R = W / 2 - 14, k = R / Math.tan(CHAMP_VISEUR);
+    const X = (x) => cx + x * k, Y = (y) => cy - y * k;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.fillStyle = "#03060c"; ctx.fill(); ctx.clip();
+    // étoiles faibles, puis la Polaire
+    for (const [a, d, mag] of CHAMP_POLE) {
+      const [x, y] = ecran(dirCiel(a, d, _d), q);
+      ctx.fillStyle = `rgba(207,216,230,${Math.max(0.25, 1 - (mag - 6) / 3)})`;
+      ctx.beginPath(); ctx.arc(X(x), Y(y), Math.max(0.7, (9 - mag) * 0.45), 0, 2 * Math.PI); ctx.fill();
+    }
+    // mire (tourne avec l'axe AD)
+    ctx.strokeStyle = css(COULEURS.corail); ctx.globalAlpha = 0.9; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (const [x1, z1, x2, z2] of MIRE) {
+      const c = Math.cos(rot), s = Math.sin(rot);
+      ctx.moveTo(X(x1 * c + z1 * s), Y(-x1 * s + z1 * c)); ctx.lineTo(X(x2 * c + z2 * s), Y(-x2 * s + z2 * c));
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    if (S.state.reperes) { // pôle vrai et trajet de la Polaire autour de lui
+      ctx.strokeStyle = "rgba(246,231,176,0.55)"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(X(pole[0]), Y(pole[1]), RHO * k, 0, 2 * Math.PI); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(X(pole[0]) - 5, Y(pole[1])); ctx.lineTo(X(pole[0]) + 5, Y(pole[1]));
+      ctx.moveTo(X(pole[0]), Y(pole[1]) - 5); ctx.lineTo(X(pole[0]), Y(pole[1]) + 5); ctx.stroke();
+    }
+    ctx.fillStyle = css(COULEURS.etoile); ctx.shadowColor = css(COULEURS.etoile); ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.arc(X(pol[0]), Y(pol[1]), 3.2, 0, 2 * Math.PI); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.stroke();
+    // cadran de lecture (fixe) : la position « horaire » se lit dans le champ, haut = zénith
+    ctx.font = "10px Arial"; ctx.fillStyle = "#8b9ab0"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    [["12", 0, -1], ["3", 1, 0], ["6", 0, 1], ["9", -1, 0]].forEach(([t, dx, dy]) => ctx.fillText(t, cx + dx * (R + 7), cy + dy * (R + 7)));
+  }
+  // texte : où en est-on ?
+  const dMire = Math.abs(((cadranPolaire() - S.state.rot + 540) % 360) - 180);
+  const dCercle = Math.hypot(pol[0] - mc[0], pol[1] - mc[1]) / MIN, e = erreurAxe();
+  let titre, conseil;
+  if (dMire > 3 && dCercle <= 3) {
+    titre = "Polaire dans le petit cercle… mais au mauvais endroit";
+    conseil = `La mire n'était pas orientée : l'axe vise à ${angleTexte(e)} du pôle. Mettez d'abord le petit cercle à ${horloge(cadranPolaire())}, puis recommencez.`;
+  } else if (dMire > 3) {
+    titre = "Mire à orienter";
+    conseil = `À ${heureTexte(S.state.heure)}, la Polaire est à ${horloge(cadranPolaire())} autour du pôle. Tournez l'axe AD pour y mettre le petit cercle.`;
+  } else if (dCercle > 3) {
+    titre = "Polaire hors du petit cercle";
+    conseil = `Il manque ${angleTexte(dCercle * MIN)}. Vis d'azimut : la Polaire va à gauche ou à droite. Vis de latitude : vers le haut ou le bas.`;
+  } else {
+    titre = "Mise en station réussie";
+    conseil = "La Polaire est dans son petit cercle : le centre de la croix vise le pôle céleste. On bloque les vis et on ne touche plus au trépied.";
+  }
+  const html = `<h2>${titre}</h2><p class="spec">Polaire à ${horloge(cadranPolaire())} · petit cercle à ${horloge(S.state.rot)} · axe à ${angleTexte(e)} du pôle</p><p>${conseil}</p>`;
+  if (ap.legende.innerHTML !== html) ap.legende.innerHTML = html;
+}
+
+// ---------- Encart 2 : traînée d'une étoile sur le capteur ----------
+const NX = 44, NY = 26; // portion de capteur montrée (pixels)
+function dessinerDerive(time) {
+  const ap = S.apercus[1], cv = ap.canvas, W = cv.clientWidth;
+  const e = erreurAxe(), vitesse = e * OMEGA * 206265;          // ″ par seconde, au pire
+  const t = Math.min(POSE_MAX, (time * 30) % (POSE_MAX + 60));   // 5 min de pose en 10 s
+  const L = vitesse * t, Lpx = L / ECH;
+  if (W) {
+    const p = W / NX, H = Math.round(p * NY), dpr = Math.min(devicePixelRatio, 2);
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px"; }
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#03060c"; ctx.fillRect(0, 0, W, H);
+    const x0 = 8, y0 = NY / 2, sig = FWHM / ECH / 2.355, n = Math.max(1, Math.ceil(Lpx * 3));
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      let v = 0;
+      for (let s = 0; s < n; s++) {
+        const sx = x0 + (n > 1 ? Lpx * s / (n - 1) : 0), dx = i + 0.5 - sx, dy = j + 0.5 - y0;
+        v += Math.exp(-(dx * dx + dy * dy) / (2 * sig * sig));
+      }
+      v = Math.pow(v / n, 0.5);
+      if (v < 0.03) continue;
+      ctx.fillStyle = `rgba(246,231,176,${Math.min(1, v)})`;
+      ctx.fillRect(i * p, j * p, p - 0.6, p - 0.6);
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let i = 1; i < NX; i++) { ctx.moveTo(i * p, 0); ctx.lineTo(i * p, H); }
+    for (let j = 1; j < NY; j++) { ctx.moveTo(0, j * p); ctx.lineTo(W, j * p); }
+    ctx.stroke();
+    ctx.font = "11px Arial"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.fillStyle = "#c4d0e0";
+    ctx.fillText(`Pose ${Math.floor(t / 60)} min ${String(Math.floor(t % 60)).padStart(2, "0")} s`, 6, H - 6);
+  }
+  const lFin = vitesse * POSE_MAX;
+  const titre = "Pose de 5 min : " + (lFin < 1 ? "étoile ronde" : lFin < FWHM ? "étoile un peu allongée" : "étoile en traînée");
+  const html = `<h2>${titre}</h2><p class="spec">Erreur ${angleTexte(e)} → dérive jusqu'à ${nombre(vitesse * 60)}″ par minute, soit ${nombre(lFin / ECH, 0)} pixels en 5 min</p><p>Newton 150/750 et capteur APS-C (3,76 µm) : 1 pixel = 1,03″. Cette dérive s'ajoute aux défauts d'engrenages de la monture ; l'autoguidage corrige les deux.</p>`;
+  if (ap.legende.innerHTML !== html) ap.legende.innerHTML = html;
+}
+
+// ---------- Animation ----------
+S.onFrame(({ dt, time }) => {
+  for (const e of etapes) {
+    e.t = Math.min(1, e.t + dt / 1.6);
+    const v = e.de + (e.a - e.de) * ease(e.t);
+    S.regler(e.id, e.id === "rot" ? ((Math.round(v) % 360) + 360) % 360 : Math.round(v));
+  }
+  etapes = etapes.filter((e) => e.t < 1);
+  poseMonture();
+  for (const t of tetesAz) t.rotation.x = S.state.az * 0.15;
+  poigneeLat.rotation.y = S.state.lat * 0.15;
+  qCiel(ciel.quaternion);
+  S.ciel.quaternion.copy(ciel.quaternion);
+  majReperes();
+  dessinerViseur();
+  dessinerDerive(time);
+});
+
+S.start();
+</script>
+</body>
+</html>
