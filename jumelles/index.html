@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jumelles</title>
+<meta name="description" content="Schéma 3D interactif des jumelles : prismes de Porro et en toit, notation 10×50, pupille de sortie, et tous les réglages (écartement, molette centrale, correction dioptrique, œilletons) avec la vue de chaque œil.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, mesh, legende, faisceau, lentille, objectifLunette, textures, vuesRondes, alea } from "../commun/schema.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+
+// ---------- Géométrie (1 unité = 10 mm) ----------
+// L'axe X est l'axe optique : objectifs vers +X, oculaires et observateur vers −X. Y vers le haut,
+// l'œil droit de l'observateur du côté +Z. Chaque moitié des jumelles est construite à plat
+// (charnière sur l'axe X), puis tourne autour de la charnière selon l'écartement choisi.
+// Prismes de Porro : deux prismes à angle droit par côté, tracé exact des rayons
+// (réfraction à l'entrée et à la sortie du verre BaK-4, réflexions totales sur les petites faces).
+const MODELES = {
+  p7x50:   { nom: "Porro 7×50", bouton: "7×50", G: 7, D: 50, F: 175, champ: 7.5, ER: 23, poids: "1,41 kg", type: "porro",
+             usage: "Grand champ et image stable à main levée. Sa pupille de sortie de 7 mm convient à l'œil d'un jeune adulte : après 50 ans, l'œil s'ouvre moins et une partie de la lumière est perdue." },
+  p10x50:  { nom: "Porro 10×50", bouton: "10×50", G: 10, D: 50, F: 190, champ: 6.5, ER: 17, poids: "≈ 1 kg", type: "porro",
+             usage: "Le grand classique pour le ciel : assez de grossissement pour la Lune et les amas d'étoiles, encore utilisable à main levée." },
+  p15x70:  { nom: "Porro 15×70", bouton: "15×70", G: 15, D: 70, F: 280, champ: 4.4, ER: 18, poids: "1,36 kg", type: "porro",
+             usage: "Plus de détails et des étoiles plus faibles. À 15×, le tremblement des mains devient gênant : on les pose sur un trépied." },
+  p25x100: { nom: "Porro 25×100", bouton: "25×100", G: 25, D: 100, F: 400, champ: 3.0, ER: 15, poids: "≈ 4,4 kg", type: "porro",
+             usage: "Presque deux petites lunettes : comètes, amas, galaxies brillantes. Trop lourdes pour les mains, elles demandent un trépied solide." },
+  t10x42:  { nom: "en toit 10×42", bouton: "10×42 toit", G: 10, D: 42, F: 160, champ: 6.0, ER: 18, poids: "≈ 650 g", type: "toit",
+             usage: "Prismes en toit : jumelles droites, compactes et souvent étanches, idéales à emporter. Un peu moins de lumière qu'une 10×50." },
+};
+const N_BAK4 = 1.569;          // indice du verre des prismes
+const RE = 3.7;                // distance charnière → axe d'un oculaire (37 mm)
+const PUPILLE_OEIL = 6;        // pupille de l'œil la nuit (mm), adulte
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+const XV = new THREE.Vector3(1, 0, 0);
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+
+let modele = "p10x50", m;
+// dimensions du modèle courant (unités)
+let R, RT, F, FE, PS, porro, DELTA, A, H, T, GAP, L0, xF, xO, xA, xB, xP0, xP1, rB, xL0, longueur, largeur;
+// observateur : écart des yeux (mm) et correction de chaque œil (dioptries)
+const obs = { ipd: 63, gauche: -1, droit: 0.5 };
+let oeilletons = "sortis";
+
+const virgule = (v, d = 1) => v.toFixed(d).replace(/\.?0+$/, "").replace(".", ",");
+const fmtD = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + virgule(Math.abs(v), 2) + " δ";
+const apparent = () => 2 * Math.atan(m.G * Math.tan(m.champ / 2 * Math.PI / 180)) * 180 / Math.PI;
+
+function dimensions() {
+  m = MODELES[modele];
+  porro = m.type === "porro";
+  R = m.D / 20; RT = R + 0.45;
+  F = m.F / 10; FE = F / m.G; PS = m.D / m.G;
+  rB = m.D >= 70 ? 1.45 : 1.3;                 // rayon du tube d'oculaire
+  if (porro) {
+    DELTA = (0.55 * m.D + 5) / 10;             // décalage objectif → oculaire (vers l'extérieur)
+    A = DELTA / 2;                             // composantes du décalage de chaque prisme (à 45°)
+    const dv = A * Math.SQRT2;
+    H = 1.35 * dv + 0.03 * m.D;                // largeur de l'hypoténuse
+    T = dv - 0.1;                              // épaisseur
+    GAP = 0.2;
+    L0 = F - 2 * H / N_BAK4 - 2 * GAP;         // objectif → foyer, le verre raccourcit le trajet
+  } else {
+    DELTA = 0; L0 = 2.5 * m.D / 10;            // 105 mm pour une 10×42
+  }
+  // centre l'instrument sur l'origine (de l'avant du pare-soleil à l'arrière des œilletons)
+  xF = (FE + m.ER / 10 - L0 - 1.2) / 2;
+  xO = xF + L0;
+  xL0 = xF - FE;                               // lentille d'œil (lentille mince équivalente), oculaire au repos
+  if (porro) { xA = xF + H / 2 + 0.8; xB = xA + GAP; }
+  else { xP0 = xF + 1.0; xP1 = xP0 + 1.3 * m.D / 10; }
+  longueur = L0 + 1.2 + FE + m.ER / 10;
+  largeur = 2 * (RE + DELTA + RT);
+}
+
+// taille de cadrage : plus de recul sur téléphone (écran étroit, encarts au-dessus de la vue)
+const sz = () => (Math.max(longueur, largeur) + 2) * (innerWidth < 760 ? 1.5 : 1);
+const mobile = () => innerWidth < 760;
+const S = createSchema({
+  surtitre: "Support de formation · Instruments",
+  titre: "Jumelles",
+  sousTitre: "Exemple : jumelles Porro 10×50",
+  eclate: true,
+  distanceMin: 3, distanceMax: 120,
+  apercu: [{ titre: "Avec les deux yeux" }, { titre: "Un œil fermé · la Lune" }],
+  commandes: [
+    { type: "raccourcis", id: "modeles", label: "Modèle", boutons: Object.entries(MODELES).map(([id, x]) => ({ id, label: x.bouton, onClick: () => choisir(id) })) },
+    { type: "curseur", id: "ecart", label: "Écartement des oculaires", min: 56, max: 72, pas: 0.5, valeur: 70,
+      format: (v) => `${virgule(v)} mm`, onInput: () => { sale = true; } },
+    { type: "curseur", id: "molette", label: "Molette centrale", min: -5, max: 5, pas: 0.25, valeur: 0,
+      format: fmtD, onInput: () => { poserRayons(); sale = true; } },
+    { type: "curseur", id: "bague", label: "Bague dioptrique (œil droit)", min: -4, max: 4, pas: 0.25, valeur: 0,
+      format: fmtD, onInput: () => { poserRayons(); sale = true; } },
+    { type: "raccourcis", id: "oeilletons", label: "Œilletons", boutons: [
+      { id: "sortis", label: "Sortis", onClick: () => choisirOeilletons("sortis") },
+      { id: "rabattus", label: "Rabattus", onClick: () => choisirOeilletons("rabattus") }] },
+    { type: "raccourcis", id: "observateur", label: "Observateur", boutons: [
+      { id: "nouvel", label: "Nouvel observateur", onClick: () => nouvelObservateur() },
+      { id: "solution", label: "Solution", onClick: () => solution() }] },
+    { type: "bascule", id: "lunettes", label: "Avec lunettes", actif: false, onChange: () => { sale = true; S.refreshInfo(); } },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Corps en coupe", actif: true, onChange: () => construire() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => [-sz() * 1.25, sz() * 1.0, sz() * 1.35], cible: () => [mobile() ? 0 : sz() * 0.17, -1, mobile() ? 0 : sz() * 0.17] },
+    { id: "dessus", label: "Dessus", pos: () => [mobile() ? 0 : sz() * 0.32, sz() * 2.5, 0.05], cible: () => [mobile() ? 0 : sz() * 0.32, 0, 0] },
+    { id: "oculaires", label: "Côté oculaires", pos: () => [xF - sz() * 1.25, sz() * 0.45, sz() * 0.3], cible: () => [xF, -1.5, mobile() ? 0 : sz() * 0.22] },
+    { id: "profil", label: "Profil", pos: () => [0, 0.5, sz() * 2.1], cible: () => [mobile() ? 0 : sz() * 0.22, -1, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Régler ses jumelles, dans l'ordre</div>
+    ${legende([
+      { couleur: SEG[0], texte: "<strong>Écartement</strong> : pliez les jumelles jusqu'à voir un seul cercle, sans bord noir." },
+      { couleur: SEG[1], texte: "<strong>Œil gauche</strong> : fermez l'œil droit et tournez la molette centrale jusqu'à une image nette." },
+      { couleur: SEG[2], texte: "<strong>Œil droit</strong> : fermez l'œil gauche et tournez la bague dioptrique, sans toucher à la molette." },
+      { couleur: SEG[3], texte: "<strong>Notez</strong> l'écartement et la position de la bague : ils sont propres à vos yeux." },
+    ])}
+    <p><strong>${m.G}×${m.D}</strong> : grossissement ${m.G}×, objectifs de ${m.D} mm. Pupille de sortie ${virgule(PS)} mm, champ réel ${virgule(m.champ)}°, soit ${Math.round(m.champ / 0.52)} fois le diamètre de la Lune. ${m.usage}</p>
+    <p class="spec">Une fois réglées, on ne touche plus qu'à la molette. Avec des lunettes, rabattez d'abord les œilletons.</p>`,
+});
+const sousTitre = document.querySelector("#panel header p");
+
+// ---------- Éléments ----------
+const objectifs = S.part("objectifs", "Objectifs", { eclate: [5, 0, 0] });
+const prismes = S.part("prismes", "Prismes", { eclate: [0, 5, 0] });
+const oculaires = S.part("oculaires", "Oculaires", { eclate: [-4.5, 0, 0] });
+const oeil = S.part("oeilletons", "Œilletons", { eclate: [-8, 0, 0] });
+const bague = S.part("bague", "Correction dioptrique", { eclate: [-3, -3, 0],
+  texte: "Nos deux yeux voient rarement pareil. Cette bague déplace le seul oculaire droit pour compenser la différence. On la règle une seule fois, l'œil gauche fermé, sans toucher à la molette. Notez sa position : elle ne change pas d'une nuit à l'autre.",
+});
+const molette = S.part("molette", "Molette de mise au point", { eclate: [0, 3.5, 0] });
+const charniere = S.part("charniere", "Charnière centrale", {
+  texte: "Les deux moitiés tournent autour de cet axe. En les pliant, on rapproche ou on écarte les oculaires pour les placer juste devant les yeux : c'est l'écartement interpupillaire. Il est bon quand on voit un seul cercle, sans bord noir. On le règle en premier ; une graduation permet de le retrouver.",
+  chiffres: "Écartement réglable de 56 à 72 mm · écart des yeux d'un adulte : 63 mm en moyenne, de 52 à 78 mm",
+});
+const filetage = S.part("filetage", "Filetage pour trépied", { eclate: [3, -3, 0],
+  texte: "À l'avant de la charnière, un bouchon cache un filetage photo. On y visse un adaptateur en L pour poser les jumelles sur un trépied. L'image ne tremble plus et l'on voit nettement plus d'étoiles, surtout au-delà de 10×. Autre solution : des jumelles stabilisées, dont un mécanisme compense le tremblement des mains.",
+  chiffres: "Pas photo 1/4″ (6,35 mm, 20 filets par pouce) · indispensable pour les 15×70 et 25×100",
+});
+const corps = S.part("corps", "Corps", {});
+const observateur = S.part("observateur", "Yeux de l'observateur", {});
+
+// ---------- Construction ----------
+let pivots = [], mobiles = [], roue = null, anneau = null;
+const ancres = new Map(); // partie → { v (repère à plat), s (côté, 0 = fixe) }
+const ouvert = (mat) => { mat.side = THREE.DoubleSide; return mat; };
+const voile = (mat) => { if (S.state.coupe) { mat.transparent = true; mat.opacity = 0.16; mat.depthWrite = false; } return mat; };
+/** Cylindre d'axe X entre x0 et x1, centré en (y, z). */
+const cyl = (r, x0, x1, mat, y = 0, z = 0, ouv = false) =>
+  mesh(axeX(new THREE.CylinderGeometry(r, r, Math.abs(x1 - x0), 48, 1, ouv)), mat, (x0 + x1) / 2, y, z);
+
+/** Une moitié (s = −1 gauche, +1 droite) d'un élément : groupe qui tourne autour de la charnière.
+ *  type : « focus » (suit la molette) ou « droit » (molette + bague), pour les pièces de l'oculaire. */
+function cote(s, type) {
+  const piv = new THREE.Group();
+  let g = piv;
+  if (type) { g = new THREE.Group(); piv.add(g); mobiles.push({ g, type: s > 0 && type === "oculaire" ? "droit" : "focus" }); }
+  pivots.push({ g: piv, s });
+  return { piv, g };
+}
+const axeOculaire = (s) => V(0, 0, s * RE);
+const axeObjectif = (s) => V(0, 0, s * (RE + DELTA));
+// prismes de Porro d'un côté : décalages v1 et v2 à 45°, dont la somme ramène l'axe vers l'intérieur
+function geoPorro(s) {
+  const p0 = axeObjectif(s), v1 = V(0, A, -s * A), v2 = V(0, -A, -s * A);
+  const n1 = v1.clone().normalize(), n2 = v2.clone().normalize();
+  const cA = p0.clone().addScaledVector(v1, 0.5), cB = p0.clone().add(v1).addScaledVector(v2, 0.5);
+  const w = (n) => V(0, -n.z, n.y);
+  return {
+    p0, n1, n2, cA, cB, w1: w(n1), w2: w(n2),
+    QA: V(xA - H / 2, cA.y, cA.z), QB: V(xB + H / 2, cB.y, cB.z),
+    nA1: XV.clone().add(n1).normalize(), nA2: XV.clone().sub(n1).normalize(),
+    nB1: XV.clone().sub(n2).normalize(), nB2: XV.clone().add(n2).normalize(),
+  };
+}
+function prisme(c, n, w, xh, sens) {
+  const sh = new THREE.Shape();
+  sh.moveTo(0, -H / 2); sh.lineTo(0, H / 2); sh.lineTo(sens * H / 2, 0); sh.closePath();
+  const g = new THREE.ExtrudeGeometry(sh, { depth: T, bevelEnabled: false }).translate(0, 0, -T / 2);
+  const me = mesh(g, M.verre(), xh, c.y, c.z);
+  me.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(XV, n, w));
+  return me;
+}
+// boîte englobant les deux prismes d'un côté
+function boitePrismes(gp) {
+  const b = new THREE.Box3();
+  for (const [c, n, w, xh, sens] of [[gp.cA, gp.n1, gp.w1, xA, -1], [gp.cB, gp.n2, gp.w2, xB, 1]])
+    for (const du of [-H / 2, H / 2]) for (const dw of [-T / 2, T / 2]) {
+      b.expandByPoint(c.clone().addScaledVector(n, du).addScaledVector(w, dw).setX(xh));
+      b.expandByPoint(c.clone().addScaledVector(w, dw).setX(xh + sens * H / 2));
+    }
+  return b.expandByScalar(0.3);
+}
+
+function construire() {
+  for (const p of S.parts) S.viderElement(p);
+  pivots = []; mobiles = []; ancres.clear();
+  for (const s of [-1, 1]) pivots.push({ g: rayons[s].piv, s });
+  const E = (s) => axeOculaire(s);
+  const xFront = xO + 1.2;
+
+  for (const s of [-1, 1]) {
+    const p0 = axeObjectif(s), gp = porro ? geoPorro(s) : null;
+    const boite = porro ? boitePrismes(gp) : null;
+
+    // objectifs : doublets achromatiques
+    { const { piv, g } = cote(s);
+      for (const l of objectifLunette("achro", R, xO)) { const le = lentille(R, l.xv, l.t, l.sf, l.sb); le.position.set(0, p0.y, p0.z); g.add(le); }
+      g.add(mesh(axeX(new THREE.TorusGeometry(R + 0.05, 0.08, 8, 48).rotateX(Math.PI / 2)), M.noir(), xO + 0.25, p0.y, p0.z));
+      S.add(objectifs, piv); }
+
+    // prismes
+    { const { piv, g } = cote(s);
+      if (porro) {
+        g.add(prisme(gp.cA, gp.n1, gp.w1, xA, -1));
+        g.add(prisme(gp.cB, gp.n2, gp.w2, xB, 1));
+      } else {
+        const L = xP1 - xP0, Hh = 0.75 * m.D / 10, W = 0.62 * m.D / 10, gap = 0.06;
+        const pieces = [[[0, -Hh / 2], [0.5 * L, -Hh / 2], [0.36 * L, Hh / 2], [0, Hh / 2]],
+                        [[0.5 * L + gap, -Hh / 2], [L, -Hh / 2], [L, Hh / 2], [0.36 * L + gap, Hh / 2]]];
+        for (const pts of pieces) {
+          const sh = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y)));
+          g.add(mesh(new THREE.ExtrudeGeometry(sh, { depth: W, bevelEnabled: false }).translate(0, 0, -W / 2), M.verre(), xP0, 0, s * RE));
+        }
+        // arête du toit, sous le second prisme
+        g.add(mesh(axeX(new THREE.CylinderGeometry(0.04, 0.04, 0.5 * L, 6)), M.alu(), xP0 + 0.75 * L, -Hh / 2, s * RE));
+      }
+      S.add(prismes, piv); }
+
+    // corps : boîtier des prismes et tubes (Porro), ou tube droit (en toit)
+    { const { piv, g } = cote(s);
+      const mat = () => voile(M.caoutchouc());
+      if (porro) {
+        const sz3 = boite.getSize(V(0, 0, 0)), c = boite.getCenter(V(0, 0, 0));
+        g.add(mesh(new RoundedBoxGeometry(sz3.x, sz3.y, sz3.z, 3, 0.35), mat(), c.x, c.y, c.z));
+        g.add(cyl(RT, boite.max.x - 0.3, xFront, ouvert(mat()), p0.y, p0.z, true));
+        g.add(cyl(rB + 0.12, xF - 0.3, boite.min.x + 0.3, M.noir(), E(s).y, E(s).z)); // manchon de l'oculaire
+        if (s > 0) ancres.set(corps, { v: V((boite.max.x + xFront) / 2, p0.y + RT + 0.2, p0.z), s });
+      } else {
+        g.add(cyl(RT, xF - 0.3, xFront, ouvert(mat()), 0, s * RE, true));
+        if (s > 0) ancres.set(corps, { v: V((xF + xO) / 2, RT + 0.3, s * RE), s });
+      }
+      g.add(mesh(axeX(new THREE.TorusGeometry(RT, 0.12, 8, 48).rotateX(Math.PI / 2)), M.caoutchouc(), xFront, p0.y, p0.z));
+      S.add(corps, piv); }
+
+    // oculaires : tube coulissant, diaphragme de champ, lentille de champ, doublet d'œil
+    const rL = rB - 0.3, xLast = xL0 - 0.25;
+    { const { piv, g } = cote(s, "oculaire");
+      const e = E(s);
+      g.add(cyl(rB, xLast - 0.05, xF + 0.1, ouvert(M.noir()), e.y, e.z, true));
+      const diaph = mesh(new THREE.RingGeometry(rL * 0.85, rB - 0.02, 40).rotateY(Math.PI / 2), ouvert(M.noir()), xF, e.y, e.z);
+      g.add(diaph);
+      for (const le of [lentille(rL * 0.9, xF - 0.15, 0.2, 0.06, 0.04), lentille(rL, xL0 + 0.25, 0.3, 0.08, 0.02), lentille(rL, xL0 - 0.06, 0.18, -0.02, 0.07)]) {
+        le.position.set(0, e.y, e.z); g.add(le);
+      }
+      S.add(oculaires, piv); }
+
+    // œilletons (suivent l'oculaire)
+    { const { piv, g } = cote(s, "oculaire");
+      const e = E(s), hc = (m.ER - 3) / 10;
+      if (oeilletons === "sortis") {
+        g.add(cyl(rB + 0.12, xLast - hc, xLast + 0.15, ouvert(M.caoutchouc()), e.y, e.z, true));
+        g.add(mesh(axeX(new THREE.TorusGeometry(rB + 0.12, 0.1, 8, 40).rotateX(Math.PI / 2)), M.caoutchouc(), xLast - hc, e.y, e.z));
+      } else {
+        g.add(cyl(rB + 0.32, xLast - 0.15, xLast + hc * 0.6, ouvert(M.caoutchouc()), e.y, e.z, true));
+        g.add(mesh(axeX(new THREE.TorusGeometry(rB + 0.22, 0.13, 8, 40).rotateX(Math.PI / 2)), M.caoutchouc(), xLast - 0.15, e.y, e.z));
+      }
+      if (s < 0) ancres.set(oeil, { v: V(xLast - (oeilletons === "sortis" ? hc : 0.2), e.y - rB - 0.5, e.z), s });
+      S.add(oeil, piv); }
+
+    // bague dioptrique (oculaire droit seulement), graduée
+    if (s > 0) {
+      const { piv, g } = cote(s, "oculaire"), e = E(s);
+      anneau = new THREE.Group(); anneau.position.set(xF - 0.55, e.y, e.z);
+      anneau.add(cyl(rB + 0.2, -0.3, 0.3, ouvert(M.noir()), 0, 0, true));
+      for (let k = -4; k <= 4; k++) {
+        const a = k * 0.32, tick = mesh(new THREE.BoxGeometry(k === 0 ? 0.28 : 0.16, 0.05, 0.05), k === 0 ? M.peinture() : M.alu(), -0.2, (rB + 0.21) * Math.cos(a), (rB + 0.21) * Math.sin(a));
+        anneau.add(tick);
+      }
+      g.add(anneau);
+      ancres.set(bague, { v: V(xF - 0.55, e.y + rB + 0.6, e.z), s });
+      S.add(bague, piv);
+    }
+
+    // pont de mise au point : relie l'axe central aux deux oculaires, avance et recule avec la molette
+    { const { piv, g } = cote(s, "pont"), e = E(s);
+      const L = RE - rB + 0.1;
+      g.add(mesh(new THREE.BoxGeometry(0.5, 0.35, L), M.alu(), xL0 + 0.6, 0, s * L / 2));
+      S.add(molette, piv); }
+
+    // bras de la charnière (tournent avec chaque moitié)
+    { const { piv, g } = cote(s);
+      if (porro) {
+        const zin = Math.max(0.2, s > 0 ? boite.min.z : -boite.max.z);
+        g.add(mesh(new THREE.BoxGeometry(1.2, 0.5, zin + 0.1), M.noir(), (boite.min.x + boite.max.x) / 2, 0, s * (zin + 0.1) / 2));
+        const zt = RE + DELTA - RT + 0.1;
+        g.add(mesh(new THREE.BoxGeometry(1.0, 0.5, zt), M.noir(), xO - 0.6, 0, s * zt / 2));
+      } else {
+        const zt = RE - RT + 0.1;
+        for (const x of [xF + 1.2, xO - 0.6]) g.add(mesh(new THREE.BoxGeometry(1.0, 0.5, zt), M.noir(), x, 0, s * zt / 2));
+      }
+      S.add(charniere, piv); }
+  }
+
+  // axe de la charnière, molette, filetage (fixes)
+  const xArr = xL0 + 0.1, xAv = xO - 0.1;
+  S.add(charniere, cyl(0.75, xArr, xAv, M.noir()));
+  ancres.set(charniere, { v: V(xO - 1.2, 1.0, 0), s: 0 });
+  roue = new THREE.Group(); roue.position.set(xL0 + 1.6, 0, 0);
+  roue.add(cyl(1.25, -0.7, 0.7, M.caoutchouc()));
+  for (let k = 0; k < 24; k++) {
+    const a = k * Math.PI / 12;
+    roue.add(mesh(new THREE.BoxGeometry(1.3, 0.1, 0.1), M.caoutchouc(), 0, 1.27 * Math.cos(a), 1.27 * Math.sin(a)));
+  }
+  roue.add(mesh(new THREE.BoxGeometry(0.06, 0.14, 0.14), M.peinture(), 0.67, 1.3, 0)); // repère
+  S.add(molette, roue);
+  ancres.set(molette, { v: V(xL0 + 1.6, 1.7, 0), s: 0 });
+  S.add(filetage, cyl(0.7, xAv, xAv + 0.35, M.alu()));
+  S.add(filetage, mesh(new THREE.CircleGeometry(0.3, 24).rotateY(Math.PI / 2), M.noir(), xAv + 0.36, 0, 0));
+  ancres.set(filetage, { v: V(xAv + 0.3, -1.1, 0), s: 0 });
+
+  // yeux de l'observateur (et ses lunettes), placés à chaque image
+  yeux = {};
+  for (const s of [-1, 1]) {
+    const g = new THREE.Group();
+    g.add(mesh(new THREE.SphereGeometry(1.2, 32, 16), M.oeil(), -1.2, 0, 0));
+    g.add(mesh(new THREE.RingGeometry(0.3, 0.55, 32).rotateY(Math.PI / 2), ouvert(M.lentille()), 0.0, 0, 0));
+    g.add(mesh(new THREE.CircleGeometry(0.3, 24).rotateY(Math.PI / 2), M.noir(), 0.01, 0, 0));
+    const verre = new THREE.Group();
+    verre.add(mesh(axeX(new THREE.CylinderGeometry(1.8, 1.8, 0.15, 40)), M.lentille(), 1.25, 0, 0));
+    verre.add(mesh(axeX(new THREE.TorusGeometry(1.8, 0.09, 8, 40).rotateX(Math.PI / 2)), M.noir(), 1.25, 0, 0));
+    g.add(verre);
+    S.add(observateur, g);
+    yeux[s] = { g, verre };
+  }
+  pont = mesh(new THREE.BoxGeometry(0.12, 0.12, 1), M.noir());
+  S.add(observateur, pont);
+
+  // textes qui dépendent du modèle
+  const ancreDroite = (v) => ({ v, s: 1 });
+  ancres.set(objectifs, ancreDroite(V(xO + 0.2, axeObjectif(1).y + RT + 0.6, axeObjectif(1).z)));
+  ancres.set(oculaires, { v: V(xL0 - 0.2, -rB - 0.6, -RE), s: -1 });
+  if (porro) { const gp = geoPorro(1); ancres.set(prismes, ancreDroite(V((xA + xB) / 2, boitePrismes(gp).max.y + 0.8, gp.cA.z))); }
+  else ancres.set(prismes, ancreDroite(V((xP0 + xP1) / 2, RT + 0.8, RE)));
+  ecrireTextes();
+  poserRayons();
+  sale = true;
+}
+let yeux = {}, pont = null;
+
+function ecrireTextes() {
+  objectifs.texte = "Les deux grandes lentilles avant captent la lumière. Chacune est un doublet achromatique : deux lentilles qui corrigent en partie les couleurs parasites. Elles forment une image renversée, que les prismes redressent ensuite. Plus elles sont grandes, plus on voit d'étoiles faibles.";
+  objectifs.chiffres = `D = ${m.D} mm (le « ${m.D} » de ${m.G}×${m.D}) · focale ≈ ${m.F} mm · traitement multicouche : ≈ 0,3 % de lumière perdue par surface, contre 4 % sans traitement`;
+  if (porro) {
+    prismes.texte = "Deux prismes à angle droit par côté. Dans chacun, la lumière se réfléchit deux fois et repart en sens inverse, décalée : le premier retourne l'image de haut en bas, le second de gauche à droite, et elle arrive droite à l'œil. Ces réflexions sont « totales » : sans miroir, rien n'est perdu, à condition d'un verre assez réfringent. Le trajet replié raccourcit les jumelles, et les objectifs plus écartés que les yeux accentuent le relief.";
+    prismes.chiffres = "Verre BaK-4 : indice 1,569, réflexion totale au-delà de 39,6° · verre BK7 : indice 1,517, limite 41,2°. Les rayons du bord frappent la face à ≈ 40° : avec du BK7, ils s'échappent et la pupille de sortie paraît carrée, bordée de gris";
+  } else {
+    prismes.texte = "Deux prismes accolés (Schmidt-Pechan) redressent l'image sans décaler l'axe : les tubes restent droits et les jumelles compactes. La lumière s'y réfléchit six fois, dont deux sur l'arête du « toit ». Une face n'est pas en réflexion totale et porte un miroir ; l'arête demande un traitement de phase, sans lequel l'image perd du contraste. Le prisme d'Abbe-Koenig, plus long, n'a que des réflexions totales : on le trouve sur des 8×56 et 10×56 haut de gamme.";
+    prismes.chiffres = "Miroir aluminium ≈ 90 %, argent ≈ 95 %, diélectrique > 99 % · trajet dessiné simplifié dans le prisme : il se croise pour montrer l'image retournée";
+  }
+  const fe = m.F / m.G;
+  oculaires.texte = "Deux petites loupes qui grossissent l'image formée par les objectifs. Le grossissement vaut la focale de l'objectif divisée par celle de l'oculaire. Tenez les jumelles à bout de bras : le petit disque lumineux sur chaque oculaire est la pupille de sortie, égale au diamètre de l'objectif divisé par le grossissement. La nuit, l'œil s'ouvre à 7 mm chez un jeune, à 5 mm vers 60 ans : au-delà, la lumière est perdue.";
+  oculaires.chiffres = `Focale ≈ ${Math.round(fe)} mm → ${m.F} ÷ ${Math.round(fe)} ≈ ${m.G}× · pupille de sortie ${m.D} ÷ ${m.G} = ${virgule(PS)} mm · champ réel ${virgule(m.champ)}° · champ apparent ≈ ${Math.round(apparent())}°`;
+  oeil.texte = "Ils placent l'œil à la bonne distance de l'oculaire (le dégagement oculaire) et coupent la lumière parasite. Sans lunettes, on les laisse sortis. Avec des lunettes, on les rabat (ou on les visse en position basse) : sinon l'œil est trop loin et l'on ne voit qu'une partie du champ, comme au bout d'un tunnel. Un astigmate garde ses lunettes ; un myope ou un hypermétrope peut les retirer et corriger avec la molette.";
+  oeil.chiffres = `Dégagement oculaire de ce modèle : ${m.ER} mm · avec des lunettes, il en faut au moins 15 à 17 mm`;
+  molette.texte = `Elle déplace les deux oculaires à la fois${porro ? "" : " (ici, une lentille à l'intérieur des tubes)"}. On la règle d'abord pour l'œil gauche, l'œil droit fermé. Ensuite, c'est la seule commande qu'on touche pour passer d'un objet à un autre.`;
+  molette.chiffres = `Oculaire déplacé de ${virgule(fe * fe / 1000, 2)} mm par dioptrie · ${virgule(m.F * m.F / 10000, 1)} mm pour passer de l'infini à 10 m`;
+  bague.chiffres = `Plage ± 4 dioptries, repère « 0 » au centre · ${virgule(fe * fe / 1000, 2)} mm de course par dioptrie`;
+  corps.texte = porro
+    ? "Le boîtier tient les prismes bien alignés : après un choc, ils peuvent bouger et l'on voit double. L'habillage en caoutchouc protège et donne une bonne prise. Les modèles étanches sont remplis d'azote : aucune buée ne peut se former à l'intérieur."
+    : "Deux tubes droits, plus fins et plus légers qu'avec des prismes de Porro. Les modèles étanches sont remplis d'azote : aucune buée ne se forme à l'intérieur, même quand on rentre au chaud après une nuit d'observation.";
+  corps.chiffres = `Poids ${m.poids} · à main levée, 10× au plus ; au-delà, un trépied`;
+  textesObservateur();
+}
+function textesObservateur() {
+  const L = S.state.lunettes;
+  observateur.texte = "Chaque œil doit se trouver juste derrière la pupille de sortie de son oculaire. Si les oculaires sont trop écartés ou trop serrés, la pupille de l'œil la manque en partie : bords noirs, deux cercles qui se chevauchent. La nuit, la pupille de l'œil s'ouvre à 6 ou 7 mm.";
+  observateur.chiffres = `Cet observateur : yeux écartés de ${virgule(obs.ipd)} mm · œil gauche ${fmtD(obs.gauche)}, œil droit ${fmtD(obs.droit)}${L ? " · corrigés par ses lunettes" : ""}`;
+}
+
+// ---------- Trajet de la lumière ----------
+const plan = (P, d, Q, n) => P.clone().addScaledVector(d, Q.clone().sub(P).dot(n) / d.dot(n));
+const refleter = (d, n) => d.clone().addScaledVector(n, -2 * d.dot(n));
+/** Réfraction sur une face perpendiculaire à X (loi de Snell : composantes transverses × k = n1/n2). */
+function refracter(d, k) { const y = d.y * k, z = d.z * k; return V(Math.sign(d.x) * Math.sqrt(Math.max(0, 1 - y * y - z * z)), y, z); }
+const decalage = (type) => FE * FE * (S.state.molette + (type === "droit" ? S.state.bague : 0)) / 100; // en unités (mm/10)
+const xLentille = (s) => xL0 - decalage(s > 0 ? "droit" : "focus");
+
+function rayon(s, oy, oz) {
+  const e = axeOculaire(s), p0 = axeObjectif(s);
+  const C = V(xO, p0.y + oy, p0.z + oz), A0 = C.clone().setX(xO + 5);
+  const d0 = V(xO - F, p0.y, p0.z).sub(C).normalize();
+  const pts = [A0, C], cols = [SEG[0], SEG[1]];
+  let P = C, d = d0;
+  const vers = (Q, n) => { P = plan(P, d, Q, n); pts.push(P); };
+  if (porro) {
+    const gp = geoPorro(s);
+    vers(V(xA, 0, 0), XV); d = refracter(d, 1 / N_BAK4);
+    vers(gp.QA, gp.nA1); d = refleter(d, gp.nA1);
+    vers(gp.QA, gp.nA2); d = refleter(d, gp.nA2);
+    vers(V(xA, 0, 0), XV); d = refracter(d, N_BAK4);
+    vers(V(xB, 0, 0), XV); d = refracter(d, 1 / N_BAK4);
+    vers(gp.QB, gp.nB1); d = refleter(d, gp.nB1);
+    vers(gp.QB, gp.nB2); d = refleter(d, gp.nB2);
+    vers(V(xB, 0, 0), XV); d = refracter(d, N_BAK4);
+    cols.push(SEG[2], SEG[2], SEG[2], SEG[2], SEG[2], SEG[2], SEG[2]);
+  } else {
+    // prisme en toit : entrée et sortie exactes, trajet intérieur simplifié (croisé = image retournée)
+    vers(V(xP1, 0, 0), XV);
+    const off = V(0, oy, oz).multiplyScalar((xP0 - xF) / F);
+    P = V(xP0, e.y - off.y, e.z - off.z); pts.push(P);
+    d = V(xF, e.y, e.z).sub(P).normalize();
+    cols.push(SEG[2]);
+  }
+  // lentille d'œil (lentille mince équivalente de focale FE, centrée sur l'axe de l'oculaire)
+  const xl = xLentille(s);
+  vers(V(xl, 0, 0), XV);
+  const my = d.y / -d.x - (P.y - e.y) / FE, mz = d.z / -d.x - (P.z - e.z) / FE;
+  d = V(-1, my, mz).normalize();
+  cols.push(SEG[3]);
+  const xOeil = xl - 0.25 - distanceOeil() / 10;
+  vers(V(xOeil - 0.6, 0, 0), XV);
+  cols.push(SEG[3]);
+  return { pts, cols };
+}
+
+const rayons = {};
+for (const s of [-1, 1]) {
+  const f = faisceau(0.55, 0.3, 48), piv = new THREE.Group();
+  piv.add(f.group); S.scene.add(piv);
+  rayons[s] = { f, piv };
+}
+function poserRayons() {
+  const k = 0.6 * R;
+  for (const s of [-1, 1]) rayons[s].f.poser([[0, k], [0, -k], [k, 0], [-k, 0]].map(([y, z]) => rayon(s, y, z)));
+}
+
+// ---------- Ce que voit l'observateur ----------
+/** Distance de l'œil à la lentille d'œil (mm) : sans lunettes, les œilletons sortis la fixent au dégagement oculaire ;
+ *  avec des lunettes, le verre tient l'œil à ≈ 14 mm du bord de l'œilleton. */
+function distanceOeil() {
+  if (!S.state.lunettes) return m.ER;
+  return oeilletons === "sortis" ? m.ER + 14 : Math.max(m.ER, 17);
+}
+const erreurs = () => {
+  const L = S.state.lunettes, g = L ? 0 : obs.gauche, d = L ? 0 : obs.droit;
+  return { g: S.state.molette - g, d: S.state.molette + S.state.bague - d, ipd: S.state.ecart - obs.ipd };
+};
+function recouvrement(r1, r2, d) {
+  if (d >= r1 + r2) return 0;
+  if (d <= Math.abs(r1 - r2)) return Math.PI * Math.min(r1, r2) ** 2;
+  const a = Math.acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1)), b = Math.acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2));
+  return r1 * r1 * a + r2 * r2 * b - 0.5 * Math.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2));
+}
+/** Part de la lumière qui entre dans l'œil pour une direction du champ (tx, ty : tangentes du champ apparent),
+ *  l'œil étant décalé de ex (mm) par rapport à la pupille de sortie. */
+function transmis(tx, ty, ex) {
+  const dd = distanceOeil() - m.ER, rb = PS / 2, re = PUPILLE_OEIL / 2;
+  return recouvrement(rb, re, Math.hypot(-dd * tx - ex, -dd * ty)) / (Math.PI * Math.min(rb, re) ** 2);
+}
+// étoiles autour de la Lune (en degrés de ciel), toujours les mêmes
+const ETOILES = (() => { const r = alea(31), l = []; for (let i = 0; i < 110; i++) { const a = r() * 2 * Math.PI, q = 4.2 * Math.sqrt(r()); l.push({ x: q * Math.cos(a), y: q * Math.sin(a), b: r() ** 3 }); } return l; })();
+const LUNE = { x: 0.6, y: -0.35, r: 0.26 };
+const cache = {};
+/** Ciel vu dans les jumelles, net, sur N pixels de diamètre (bord du champ au bord du canvas). */
+function cielNet(N) {
+  const cle = `${modele}-${N}`;
+  if (cache.ciel?.cle === cle) return cache.ciel.cv;
+  const cv = document.createElement("canvas"); cv.width = cv.height = N;
+  const ctx = cv.getContext("2d"), k = N / m.champ, c = N / 2;
+  ctx.fillStyle = "#0d1424"; ctx.fillRect(0, 0, N, N);
+  for (const e of ETOILES) {
+    const x = c + e.x * k, y = c - e.y * k, r = (0.6 + 1.8 * e.b) * N / 300;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2);
+    g.addColorStop(0, `rgba(255,248,235,${0.45 + 0.55 * e.b})`); g.addColorStop(1, "rgba(255,248,235,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 2, 0, 2 * Math.PI); ctx.fill();
+  }
+  const rl = LUNE.r * k;
+  ctx.drawImage(textures.faceLune(), c + LUNE.x * k - rl, c - LUNE.y * k - rl, 2 * rl, 2 * rl);
+  cache.ciel = { cle, cv };
+  return cv;
+}
+/** Dessine src flouté par un disque de rayon r pixels (flou de mise au point). */
+function flou(ctx, src, x, y, w, h, r) {
+  if (r < 0.35) { ctx.drawImage(src, x, y, w, h); return; }
+  const pts = [[0, 0]], na = Math.min(4, Math.ceil(r / 1.5));
+  for (let i = 1; i <= na; i++) for (let j = 0, n = 6 * i; j < n; j++) {
+    const a = 2 * Math.PI * (j + 0.5 * (i % 2)) / n;
+    pts.push([r * i / na * Math.cos(a), r * i / na * Math.sin(a)]);
+  }
+  // moyenne glissante : chaque copie pèse 1/(i+1), sans perte de précision sur les couleurs sombres
+  ctx.save();
+  pts.forEach(([dx, dy], i) => { ctx.globalAlpha = 1 / (i + 1); ctx.drawImage(src, x + dx, y + dy, w, h); });
+  ctx.restore();
+}
+/** Rayon du flou (en degrés de ciel) pour une erreur de mise au point err (dioptries). */
+const flouDeg = (err) => 0.5 * Math.min(PS, PUPILLE_OEIL) * Math.abs(err) / 1000 * 180 / Math.PI / m.G;
+const toile = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+
+function dessinerDeuxYeux() {
+  const ap = S.apercus[0], cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const Hc = Math.round(W * 0.72);
+  cv.width = Math.round(W * dpr); cv.height = Math.round(Hc * dpr); cv.style.height = Hc + "px";
+  const ctx = cv.getContext("2d"), err = erreurs();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+  const Rf = (Hc / 2 - 4) * dpr, cx = cv.width / 2, cy = cv.height / 2, N = Math.round(2 * Rf);
+  const dec = Math.min(0.35, Math.abs(err.ipd) * 0.035) * Rf;
+  const tc = Math.tan(m.champ / 2 * Math.PI / 180) * m.G;
+  for (const [s, e] of [[-1, err.g], [1, err.d]]) {
+    const off = toile(cv.width, cv.height), o = off.getContext("2d"), xc = cx + s * dec;
+    o.fillStyle = "#000"; o.fillRect(0, 0, off.width, off.height);
+    flou(o, cielNet(N), cx - Rf, cy - Rf, N, N, flouDeg(e) * N / m.champ);
+    // vignetage : l'œil, décalé de la pupille de sortie, n'en reçoit qu'une partie
+    const n = 48, vg = toile(n, n), vc = vg.getContext("2d"), img = vc.createImageData(n, n), ex = -s * err.ipd / 2;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const ux = (i + 0.5) / n * 2 - 1, uy = 1 - (j + 0.5) / n * 2;
+      img.data[(j * n + i) * 4 + 3] = 255 * (1 - transmis(ux * tc, uy * tc, ex));
+    }
+    vc.putImageData(img, 0, 0);
+    o.imageSmoothingEnabled = true;
+    o.drawImage(vg, xc - Rf, cy - Rf, 2 * Rf, 2 * Rf);
+    o.globalCompositeOperation = "destination-in";
+    o.beginPath(); o.arc(xc, cy, Rf, 0, 2 * Math.PI); o.fill();
+    ctx.save(); ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = dec > 0.5 ? 0.62 : 0.5;
+    ctx.drawImage(off, 0, 0); ctx.restore();
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = dpr;
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + s * dec, cy, Rf, 0, 2 * Math.PI); ctx.stroke(); }
+
+  ap.legende.innerHTML = `<h2>Jumelles ${m.nom}</h2>
+    <p class="spec">Champ réel ${virgule(m.champ)}° · champ apparent ≈ ${Math.round(apparent())}° · pupille de sortie ${virgule(PS)} mm</p>
+    <p>${etapeSuivante(err)}</p>`;
+}
+function etapeSuivante(err) {
+  const L = S.state.lunettes, net = (e) => Math.abs(e) < 0.13;
+  if (L && oeilletons === "sortis") return "<strong>Avant tout</strong> : avec des lunettes, rabattez les œilletons. L'œil est trop loin de l'oculaire : on ne voit que le centre du champ, comme au bout d'un tunnel.";
+  if (Math.abs(err.ipd) > 0.75) return `<strong>Étape 1</strong> : réglez l'écartement jusqu'à ne voir qu'un seul cercle. Les oculaires sont ${err.ipd > 0 ? "trop écartés" : "trop serrés"} de ${virgule(Math.abs(err.ipd))} mm.`;
+  if (!net(err.g)) return `<strong>Étape 2</strong> : fermez l'œil droit et tournez la molette centrale jusqu'à voir la Lune nette dans l'œil gauche (écart actuel : ${fmtD(err.g)}).`;
+  if (!net(err.d)) return `<strong>Étape 3</strong> : fermez l'œil gauche et tournez la bague dioptrique, sans toucher à la molette, jusqu'à voir la Lune nette dans l'œil droit (écart actuel : ${fmtD(err.d)}).`;
+  if (!L && oeilletons === "rabattus") return "Image nette. Sans lunettes, sortez les œilletons : ils tiennent l'œil à la bonne distance et coupent la lumière parasite.";
+  return `<strong>Réglage terminé</strong> : un seul cercle, net pour les deux yeux. Notez l'écartement (${virgule(S.state.ecart)} mm) et la bague (${fmtD(S.state.bague)}).`;
+}
+function dessinerUnOeil() {
+  const ap = S.apercus[1], err = erreurs(), N = 256;
+  if (!ap.canvas.clientWidth) return;
+  const kz = 0.36 * N / LUNE.r; // pixels par degré : la Lune occupe 72 % du cercle
+  const lune = cache.lune ??= (() => { const c = toile(N, N), x = c.getContext("2d"); x.fillStyle = "#0d1424"; x.fillRect(0, 0, N, N); x.drawImage(textures.faceLune(), N * 0.14, N * 0.14, N * 0.72, N * 0.72); return c; })();
+  const image = (s, e) => {
+    const c = toile(N, N), x = c.getContext("2d");
+    x.fillStyle = "#000"; x.fillRect(0, 0, N, N);
+    flou(x, lune, 0, 0, N, N, flouDeg(e) * kz);
+    x.fillStyle = `rgba(0,0,0,${1 - transmis(0, 0, -s * err.ipd / 2)})`; x.fillRect(0, 0, N, N);
+    return c;
+  };
+  vuesRondes(ap.canvas, [{ image: image(-1, err.g), titre: "Œil gauche" }, { image: image(1, err.d), titre: "Œil droit" }]);
+  const etat = (e) => (Math.abs(e) < 0.13 ? "net" : `flou (${fmtD(e)})`);
+  ap.legende.innerHTML = `<p>Œil gauche : <strong>${etat(err.g)}</strong> · œil droit : <strong>${etat(err.d)}</strong>. La molette agit sur les deux yeux, la bague sur l'œil droit seulement.</p>
+    <p class="spec">Flou à l'échelle réelle : 1 dioptrie d'écart étale chaque point sur ≈ ${virgule(2 * flouDeg(1) * 3600 * m.G / 60, 0)}′ dans l'oculaire.</p>`;
+}
+
+// ---------- Actions ----------
+function choisir(id, recadrer = true) {
+  modele = id;
+  dimensions();
+  for (const k in MODELES) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === id));
+  sousTitre.textContent = `Exemple : jumelles ${m.nom}`;
+  construire();
+  S.refreshInfo();
+  if (recadrer) S.vue(vueCourante);
+}
+function choisirOeilletons(v) {
+  oeilletons = v;
+  for (const k of ["sortis", "rabattus"]) document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === v));
+  construire();
+}
+function nouvelObservateur() {
+  const r = Math.random, demi = (a, b) => a + Math.round(r() * (b - a) * 2) / 2;
+  obs.ipd = demi(57, 70);
+  obs.gauche = demi(-3, 1.5);
+  do obs.droit = obs.gauche + demi(-2, 2); while (obs.droit === obs.gauche || Math.abs(obs.droit) > 4);
+  textesObservateur(); S.refreshInfo(); sale = true;
+}
+function solution() {
+  const L = S.state.lunettes;
+  S.regler("ecart", obs.ipd);
+  S.regler("molette", L ? 0 : obs.gauche);
+  S.regler("bague", L ? 0 : obs.droit - obs.gauche);
+  choisirOeilletons(L ? "rabattus" : "sortis");
+}
+let vueCourante = "iso";
+document.querySelectorAll("#panel [data-view]").forEach((b) => b.addEventListener("click", () => { vueCourante = b.dataset.view; }));
+
+// ---------- Animation ----------
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière de la Lune", () => rayons[1].piv.localToWorld(V(xO + 4, axeObjectif(1).y + R + 0.3, axeObjectif(1).z)), { lumiere: true, visible: lightVisible });
+const theta = () => Math.acos(Math.min(1, S.state.ecart / 20 / RE));
+let sale = true, largeurs = [0, 0];
+S.onFrame(({ time }) => {
+  const th = theta();
+  for (const p of pivots) p.g.rotation.x = p.s * th;
+  for (const mo of mobiles) mo.g.position.x = -decalage(mo.type);
+  if (roue) roue.rotation.x = S.state.molette * 0.9;
+  if (anneau) anneau.rotation.x = S.state.bague * 0.35;
+  for (const [p, a] of ancres) p.ancre.copy(a.v).applyAxisAngle(XV, a.s * th);
+
+  // yeux : à l'écart de l'observateur, à la hauteur des oculaires, à la distance donnée par les œilletons
+  const yo = -RE * Math.sin(th);
+  for (const s of [-1, 1]) {
+    const y = yeux[s];
+    if (!y) continue;
+    y.g.position.set(xLentille(s) - 0.25 - distanceOeil() / 10, yo, s * obs.ipd / 20);
+    y.verre.visible = S.state.lunettes;
+  }
+  if (pont) { pont.position.set(yeux[1].g.position.x + 1.25, yo + 0.9, 0); pont.scale.z = Math.max(0.1, obs.ipd / 10 - 3.6); pont.visible = S.state.lunettes; }
+  observateur.ancre.set(yeux[-1].g.position.x - 1.2, yo + 1.6, -obs.ipd / 20);
+
+  const vis = lightVisible();
+  for (const s of [-1, 1]) {
+    rayons[s].f.group.visible = vis;
+    rayons[s].f.photons.visible = S.state.anim || S.reduced;
+    if (vis) rayons[s].f.animer(time, 4);
+  }
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière." : null);
+
+  const w = S.apercus.map((a) => a.canvas.clientWidth);
+  if (sale || w[0] !== largeurs[0] || w[1] !== largeurs[1]) {
+    largeurs = w; sale = false;
+    dessinerDeuxYeux(); dessinerUnOeil();
+  }
+});
+
+dimensions();
+for (const k of ["sortis"]) document.getElementById("r-" + k).setAttribute("aria-pressed", "true");
+choisir(modele, false);
+S.start();
+</script>
+</body>
+</html>
