@@ -132,7 +132,8 @@ function choisir(nom) {
   const mars = !INTERIEURE[nom];
   const lib = { "r-a-est": mars ? "Quadrature est" : "Élongation soir", "r-a-ouest": mars ? "Quadrature ouest" : "Élongation matin" };
   for (const [id, t] of Object.entries(lib)) { const b = document.getElementById(id); if (b) b.textContent = t; }
-  const opp = document.getElementById("r-a-opp"); if (opp) opp.disabled = !mars;
+  // seule une planète extérieure peut être à l'opposé du Soleil : le bouton n'apparaît que pour Mars
+  const opp = document.getElementById("r-a-opp"); if (opp) opp.hidden = !mars;
   legendePrec = "";
 }
 
