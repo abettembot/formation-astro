@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lois de Kepler</title>
+<meta name="description" content="Schéma 3D interactif des trois lois de Kepler : orbite elliptique, loi des aires et T² = a³, avec la Terre, Mars et la comète de Halley.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, legende, css, textures, halo, textureHalo } from "../commun/schema.js";
+
+// ---------- Échelle et repère ----------
+// Le demi-grand axe de l'orbite affichée mesure toujours A = 6 unités : 1 unité = a/6
+// (1/6 UA pour la Terre, 3 UA pour la comète de Halley). Distances à l'échelle ; Soleil et astres très grossis.
+// Repère : plan de l'écliptique = plan XZ, pôle Nord de l'écliptique vers +Y, Soleil à l'origine (un foyer).
+const DEG = Math.PI / 180;
+const A = 6;
+const UA_KM = 149.6;     // millions de km
+const V_UA = 29.7847;    // vitesse d'une orbite circulaire à 1 UA (km/s) : v = V_UA × √(2/r − 1/a)
+const N_SECT = 12;       // secteurs balayés en des durées égales
+
+// ---------- Orbites réelles ----------
+// a (UA), e, i, O (nœud ascendant), w (longitude du périhélie), en degrés. Planètes : éléments moyens J2000 (JPL).
+// Halley : q = 0,586 UA, e = 0,967, i = 162,3°, Ω = 58,4°, ω = 111,3° (passage au périhélie du 9 février 1986).
+const CORPS = {
+  terre: { nom: "Terre", a: 1.00000261, e: 0.01671123, i: 0, O: 0, w: 102.93768 },
+  mars: { nom: "Mars", a: 1.52371034, e: 0.0933941, i: 1.84969, O: 49.55954, w: -23.94363 },
+  halley: { nom: "Comète de Halley", a: 17.834, e: 0.96714, i: 162.26, O: 58.42, w: 58.42 + 111.33 },
+};
+// Orbites des planètes (repères) et périodes réelles (années)
+const PLANETES = [
+  { id: "mercure", nom: "Mercure", a: 0.38709927, e: 0.20563593, i: 7.00498, O: 48.33077, w: 77.45780, T: 0.2408 },
+  { id: "venus", nom: "Vénus", a: 0.72333566, e: 0.00677672, i: 3.39468, O: 76.67984, w: 131.60247, T: 0.6152 },
+  { id: "terre", nom: "Terre", a: 1.00000261, e: 0.01671123, i: 0, O: 0, w: 102.93768, T: 1.0000 },
+  { id: "mars", nom: "Mars", a: 1.52371034, e: 0.0933941, i: 1.84969, O: 49.55954, w: -23.94363, T: 1.8808 },
+  { id: "jupiter", nom: "Jupiter", a: 5.20288700, e: 0.04838624, i: 1.30440, O: 100.47391, w: 14.72848, T: 11.862 },
+  { id: "saturne", nom: "Saturne", a: 9.53667594, e: 0.05386179, i: 2.48599, O: 113.66242, w: 92.59888, T: 29.457 },
+  { id: "uranus", nom: "Uranus", a: 19.18916464, e: 0.04725744, i: 0.77264, O: 74.01693, w: 170.95428, T: 84.011 },
+  { id: "neptune", nom: "Neptune", a: 30.06992276, e: 0.00859048, i: 1.77004, O: 131.78423, w: 44.96476, T: 164.79 },
+];
+
+/** Repère de l'orbite dans la scène : P vers le périhélie, Q sens du mouvement au périhélie (écliptique → scène). */
+function directions(o) {
+  const om = (o.w - o.O) * DEG, O = o.O * DEG, i = o.i * DEG;
+  const co = Math.cos(om), so = Math.sin(om), cO = Math.cos(O), sO = Math.sin(O), ci = Math.cos(i), si = Math.sin(i);
+  const sc = (x, y, z) => new THREE.Vector3(x, z, -y); // écliptique (X, Y, Z) → scène (X, Z, −Y)
+  return {
+    P: sc(co * cO - so * sO * ci, co * sO + so * cO * ci, so * si),
+    Q: sc(-so * cO - co * sO * ci, -so * sO + co * cO * ci, co * si),
+    noeud: sc(cO, sO, 0),
+  };
+}
+/** Anomalie excentrique E à partir de l'anomalie moyenne M (équation de Kepler M = E − e sin E). */
+function kepler(Mo, e) {
+  Mo = ((Mo % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+  let E = e > 0.8 ? Math.PI * Math.sign(Mo || 1) : Mo;
+  for (let k = 0; k < 40; k++) E -= (E - e * Math.sin(E) - Mo) / (1 - e * Math.cos(E));
+  return E;
+}
+
+// ---------- Mise en forme ----------
+const fmt = (v, n = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+const fmtE = (e) => fmt(e, e < 0.1 ? 4 : 3);
+const fmtUA = (ua) => fmt(ua, ua < 2 ? 3 : ua < 10 ? 2 : 1) + " UA";
+const fmtKm = (ua) => {
+  const mkm = ua * UA_KM;
+  return mkm < 1000 ? fmt(mkm, 1) + " millions de km" : fmt(mkm / 1000, 2) + " milliards de km";
+};
+const fmtDuree = (ans) => (ans < 3 ? fmt(ans * 365.25, ans < 1.5 ? 2 : 0) + " jours" : fmt(ans, 1) + " ans");
+const vitesse = (rUA, aUA) => V_UA * Math.sqrt(Math.max(0, 2 / rUA - 1 / aUA));
+
+// ---------- État ----------
+const sim = { base: "halley", e: CORPS.halley.e, M: -0.55 };
+let pilote = false;
+const grand = () => innerWidth > 760; // mise en page ordinateur (même seuil que schema.js)
+const base = () => CORPS[sim.base];
+const fictive = () => Math.abs(sim.e - base().e) > 1e-6;
+const periode = () => Math.pow(base().a, 1.5);   // années (3e loi)
+const nomAffiche = () => (fictive() ? `Orbite fictive (e = ${fmtE(sim.e)})` : base().nom);
+const g = { b: A, c: 0, q: A, Q: A, rs: 0.3, rb: 0.22, sgn: 1, E: [] }; // géométrie courante, en unités de la scène
+
+function choisir(id) {
+  sim.base = id;
+  sim.e = CORPS[id].e;
+  pilote = true; S.regler("exc", Math.round(sim.e * 1000) / 1000); pilote = false;
+  reconstruire(true);
+  S.vue(vueCourante); // l'ellipse change de forme : on recadre le point de vue en cours
+}
+let vueCourante = "iso";
+document.addEventListener("click", (ev) => { const b = ev.target.closest?.("[data-view]"); if (b) vueCourante = b.dataset.view; });
+
+const S = createSchema({
+  surtitre: "Support de formation · Mécanique céleste",
+  titre: "Lois de Kepler",
+  sousTitre: "Exemple : comète de Halley · e = 0,967",
+  distanceMin: 0.6,
+  distanceMax: 90,
+  apercu: { titre: "3ᵉ loi : T² = a³" },
+  commandes: [
+    { type: "raccourcis", id: "orbite", label: "Orbite", boutons: [
+      { id: "o-terre", label: "Terre", onClick: () => choisir("terre") },
+      { id: "o-mars", label: "Mars", onClick: () => choisir("mars") },
+      { id: "o-halley", label: "Comète de Halley", onClick: () => choisir("halley") },
+    ] },
+    { type: "curseur", id: "exc", label: "Excentricité", min: 0, max: 0.97, pas: 0.001, valeur: 0.967,
+      format: (v) => fmt(v, 3),
+      onInput: (v) => {
+        if (pilote) return;
+        // le curseur est arrondi au millième : à la valeur réelle arrondie, on garde l'orbite réelle
+        sim.e = Math.abs(v - Math.round(base().e * 1000) / 1000) < 1e-9 ? base().e : v;
+        reconstruire(false);
+      } },
+    { type: "curseur", id: "tour", label: "Un tour en", min: 8, max: 60, pas: 1, valeur: 24, format: (v) => v + " s" },
+    { type: "bascule", id: "axes", label: "Foyers et axes", actif: true },
+    { type: "bascule", id: "aires", label: "Loi des aires", actif: true },
+    { type: "bascule", id: "vitesse", label: "Vitesse", actif: true },
+    { type: "bascule", id: "planetes", label: "Orbites des planètes", actif: true },
+  ],
+  vues: [
+    // sur ordinateur, cible décalée vers l'aphélie : l'ellipse se place entre le panneau et l'encart ;
+    // sur téléphone (encart en haut à gauche), cible au centre, caméra plus loin et périhélie à droite
+    { id: "iso", label: "3/4", pos: () => grand() ? loc(-g.c + 2.5, 21, -19) : loc(-g.c - 3.5, 29, 27), cible: () => loc(-g.c - (grand() ? 2.5 : 0), 0, 0) },
+    // au-dessus de l'écliptique, grand axe à l'horizontale (léger décalage perpendiculaire au grand axe)
+    { id: "dessus", label: "Dessus", pos: () => {
+        const P = new THREE.Vector3(1, 0, 0).applyQuaternion(orbite.quaternion);
+        const perp = new THREE.Vector3(P.z, 0, -P.x).normalize(); // périhélie à gauche, loin de l'encart
+
+        return loc(-g.c - (grand() ? 3.5 : 0), 0, 0).add(new THREE.Vector3(0, grand() ? 29 : 38, 0)).addScaledVector(perp, 0.4);
+      }, cible: () => loc(-g.c - (grand() ? 3.5 : 0), 0, 0) },
+    { id: "profil", label: "Profil", pos: () => {
+        // le long de la ligne des nœuds : l'orbite et l'écliptique se voient par la tranche
+        const d = base().i > 0.5 ? directions(base()).noeud : new THREE.Vector3(0, 0, 1).applyQuaternion(orbite.quaternion);
+        return loc(-g.c, 0, 0).addScaledVector(d, 23).add(new THREE.Vector3(0, 1.2, 0));
+      }, cible: () => loc(-g.c, 0, 0) },
+    { id: "perihelie", label: "Au périhélie", pos: () => {
+        const d = Math.max(3.4, 2.6 * g.q);
+        return loc(g.q + 0.45 * d, 0.75 * d, -0.85 * d); // périhélie à gauche, loin de l'encart
+      }, cible: () => loc(g.q + 0.25 * Math.max(3.4, 2.6 * g.q), 0, 0) }, // un peu au-delà : la place des queues
+  ],
+  intro: () => `
+    <div class="eyebrow">Les trois lois de Kepler</div>
+    <p>À partir des positions de Mars mesurées par Tycho Brahe, Johannes Kepler a trouvé comment tournent les planètes (1609 et 1619). Les mêmes lois valent pour les comètes.</p>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "1ʳᵉ loi : l'orbite est une ellipse. Le Soleil occupe un de ses deux foyers ; l'autre foyer est vide." },
+      { couleur: COULEURS.ambre, texte: "2ᵉ loi : la ligne Soleil–astre balaie des aires égales en des durées égales. Près du Soleil, l'astre va plus vite." },
+      { couleur: COULEURS.orange, texte: "3ᵉ loi : plus l'orbite est grande, plus la période est longue. En années et en UA : T² = a³." },
+    ])}
+    <p class="spec">La comète de Halley file à 54,6 km/s près du Soleil, puis se traîne à 0,9 km/s au-delà de Neptune : elle passe 75 ans loin de nous pour quelques mois de visibilité. Prochain passage : juillet 2061.</p>`,
+});
+
+// ---------- Éclairage : le Soleil au foyer ----------
+S.scene.environment = null;
+S.lumieres.principale.intensity = 0;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.6;
+{ const l = new THREE.PointLight(0xfff4e0, 3.2, 0, 0); S.scene.add(l); }
+
+// ---------- Groupe de l'orbite : plan de l'orbite = plan XZ local, périhélie vers +X local ----------
+const orbite = new THREE.Group(); S.scene.add(orbite);
+const loc = (x, y, z) => { orbite.updateMatrixWorld(); return orbite.localToWorld(new THREE.Vector3(x, y, z)); };
+/** Point de l'ellipse d'anomalie excentrique E, dans le repère de l'orbite. */
+const pt = (E, out = new THREE.Vector3()) => out.set(A * (Math.cos(E) - sim.e), 0, g.sgn * g.b * Math.sin(E));
+const matLigne = (couleur, op) => new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: op, depthWrite: false });
+
+// ---------- Soleil ----------
+const soleil = S.part("soleil", "Soleil", {
+  texte: "Il occupe un des deux foyers de l'ellipse, pas son centre. Sa gravité courbe la trajectoire de chaque planète et de chaque comète, d'autant plus fort qu'elles sont proches de lui. Ici, il est dessiné beaucoup trop gros.",
+  chiffres: "Masse : 333 000 fois la Terre, 99,9 % de la masse du Système solaire · diamètre 1,39 million de km",
+});
+const soleilMesh = S.add(soleil, mesh(new THREE.SphereGeometry(1, 48, 24), M.lumineux(0xffd98a)));
+const soleilHalo = halo(COULEURS.ambre, 1); S.scene.add(soleilHalo);
+
+// ---------- Orbite (ellipse) ----------
+class Ellipse extends THREE.Curve {
+  getPoint(t, out = new THREE.Vector3()) { return pt(2 * Math.PI * t, out); }
+}
+const orbitePart = S.part("orbite", "Orbite elliptique", {
+  parent: orbite,
+  texte: "1ʳᵉ loi de Kepler : l'orbite est une ellipse et le Soleil est sur un de ses foyers. Une ellipse se décrit par deux nombres : sa taille, le demi-grand axe a, et son aplatissement, l'excentricité e. e = 0 donne un cercle ; plus e approche de 1, plus l'ellipse est allongée.",
+});
+
+// ---------- Axes et foyer vide ----------
+const axesPart = S.part("axes", "Grand axe", {
+  parent: orbite,
+  texte: "Il relie le périhélie à l'aphélie en passant par les deux foyers. Sa moitié, le demi-grand axe a, est la distance moyenne entre l'astre et le Soleil. Le Soleil est décalé du centre de l'ellipse de c = a × e : c'est ce décalage qui mesure l'excentricité.",
+});
+const foyerPart = S.part("foyer", "Foyer vide", {
+  parent: orbite,
+  texte: "Le second foyer de l'ellipse : il n'y a rien. Pour tout point de l'orbite, la somme des distances aux deux foyers est la même et vaut 2a : c'est la « méthode du jardinier », qui trace une ellipse avec une ficelle attachée à deux piquets. Plus les foyers sont écartés, plus l'ellipse est allongée.",
+});
+// sous-groupe déplaçable : la position du groupe d'un élément est réservée à la vue éclatée
+const foyerG = new THREE.Group();
+foyerG.add(mesh(new THREE.TorusGeometry(0.13, 0.025, 8, 40).rotateX(Math.PI / 2), M.lumineux(0xaab6c8)));
+foyerG.add(mesh(new THREE.SphereGeometry(0.035, 12, 8), M.lumineux(0xaab6c8)));
+S.add(foyerPart, foyerG);
+
+// ---------- Périhélie et aphélie ----------
+const periPart = S.part("perihelie", "Périhélie", {
+  parent: orbite,
+  texte: "Le point de l'orbite le plus proche du Soleil. L'astre y passe à sa vitesse maximale : il a été accéléré par la gravité pendant toute sa chute vers le Soleil.",
+});
+const aphPart = S.part("aphelie", "Aphélie", {
+  parent: orbite,
+  texte: "Le point de l'orbite le plus éloigné du Soleil. L'astre y passe à sa vitesse minimale, freiné par la gravité pendant toute sa montée, puis il retombe vers le Soleil.",
+});
+const periMesh = S.add(periPart, mesh(new THREE.SphereGeometry(1, 16, 10), M.lumineux(COULEURS.etoile)));
+const aphMesh = S.add(aphPart, mesh(new THREE.SphereGeometry(1, 16, 10), M.lumineux(COULEURS.etoile)));
+
+// ---------- Aires balayées (2e loi) ----------
+const airesPart = S.part("aires", "Aires balayées", {
+  parent: orbite,
+  texte: "2ᵉ loi de Kepler : la ligne qui relie le Soleil à l'astre balaie des aires égales en des durées égales. Les 12 secteurs colorés ont tous la même surface et l'astre met le même temps à parcourir chacun. Près du Soleil, le secteur est court et large : l'astre va vite. Loin du Soleil, il est long et étroit : l'astre va lentement.",
+});
+// secteur en cours de balayage et rayon Soleil–astre (mis à jour à chaque image)
+const N_BAL = 64;
+const balayage = new THREE.Mesh(
+  new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(N_BAL * 9), 3)),
+  M.lumineux(COULEURS.ambre, 0.4));
+balayage.frustumCulled = false;
+const rayon = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3)), matLigne(COULEURS.etoile, 0.8));
+rayon.frustumCulled = false;
+const airesDyn = new THREE.Group(); airesDyn.add(balayage, rayon); orbite.add(airesDyn);
+
+// ---------- Ficelle du jardinier et flèche de vitesse ----------
+const ficelle = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3)),
+  new THREE.LineDashedMaterial({ color: COULEURS.ambre, dashSize: 0.18, gapSize: 0.12, transparent: true, opacity: 0.75, depthWrite: false }));
+ficelle.frustumCulled = false; orbite.add(ficelle);
+const fleche = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 1, COULEURS.corail, 0.3, 0.16);
+fleche.line.material.transparent = true; fleche.line.material.opacity = 0.9;
+orbite.add(fleche);
+
+// ---------- L'astre (planète ou comète) ----------
+const corpsG = new THREE.Group(); orbite.add(corpsG);
+const corps = S.part("corps", "Comète de Halley", { parent: corpsG, etiquette: false });
+const TEXTES = {
+  terre: {
+    texte: "Notre planète décrit une ellipse presque circulaire : à l'œil, on ne la distingue pas d'un cercle. Elle passe au plus près du Soleil début janvier, en plein hiver de l'hémisphère nord : ce n'est pas la distance au Soleil qui fait les saisons, mais l'inclinaison de l'axe de la Terre. Elle va un peu plus vite en hiver : printemps et été boréaux durent 186 jours, automne et hiver 179.",
+    chiffres: "Période 365,26 jours · 147,1 à 152,1 millions de km du Soleil · 29,3 à 30,3 km/s",
+  },
+  mars: {
+    texte: "Une orbite nettement plus allongée que celle de la Terre. C'est en étudiant les positions de Mars mesurées par Tycho Brahe que Kepler a découvert, en 1609, que les orbites sont des ellipses et non des cercles. Les oppositions de Mars proches de son périhélie sont les plus favorables : la planète est alors au plus près de nous.",
+    chiffres: "Période 687 jours (1,88 an) · 206,6 à 249,2 millions de km du Soleil · 22,0 à 26,5 km/s",
+  },
+  halley: {
+    texte: "Une comète périodique sur une orbite très allongée : elle plonge vers le Soleil entre Mercure et Vénus, puis repart au-delà de Neptune. Son orbite est inclinée de 162° : elle tourne en sens inverse des planètes. Près du Soleil, la glace de son noyau se sublime et forme la chevelure et les queues, toujours dirigées à l'opposé du Soleil. Edmond Halley avait prédit son retour de 1758.",
+    chiffres: "Période 75,3 ans · noyau de 15 × 8 km · 0,586 à 35,1 UA du Soleil · 0,9 à 54,6 km/s",
+  },
+};
+const lblCorps = S.label("", () => corpsG.localToWorld(new THREE.Vector3(0, g.rb + 0.45, 0)), { partId: "corps" });
+let corpsMesh = null, corpsConstruit = null;
+// chevelure et queues de la comète
+const chevelure = halo(COULEURS.etoile, 1); corpsG.add(chevelure);
+const N_QUEUE = 90;
+const queueGeo = new THREE.BufferGeometry();
+queueGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(N_QUEUE * 2 * 3), 3));
+queueGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(N_QUEUE * 2 * 3), 3));
+const queue = new THREE.Points(queueGeo, new THREE.PointsMaterial({ size: 0.1, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+queue.frustumCulled = false; orbite.add(queue);
+const graines = Array.from({ length: N_QUEUE }, (_, k) => [((k * 0.6180339) % 1), Math.sin(k * 12.9898) * 0.5, Math.cos(k * 78.233) * 0.5]);
+
+function construireCorps() {
+  if (corpsConstruit === sim.base) return;
+  corpsConstruit = sim.base;
+  S.viderElement(corps);
+  const geo = new THREE.SphereGeometry(1, 48, 24);
+  if (sim.base === "halley") {
+    const m = M.astre(null); m.color.setHex(0x8f8a84);
+    geo.scale(1, 0.62, 0.55); // noyau allongé (15 × 8 km)
+    corpsMesh = S.add(corps, mesh(geo, m));
+  } else {
+    corpsMesh = S.add(corps, mesh(geo, M.astre(textures[sim.base]())));
+  }
+}
+
+// ---------- Orbites des planètes (repères, à la même échelle) ----------
+const reperes = new THREE.Group(); S.scene.add(reperes);
+const matRepere = () => new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.22, gapSize: 0.16, transparent: true, opacity: 0.4, depthWrite: false });
+const reperesPts = {};
+for (const p of PLANETES) {
+  S.label(p.nom, () => reperesPts[p.id]?.clone().add(new THREE.Vector3(0, 0.25, 0)), {
+    visible: () => S.state.planetes && !!reperesPts[p.id] && p.a * A / base().a > 1.3,
+  });
+}
+function construireReperes() {
+  reperes.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); reperes.clear();
+  const k = A / base().a; // unités par UA
+  for (const p of PLANETES) {
+    reperesPts[p.id] = null;
+    if (p.id === sim.base || p.a * k > 24) continue;
+    const { P, Q } = directions(p), b = p.a * Math.sqrt(1 - p.e * p.e), pts = [];
+    for (let j = 0; j <= 240; j++) {
+      const E = j / 240 * 2 * Math.PI;
+      pts.push(P.clone().multiplyScalar(p.a * (Math.cos(E) - p.e) * k).addScaledVector(Q, b * Math.sin(E) * k));
+    }
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), matRepere()); l.computeLineDistances();
+    reperes.add(l);
+    reperesPts[p.id] = pts[150];
+  }
+}
+
+// ---------- Reconstruction quand l'orbite change ----------
+function reconstruire(nouvelleBase) {
+  const o = base(), e = sim.e;
+  // orientation : le plan local XZ suit le plan de l'orbite, Y local du côté du pôle Nord de l'écliptique
+  const { P, Q } = directions(o);
+  let U = P.clone().cross(Q); if (U.y < 0) U.negate();
+  const Z = P.clone().cross(U);
+  g.sgn = Math.sign(Q.dot(Z)); // −1 : sens direct vu du dessus (planètes) ; +1 : orbite rétrograde (Halley)
+  orbite.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(P, U, Z));
+  orbite.updateMatrixWorld(true);
+
+  g.b = A * Math.sqrt(1 - e * e); g.c = A * e; g.q = A * (1 - e); g.Q = A * (1 + e);
+  g.rs = Math.min(0.3, 0.3 * g.q);   // Soleil et astre grossis, mais jamais au contact au périhélie
+  g.rb = Math.min(0.22, 0.25 * g.q);
+  soleilMesh.scale.setScalar(g.rs); soleilHalo.scale.setScalar(g.rs * 4.5);
+  soleil.ancre.set(-0.35, g.rs + 0.3, 0);
+
+  // ellipse
+  S.viderElement(orbitePart);
+  S.add(orbitePart, mesh(new THREE.TubeGeometry(new Ellipse(), 600, Math.min(0.022, 0.06 * g.q), 6, true), M.lumineux(0xaab6c8, 0.7)));
+  orbitePart.ancre.set(-g.c, 0.3, g.sgn * g.b);
+
+  // secteurs d'aires égales : bornes à M = 2πk/12
+  g.E = []; for (let k = 0; k <= N_SECT; k++) g.E.push(k === N_SECT ? 2 * Math.PI : (kepler(2 * Math.PI * k / N_SECT, e) + 2 * Math.PI) % (2 * Math.PI));
+  S.viderElement(airesPart);
+  {
+    const pos = [], col = [], c = new THREE.Color(), a = new THREE.Vector3(), b = new THREE.Vector3(), SUB = 48;
+    for (let k = 0; k < N_SECT; k++) {
+      c.setHex(k % 2 ? COULEURS.orange : COULEURS.ambre);
+      for (let j = 0; j < SUB; j++) {
+        pt(g.E[k] + (g.E[k + 1] - g.E[k]) * j / SUB, a); pt(g.E[k] + (g.E[k + 1] - g.E[k]) * (j + 1) / SUB, b);
+        pos.push(0, 0, 0, a.x, a.y, a.z, b.x, b.y, b.z);
+        for (let n = 0; n < 3; n++) col.push(c.r, c.g, c.b);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    const mat = M.lumineux(0xffffff, 0.22); mat.vertexColors = true;
+    S.add(airesPart, new THREE.Mesh(geo, mat));
+    const bornes = [];
+    for (let k = 0; k < N_SECT; k++) bornes.push(new THREE.Vector3(), pt(g.E[k]));
+    airesPart.group.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(bornes), matLigne(COULEURS.etoile, 0.3)));
+    // étiquette sur un secteur du côté de l'aphélie
+    pt((g.E[5] + g.E[6]) / 2, airesPart.ancre).multiplyScalar(0.6).add(new THREE.Vector3(0, 0.2, 0));
+  }
+
+  // axes
+  S.viderElement(axesPart);
+  S.add(axesPart, mesh(new THREE.CylinderGeometry(0.016, 0.016, 2 * A, 8).rotateZ(Math.PI / 2), M.lumineux(0x8b9ab0, 0.65), -g.c));
+  S.add(axesPart, mesh(new THREE.CylinderGeometry(0.01, 0.01, 2 * g.b, 8).rotateX(Math.PI / 2), M.lumineux(0x8b9ab0, 0.4), -g.c));
+  S.add(axesPart, mesh(new THREE.SphereGeometry(0.04, 12, 8), M.lumineux(0x8b9ab0), -g.c));
+  axesPart.ancre.set(-g.c - A * 0.45, 0.3, 0);
+  foyerG.position.set(-2 * g.c, 0, 0);
+  foyerPart.ancre.set(-2 * g.c, -0.35, 0);
+
+  // périhélie, aphélie
+  const rm = Math.min(0.08, 0.12 * g.q);
+  periMesh.scale.setScalar(rm); periMesh.position.set(g.q, 0, 0);
+  aphMesh.scale.setScalar(0.08); aphMesh.position.set(-g.Q, 0, 0);
+  periPart.ancre.set(g.q + 0.75, -0.1, 0);
+  aphPart.ancre.set(-g.Q, 0.35, 0);
+
+  construireCorps();
+  corpsMesh.scale.setScalar(g.rb);
+  if (nouvelleBase) construireReperes();
+  for (const id of ["terre", "mars", "halley"]) document.getElementById("r-o-" + id)?.setAttribute("aria-pressed", String(id === sim.base));
+  majFiches();
+  legendePrec = "";
+}
+
+function majFiches() {
+  const o = base(), e = sim.e, aUA = o.a, q = aUA * (1 - e), Q = aUA * (1 + e), b = aUA * Math.sqrt(1 - e * e), T = periode();
+  const reel = !fictive();
+  orbitePart.chiffres = `a = ${fmtUA(aUA)} · e = ${fmtE(e)} · demi-petit axe b = ${fmtUA(b)} · 1 UA = 149,6 millions de km`;
+  axesPart.chiffres = `a = (q + Q) ÷ 2 = (${fmtUA(q)} + ${fmtUA(Q)}) ÷ 2 = ${fmtUA(aUA)} · c = a × e = ${fmtUA(aUA * e)}`;
+  foyerPart.chiffres = `Distance entre les deux foyers : 2c = 2 × a × e = ${fmtUA(2 * aUA * e)}, soit ${fmtKm(2 * aUA * e)}`
+    + (sim.base === "terre" && e < 0.05 ? " (caché ici par le Soleil, dessiné trop gros)" : "");
+  const datesPeri = { terre: "vers le 3 janvier", mars: "tous les 687 jours", halley: "dernier passage le 9 février 1986, prochain le 28 juillet 2061" };
+  const datesAph = { terre: "vers le 4 juillet", mars: "343 jours après le périhélie", halley: "dernier passage en décembre 2023" };
+  periPart.chiffres = `q = a × (1 − e) = ${fmtUA(q)}, soit ${fmtKm(q)} · ${fmt(vitesse(q, aUA), 1)} km/s` + (reel ? " · " + datesPeri[sim.base] : "");
+  aphPart.chiffres = `Q = a × (1 + e) = ${fmtUA(Q)}, soit ${fmtKm(Q)} · ${fmt(vitesse(Q, aUA), 1)} km/s` + (reel ? " · " + datesAph[sim.base] : "");
+  airesPart.chiffres = `Chaque secteur : 1/12 de la période, soit ${fmtDuree(T / N_SECT)} · vitesse au périhélie ÷ vitesse à l'aphélie = Q ÷ q = ${fmt(Q / q, Q / q < 10 ? 2 : 0)}`;
+  corps.nom = nomAffiche();
+  if (reel) { corps.texte = TEXTES[sim.base].texte; corps.chiffres = TEXTES[sim.base].chiffres; }
+  else {
+    corps.texte = `Orbite imaginaire : même demi-grand axe que ${sim.base === "halley" ? "la comète de Halley" : sim.base === "terre" ? "la Terre" : "Mars"}, mais une autre excentricité. La période ne change pas : d'après la 3ᵉ loi, elle ne dépend que du demi-grand axe. Seule la répartition des vitesses change.`;
+    corps.chiffres = `Période ${fmtDuree(T)} · ${fmtUA(q)} à ${fmtUA(Q)} du Soleil · ${fmt(vitesse(Q, aUA), 1)} à ${fmt(vitesse(q, aUA), 1)} km/s`;
+  }
+  lblCorps.el.textContent = nomAffiche();
+  S.refreshInfo();
+}
+
+// étiquettes libres : vitesse et ficelle du jardinier
+const _tip = new THREE.Vector3(), _mil = new THREE.Vector3();
+const lblVit = S.label("", () => _tip.clone(), { lumiere: true, visible: () => S.state.vitesse });
+const lblFic = S.label("d₁ + d₂ = 2a", () => _mil.clone(), { lumiere: true, visible: () => S.state.axes && g.c > 0.3 });
+
+// ---------- Encart : 3e loi ----------
+const ap = S.apercu;
+let legendePrec = "";
+function dessinerApercu() {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.82);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, "#04070e"); grad.addColorStop(1, "#0c1528");
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+  const G = 36, D = 10, HA = 10, B = 30;
+  const la0 = Math.log10(0.2), la1 = Math.log10(60), lt0 = Math.log10(0.08), lt1 = Math.log10(600);
+  const X = (a) => G + (Math.log10(a) - la0) / (la1 - la0) * (W - G - D);
+  const Y = (t) => H - B - (Math.log10(t) - lt0) / (lt1 - lt0) * (H - B - HA);
+  // grille logarithmique
+  ctx.font = "9px Arial"; ctx.lineWidth = 1;
+  for (const a of [0.3, 1, 3, 10, 30]) {
+    ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.beginPath(); ctx.moveTo(X(a), HA); ctx.lineTo(X(a), H - B); ctx.stroke();
+    ctx.fillStyle = "rgba(196,208,224,0.7)"; ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillText(fmt(a, a < 1 ? 1 : 0), X(a), H - B + 3);
+  }
+  for (const t of [0.1, 1, 10, 100]) {
+    ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.beginPath(); ctx.moveTo(G, Y(t)); ctx.lineTo(W - D, Y(t)); ctx.stroke();
+    ctx.fillStyle = "rgba(196,208,224,0.7)"; ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.fillText(fmt(t, t < 1 ? 1 : 0), G - 4, Y(t));
+  }
+  ctx.fillStyle = css(COULEURS.accent); ctx.font = "bold 9px Arial";
+  ctx.textAlign = "right"; ctx.textBaseline = "bottom"; ctx.fillText("DEMI-GRAND AXE a (UA)", W - D, H - 2);
+  ctx.save(); ctx.translate(10, HA); ctx.rotate(-Math.PI / 2); ctx.textAlign = "right"; ctx.textBaseline = "top"; ctx.fillText("PÉRIODE T (ANS)", 0, 0); ctx.restore();
+  // droite T = a^1,5
+  ctx.strokeStyle = "rgba(255,200,97,0.55)"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(X(0.2), Y(Math.pow(0.2, 1.5))); ctx.lineTo(X(60), Y(Math.pow(60, 1.5))); ctx.stroke();
+  // planètes et comète
+  const points = [...PLANETES.map((p) => ({ id: p.id, nom: p.nom, a: p.a, T: p.T })), { id: "halley", nom: "Halley", a: CORPS.halley.a, T: 75.32 }];
+  ctx.font = "9.5px Arial";
+  points.forEach((p, k) => {
+    const x = X(p.a), y = Y(p.T), sel = p.id === sim.base;
+    ctx.fillStyle = sel ? css(COULEURS.orange) : css(COULEURS.etoile);
+    ctx.beginPath(); ctx.arc(x, y, sel ? 4 : 2.8, 0, 2 * Math.PI); ctx.fill();
+    if (sel) { ctx.strokeStyle = css(COULEURS.orange); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, 7.5, 0, 2 * Math.PI); ctx.stroke(); }
+    ctx.fillStyle = sel ? css(COULEURS.orange) : "rgba(196,208,224,0.85)";
+    // noms alternés de part et d'autre de la droite pour ne pas se chevaucher
+    const dessus = k % 2 === 0 && p.id !== "halley";
+    ctx.textAlign = dessus ? "right" : "left"; ctx.textBaseline = "middle";
+    ctx.fillText(p.nom, x + (dessus ? -7 : 7), y + (dessus ? -6 : 6));
+  });
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  const o = base(), a3 = Math.pow(o.a, 3), T = periode();
+  const nb = (v) => fmt(v, v < 10 ? 3 : 0);
+  const html = `<h2>${o.nom} : a = ${fmtUA(o.a)}</h2>`
+    + `<p class="spec">a³ = ${nb(a3)} → T = √${nb(a3)} = ${fmt(T, T < 10 ? 2 : 1)} an${T >= 2 ? "s" : ""} (${fmtDuree(T)})</p>`
+    + `<p>${fictive() ? "L'excentricité a changé, mais pas la période : selon la 3ᵉ loi, seul compte le demi-grand axe." : "Planètes et comète s'alignent sur la même droite : le carré de la période est égal au cube du demi-grand axe."}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Animation ----------
+let tPrec = 0;
+const _p = new THREE.Vector3(), _v = new THREE.Vector3(), _f = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _w = new THREE.Vector3();
+const cq = new THREE.Color();
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (dtt > 0) sim.M = (sim.M + 2 * Math.PI * dtt / S.state.tour) % (2 * Math.PI);
+  const e = sim.e, aUA = base().a;
+  const E = kepler(sim.M, e);
+  pt(E, _p); corpsG.position.copy(_p);
+  if (corpsMesh) corpsMesh.rotation.y += dt * 0.4;
+  const rUA = aUA * (1 - e * Math.cos(E)), v = vitesse(rUA, aUA), vMax = vitesse(aUA * (1 - e), aUA);
+
+  // vitesse : flèche tangente, longueur proportionnelle à la vitesse
+  _v.set(-A * Math.sin(E), 0, g.sgn * g.b * Math.cos(E)).normalize();
+  fleche.visible = S.state.vitesse;
+  if (fleche.visible) {
+    const L = Math.max(0.02, Math.min(2.4, 6 * g.q) * v / vMax), tete = Math.min(0.3, 0.3 * L);
+    fleche.position.copy(_p).addScaledVector(_v, g.rb);
+    fleche.setDirection(_v); fleche.setLength(L, tete, tete * 0.55);
+    _tip.copy(fleche.position).addScaledVector(_v, L + 0.3).add(new THREE.Vector3(0, -0.2, 0));
+    orbite.localToWorld(_tip);
+    lblVit.el.textContent = `${fmt(v, 1)} km/s`;
+  }
+
+  // loi des aires : secteur en cours de balayage
+  airesPart.group.visible = airesDyn.visible = S.state.aires;
+  if (airesDyn.visible) {
+    const Mn = ((sim.M % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const k = Math.min(N_SECT - 1, Math.floor(Mn / (2 * Math.PI / N_SECT)));
+    let E0 = g.E[k], E1 = (E + 2 * Math.PI) % (2 * Math.PI);
+    if (E1 < E0) E1 += 2 * Math.PI;
+    const pos = balayage.geometry.attributes.position;
+    for (let j = 0; j < N_BAL; j++) {
+      pt(E0 + (E1 - E0) * j / N_BAL, _a); pt(E0 + (E1 - E0) * (j + 1) / N_BAL, _b);
+      pos.setXYZ(3 * j, 0, 0, 0); pos.setXYZ(3 * j + 1, _a.x, _a.y, _a.z); pos.setXYZ(3 * j + 2, _b.x, _b.y, _b.z);
+    }
+    pos.needsUpdate = true;
+    const r = rayon.geometry.attributes.position; r.setXYZ(0, 0, 0, 0); r.setXYZ(1, _p.x, _p.y, _p.z); r.needsUpdate = true;
+  }
+
+  // foyers et axes : ficelle Soleil → astre → foyer vide
+  axesPart.group.visible = S.state.axes;
+  foyerPart.group.visible = S.state.axes && 2 * g.c > g.rs + 0.1; // sinon caché dans le Soleil, dessiné trop gros
+  ficelle.visible = S.state.axes && g.c > 0.3;
+  if (ficelle.visible) {
+    _f.set(-2 * g.c, 0, 0);
+    const f = ficelle.geometry.attributes.position;
+    f.setXYZ(0, 0, 0, 0); f.setXYZ(1, _p.x, _p.y, _p.z); f.setXYZ(2, _f.x, _f.y, _f.z); f.needsUpdate = true;
+    ficelle.computeLineDistances();
+    _mil.copy(_p).add(_f).multiplyScalar(0.5).add(new THREE.Vector3(0, 0.3, 0));
+    orbite.localToWorld(_mil);
+  }
+
+  // comète : chevelure et queues, qui se développent près du Soleil (à moins de 3,5 UA environ)
+  const comete = sim.base === "halley";
+  const actif = comete ? Math.min(1, Math.max(0, (3.5 - rUA) / 2.9)) : 0;
+  chevelure.visible = comete;
+  chevelure.scale.setScalar(g.rb * (3 + 6 * actif));
+  chevelure.material.opacity = 0.35 + 0.65 * actif;
+  queue.visible = actif > 0;
+  if (queue.visible) {
+    const L = 2.2 * actif, u = _a.copy(_p).normalize(); // à l'opposé du Soleil
+    _w.set(0, 1, 0); // normale au plan de l'orbite (repère local)
+    const pos = queueGeo.attributes.position, col = queueGeo.attributes.color;
+    for (let k = 0; k < N_QUEUE; k++) {
+      const [s0, d1, d2] = graines[k];
+      const t = (s0 + time * 0.35) % 1;
+      // queue d'ions : droite, à l'opposé du Soleil · queue de poussières : courbée, en retard sur le mouvement
+      for (let n = 0; n < 2; n++) {
+        const i = 2 * k + n, larg = (0.05 + 0.35 * t) * L * 0.25;
+        _b.copy(_p).addScaledVector(u, t * L * (n ? 0.8 : 1)).addScaledVector(_w, d2 * larg);
+        if (n) _b.addScaledVector(_v, -t * t * L * 0.45).addScaledVector(u.clone().cross(_w), d1 * larg);
+        else _b.addScaledVector(u.clone().cross(_w), d1 * larg * 0.4);
+        pos.setXYZ(i, _b.x, _b.y, _b.z);
+        cq.setHex(n ? COULEURS.ambre : COULEURS.etoile).multiplyScalar((1 - t) * (0.4 + 0.6 * actif));
+        col.setXYZ(i, cq.r, cq.g, cq.b);
+      }
+    }
+    pos.needsUpdate = col.needsUpdate = true;
+  }
+
+  reperes.visible = S.state.planetes;
+  dessinerApercu();
+});
+
+reconstruire(true);
+S.start();
+</script>
+</body>
+</html>
