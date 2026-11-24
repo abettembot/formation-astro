@@ -189,7 +189,34 @@ function cvMars() {
     }
   });
 }
+let _cvVenus, _cvMercure;
+function cvVenus() {
+  return _cvVenus ??= canvasDessin(512, 256, (ctx, w, h) => {
+    ctx.fillStyle = "#e8d9a8"; ctx.fillRect(0, 0, w, h);
+    const r = alea(31);
+    for (let i = 0; i < 260; i++) { // bandes de nuages étirées en longitude
+      const y = r() * h, rad = 3 + r() * 10;
+      ctx.fillStyle = r() < 0.5 ? "rgba(250,240,205,0.22)" : "rgba(190,165,110,0.14)";
+      ctx.beginPath(); ctx.ellipse(r() * w, y, rad * 6, rad, 0, 0, 2 * Math.PI); ctx.fill();
+    }
+  });
+}
+function cvMercure() {
+  return _cvMercure ??= canvasDessin(512, 256, (ctx, w, h) => {
+    ctx.fillStyle = "#9b958d"; ctx.fillRect(0, 0, w, h);
+    const r = alea(17);
+    for (let i = 0; i < 600; i++) { // cratères et nuances
+      const rad = 1 + r() * r() * 8;
+      ctx.fillStyle = r() < 0.5 ? "rgba(70,66,62,0.22)" : "rgba(215,210,200,0.18)";
+      ctx.beginPath(); ctx.arc(r() * w, r() * h, rad, 0, 2 * Math.PI); ctx.fill();
+    }
+  });
+}
 export const textures = {
+  /** Vénus : couche de nuages jaune pâle, presque uniforme. Texture pour une sphère. */
+  venus: () => versTexture(cvVenus()),
+  /** Mercure : sol gris criblé de cratères. Texture pour une sphère. */
+  mercure: () => versTexture(cvMercure()),
   /** Terre schématique (océans, continents, calottes) : texture pour une sphère. */
   terre: () => versTexture(cvTerre()),
   /** Mars schématique (sol orangé, régions sombres, calottes polaires) : texture pour une sphère. */

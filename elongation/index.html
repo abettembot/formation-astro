@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Élongation et opposition</title>
+<meta name="description" content="Schéma 3D interactif des configurations des planètes : plus grandes élongations de Mercure et de Vénus, conjonctions, quadratures et opposition de Mars, de janvier 2026 à mars 2027.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, legende, css, textures, halo } from "../commun/schema.js";
+
+// ---------- Échelle et repère ----------
+// 1 unité = 1/6 UA (25 millions de km) : Mercure tourne à 2,3 unités du Soleil, Vénus à 4,3, la Terre à 6, Mars à 9,1.
+// Distances à l'échelle ; Soleil et planètes très grossis.
+// Repère : plan de l'écliptique = plan XZ, pôle Nord de l'écliptique vers +Y.
+// Longitude écliptique λ comptée depuis +X, dans le sens inverse des aiguilles d'une montre vu de dessus.
+const DEG = Math.PI / 180;
+const UA = 6;
+
+// ---------- Orbites réelles (éléments moyens J2000, JPL) ----------
+// a (UA), e, i, L0 (longitude moyenne à J2000), n (degrés par jour), w (longitude du périhélie), O (nœud ascendant)
+const ORB = {
+  mercure: { a: 0.38709927, e: 0.20563593, i: 7.00497902, L0: 252.2503235, n: 149472.67411175 / 36525, w: 77.45779628, O: 48.33076593, periode: 87.969 },
+  venus: { a: 0.72333566, e: 0.00677672, i: 3.39467605, L0: 181.9790995, n: 58517.81538729 / 36525, w: 131.60246718, O: 76.67984255, periode: 224.701 },
+  terre: { a: 1.00000261, e: 0.01671123, i: 0, L0: 100.46457166, n: 35999.37244981 / 36525, w: 102.93768193, O: 0, periode: 365.256 },
+  mars: { a: 1.52371034, e: 0.0933941, i: 1.84969142, L0: -4.55343205, n: 19140.30268499 / 36525, w: -23.94362959, O: 49.55953891, periode: 686.98 },
+};
+const J2000 = Date.UTC(2000, 0, 1, 12);
+const jour = (a, m, j) => (Date.UTC(a, m - 1, j) - J2000) / 864e5;
+
+/** Position héliocentrique (équation de Kepler), en unités de la scène. */
+function position(p, d, out = new THREE.Vector3()) {
+  const Mo = ((p.L0 + p.n * d - p.w) % 360) * DEG;
+  let E = Mo;
+  for (let k = 0; k < 8; k++) E -= (E - p.e * Math.sin(E) - Mo) / (1 - p.e * Math.cos(E));
+  const xp = p.a * (Math.cos(E) - p.e), yp = p.a * Math.sqrt(1 - p.e * p.e) * Math.sin(E);
+  const o = (p.w - p.O) * DEG, O = p.O * DEG, i = p.i * DEG;
+  const co = Math.cos(o), so = Math.sin(o), cO = Math.cos(O), sO = Math.sin(O), ci = Math.cos(i), si = Math.sin(i);
+  const X = (co * cO - so * sO * ci) * xp + (-so * cO - co * sO * ci) * yp;
+  const Y = (co * sO + so * cO * ci) * xp + (-so * sO + co * cO * ci) * yp;
+  const Z = so * si * xp + co * si * yp;
+  return out.set(X * UA, Z * UA, -Y * UA);
+}
+const ecartAngle = (a) => ((a % 360) + 540) % 360 - 180;
+const longitude = (v) => Math.atan2(-v.z, v.x) / DEG;
+const _e = new THREE.Vector3(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _u = new THREE.Vector3();
+/** Configuration d'une planète vue de la Terre à la date d :
+ *  elong : élongation vraie (angle Soleil–Terre–planète, en degrés) ;
+ *  dl : écart de longitude écliptique planète − Soleil (positif : à l'est du Soleil, visible le soir) ;
+ *  km : distance à la Terre (millions de km) ; dedans : planète plus proche de nous que le Soleil. */
+function config(nom, d) {
+  position(ORB.terre, d, _e); position(ORB[nom], d, _p);
+  _s.copy(_e).negate(); _u.subVectors(_p, _e);
+  return {
+    elong: _s.angleTo(_u) / DEG,
+    dl: ecartAngle(longitude(_u) - longitude(_s)),
+    km: _u.length() / UA * 149.6,
+    dedans: _u.length() < _s.length(),
+  };
+}
+
+// ---------- Période étudiée : janvier 2026 → mars 2027 ----------
+const D_MIN = jour(2026, 1, 1), D_MAX = jour(2027, 3, 31), N_JOURS = Math.round(D_MAX - D_MIN);
+const PLANETES = ["mercure", "venus", "mars"];
+const NOMS = { mercure: "Mercure", venus: "Vénus", mars: "Mars" };
+const INTERIEURE = { mercure: true, venus: true, mars: false };
+const TEINTE = { mercure: 0xc9c2b8, venus: COULEURS.etoile, mars: COULEURS.orange };
+
+// valeurs jour par jour (courbes de l'encart) et événements (dates calculées par le modèle)
+const SERIE = {};
+const EVTS = {};
+for (const nom of PLANETES) {
+  const s = SERIE[nom] = [];
+  for (let k = 0; k <= N_JOURS; k++) s.push(config(nom, D_MIN + k));
+  const ev = EVTS[nom] = [];
+  for (let k = 1; k <= N_JOURS; k++) {
+    const a = s[k - 1], b = s[k], d = D_MIN + k - 1;
+    // passage de l'écart de longitude par 0 (conjonction), ±180 (opposition), ±90 (quadrature)
+    const croise = (cible) => {
+      const fa = ecartAngle(a.dl - cible), fb = ecartAngle(b.dl - cible);
+      return Math.sign(fa) !== Math.sign(fb) && Math.abs(fa - fb) < 90 ? d + fa / (fa - fb) : null;
+    };
+    let t;
+    if ((t = croise(0)) !== null) ev.push({ type: INTERIEURE[nom] ? (b.dedans ? "conjInf" : "conjSup") : "conj", d: t });
+    if (!INTERIEURE[nom]) {
+      if ((t = croise(180)) !== null) ev.push({ type: "opp", d: t });
+      if ((t = croise(90)) !== null) ev.push({ type: "quadEst", d: t });
+      if ((t = croise(-90)) !== null) ev.push({ type: "quadOuest", d: t });
+    } else if (k < N_JOURS) {
+      const c = s[k + 1];
+      if (b.elong > a.elong && b.elong >= c.elong) { // maximum : sommet de la parabole passant par les trois jours
+        const off = 0.5 * (a.elong - c.elong) / (a.elong - 2 * b.elong + c.elong);
+        ev.push({ type: b.dl > 0 ? "elongEst" : "elongOuest", d: d + 1 + off, val: b.elong });
+      }
+    }
+  }
+  ev.sort((x, y) => x.d - y.d);
+}
+
+// ---------- Dates ----------
+const dateDe = (d) => new Date(J2000 + d * 864e5);
+const fmtDate = (d) => dateDe(d).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+const fmtCourt = (d) => dateDe(d).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const fmt = (v, n = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+const evt = (nom, type) => EVTS[nom].find((e) => e.type === type);
+const dEvt = (nom, type) => { const e = evt(nom, type); return e ? fmtDate(e.d) : "—"; };
+
+// ---------- État ----------
+const sim = { d: jour(2026, 6, 20), anim: null, planete: "venus" };
+let pilote = false;
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+function allerA(d) { sim.anim = { de: sim.d, vers: d, t: 0 }; }
+/** Prochain événement d'un des types donnés pour la planète suivie (le premier de la période s'il n'y en a plus). */
+function aller(...types) {
+  const ev = EVTS[sim.planete].filter((e) => types.includes(e.type));
+  if (!ev.length) return;
+  allerA((ev.find((e) => e.d > sim.d + 1) ?? ev[0]).d);
+}
+function choisir(nom) {
+  sim.planete = nom;
+  for (const p of PLANETES) document.getElementById("r-p-" + p)?.setAttribute("aria-pressed", String(p === nom));
+  const mars = !INTERIEURE[nom];
+  const lib = { "r-a-est": mars ? "Quadrature est" : "Élongation soir", "r-a-ouest": mars ? "Quadrature ouest" : "Élongation matin" };
+  for (const [id, t] of Object.entries(lib)) { const b = document.getElementById(id); if (b) b.textContent = t; }
+  const opp = document.getElementById("r-a-opp"); if (opp) opp.disabled = !mars;
+  legendePrec = "";
+}
+
+const S = createSchema({
+  surtitre: "Support de formation · Mécanique céleste",
+  titre: "Élongation et opposition",
+  sousTitre: "Exemple : Vénus, Mercure et Mars · janvier 2026 → mars 2027",
+  distanceMax: 120,
+  apercu: { titre: "Vu de la Terre : écart au Soleil" },
+  commandes: [
+    { type: "curseur", id: "date", label: "Date", min: 0, max: N_JOURS, pas: 1, valeur: Math.round(sim.d - D_MIN),
+      format: (v) => fmtCourt(D_MIN + v),
+      onInput: (v) => { if (!pilote) { sim.d = D_MIN + v; sim.anim = null; } } },
+    { type: "curseur", id: "vitesse", label: "Vitesse", min: 2, max: 30, pas: 1, valeur: 8, format: (v) => v + " jours/s" },
+    { type: "raccourcis", id: "planete", label: "Planète suivie", boutons: PLANETES.map((p) => ({ id: "p-" + p, label: NOMS[p], onClick: () => choisir(p) })) },
+    { type: "raccourcis", id: "aller", label: "Aller à", boutons: [
+      { id: "a-conj", label: "Conjonction", onClick: () => aller("conj", "conjInf", "conjSup") },
+      { id: "a-est", label: "Élongation soir", onClick: () => aller("elongEst", "quadEst") },
+      { id: "a-ouest", label: "Élongation matin", onClick: () => aller("elongOuest", "quadOuest") },
+      { id: "a-opp", label: "Opposition", onClick: () => aller("opp") },
+    ] },
+    { type: "bascule", id: "angle", label: "Angle d'élongation", actif: true },
+    { type: "bascule", id: "zone", label: "Zone de visibilité", actif: false },
+    { type: "bascule", id: "orbites", label: "Orbites", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [11, 15, 19], cible: [0, -0.5, 0] },
+    { id: "dessus", label: "Dessus", pos: [0.01, 30, 0.6], cible: [0, 0, 0.6] },
+    { id: "terre", label: "Depuis la Terre", fov: 75, exacte: true, suivre: true,
+      // juste au-dessus de la Terre, regard vers le Soleil : Mercure et Vénus restent dans le champ, de part et d'autre
+      pos: () => position(ORB.terre, sim.d, new THREE.Vector3()).multiplyScalar(1.02).add(new THREE.Vector3(0, 0.42, 0)),
+      cible: () => new THREE.Vector3(0, 0, 0) },
+  ],
+  intro: () => `
+    <div class="eyebrow">Une planète intérieure : Vénus</div>
+    <p>Vénus tourne plus près du Soleil que nous. Vue de la Terre, elle ne peut donc jamais s'en écarter beaucoup : elle oscille d'un côté à l'autre du Soleil.</p>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: `Conjonction supérieure : Vénus passe derrière le Soleil, invisible (${dEvt("venus", "conjSup")}).` },
+      { couleur: COULEURS.ambre, texte: `Elle s'écarte à l'est du Soleil : « étoile du soir », à l'ouest après le coucher du Soleil. Plus grande élongation le ${dEvt("venus", "elongEst")} (${fmt(evt("venus", "elongEst")?.val ?? 0, 1)}°).` },
+      { couleur: COULEURS.orange, texte: `Conjonction inférieure : elle passe entre le Soleil et la Terre, au plus près de nous, de nouveau invisible (${dEvt("venus", "conjInf")}).` },
+      { couleur: COULEURS.corail, texte: `Elle repasse à l'ouest du Soleil : « étoile du matin », à l'est avant l'aube. Plus grande élongation le ${dEvt("venus", "elongOuest")} (${fmt(evt("venus", "elongOuest")?.val ?? 0, 1)}°).` },
+    ])}
+    <div class="eyebrow">Une planète extérieure : Mars</div>
+    <p>Mars tourne plus loin que nous. Elle peut s'écarter du Soleil jusqu'à 180° : à l'opposition (${dEvt("mars", "opp")}), la Terre passe entre le Soleil et Mars, qui est alors visible toute la nuit, au plus près et au plus brillant.</p>
+    <p class="spec">Élongation = angle Soleil–Terre–planète. Au plus : 18° à 28° pour Mercure, 45° à 47° pour Vénus, 180° pour Mars.</p>`,
+});
+
+// ---------- Éclairage : le Soleil au centre ----------
+S.scene.environment = null;
+S.lumieres.principale.intensity = 0;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.3;
+{ const l = new THREE.PointLight(0xfff4e0, 3.2, 0, 0); S.scene.add(l); }
+
+// ---------- Soleil ----------
+const R_SOLEIL = 0.75;
+const soleil = S.part("soleil", "Soleil", {
+  ancre: [0, R_SOLEIL + 0.35, 0],
+  texte: "Toutes les planètes tournent autour de lui, dans le même sens et presque dans le même plan. Vue de la Terre, sa lumière noie tout ce qui est trop près de lui dans le ciel : une planète proche du Soleil (moins de 10° environ) est invisible à l'œil nu. Ici, il est dessiné beaucoup trop gros.",
+  chiffres: "Diamètre : 1,39 million de km · ici grossi environ 15 fois",
+});
+S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd98a)));
+S.scene.add(halo(COULEURS.ambre, R_SOLEIL * 4.5));
+
+// ---------- Planètes ----------
+const RAYON = { mercure: 0.16, venus: 0.28, terre: 0.3, mars: 0.22 };
+const groupes = {};
+const FICHES = {
+  terre: {
+    nom: "Terre",
+    texte: "Notre point d'observation, lui aussi en mouvement. C'est depuis la Terre qu'on mesure l'élongation : l'angle entre la direction du Soleil et celle de la planète. Comme la Terre avance sur son orbite, cet angle dépend à la fois de la position de la planète et de la nôtre.",
+    chiffres: "Distance au Soleil : 150 millions de km (1 UA) · un tour en 365,25 j · vitesse 29,8 km/s",
+  },
+  mercure: {
+    nom: "Mercure",
+    texte: "La planète la plus proche du Soleil. Elle ne s'en écarte jamais de plus de 28° : on ne la voit que bas sur l'horizon, juste après le coucher ou juste avant le lever du Soleil, quelques jours autour de chaque plus grande élongation. Son orbite est très allongée : selon le passage, son élongation maximale varie de 18° à 28°.",
+    chiffres: "Distance au Soleil : 0,31 à 0,47 UA (46 à 70 millions de km) · un tour en 88 j · retour à la même configuration tous les 116 j",
+  },
+  venus: {
+    nom: "Vénus",
+    texte: "Après la Lune, l'objet le plus brillant du ciel nocturne. Elle ne s'écarte jamais de plus de 47° du Soleil : on la voit le soir à l'ouest ou le matin à l'est, jamais au milieu de la nuit. Au télescope, elle montre des phases comme la Lune : pleine et petite derrière le Soleil, en fin croissant et grosse quand elle passe près de nous.",
+    chiffres: "Distance au Soleil : 0,72 UA (108 millions de km) · un tour en 225 j · retour à la même configuration tous les 584 j · éclat jusqu'à la magnitude −4,8",
+  },
+  mars: {
+    nom: "Mars",
+    texte: "Planète extérieure : son orbite entoure celle de la Terre. Elle peut donc se trouver à l'opposé du Soleil dans notre ciel : c'est l'opposition, tous les 26 mois environ. Mars est alors visible toute la nuit, au plus près de la Terre et au plus brillant. À la conjonction, au contraire, elle est derrière le Soleil, à plus de 350 millions de km.",
+    chiffres: "Distance au Soleil : 1,52 UA (228 millions de km) · un tour en 687 j · retour à la même configuration tous les 780 j (26 mois)",
+  },
+};
+for (const nom of ["mercure", "venus", "terre", "mars"]) {
+  const g = groupes[nom] = new THREE.Group(); S.scene.add(g);
+  const f = FICHES[nom];
+  const part = S.part(nom, f.nom, {
+    parent: g, etiquette: false, texte: f.texte, chiffres: f.chiffres,
+    extra: nom === "terre" ? undefined : () => {
+      const c = config(nom, sim.d);
+      return `<p class="spec">Le ${fmtDate(sim.d)} : élongation ${fmt(c.elong, 1)}° ${c.dl >= 0 ? "est" : "ouest"} · à ${fmt(c.km)} millions de km de la Terre.</p>`;
+    },
+  });
+  const tex = textures[nom]();
+  S.add(part, mesh(new THREE.SphereGeometry(RAYON[nom], 48, 24), M.astre(tex)));
+  S.label(f.nom, () => g.position.clone().add(new THREE.Vector3(0, RAYON[nom] + 0.32, 0)), { partId: nom, visible: () => !depuisTerre() || nom !== "terre" });
+}
+const depuisTerre = () => S.camera.position.distanceTo(groupes.terre.position) < 2.5;
+
+// ---------- Orbites ----------
+const orbiteMat = (op) => new THREE.LineDashedMaterial({ color: 0x8b9ab0, dashSize: 0.25, gapSize: 0.18, transparent: true, opacity: op, depthWrite: false });
+const orbites = new THREE.Group(); S.scene.add(orbites);
+const traces = {};
+for (const nom of ["mercure", "venus", "terre", "mars"]) {
+  const pts = []; for (let i = 0; i <= 360; i++) pts.push(position(ORB[nom], i / 360 * ORB[nom].periode, new THREE.Vector3()));
+  traces[nom] = pts;
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), orbiteMat(0.45)); l.computeLineDistances();
+  orbites.add(l);
+}
+
+// ---------- Angle d'élongation : visées Terre → Soleil et Terre → planète, avec l'arc entre les deux ----------
+const anglePart = S.part("angle", "Élongation", {
+  etiquette: false,
+  texte: "L'angle, vu de la Terre, entre la direction du Soleil et celle de la planète. C'est lui qui décide si on peut voir la planète : trop près du Soleil, elle est noyée dans sa lumière. À l'est du Soleil, elle est visible le soir après son coucher ; à l'ouest, le matin avant son lever.",
+  chiffres: "Élongation maximale : Mercure 18° à 28° · Vénus 45° à 47° · une planète extérieure jusqu'à 180° (opposition) · une main tendue, doigts écartés, couvre environ 20°",
+  extra: () => { const c = config(sim.planete, sim.d); return `<p class="spec">${NOMS[sim.planete]}, le ${fmtDate(sim.d)} : ${fmt(c.elong, 1)}° ${c.dl >= 0 ? "à l'est" : "à l'ouest"} du Soleil.</p>`; },
+});
+const ligne = (couleur, op, n = 2) => {
+  const l = new THREE.Line(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3)),
+    new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: op, depthWrite: false }));
+  l.frustumCulled = false; return l;
+};
+const visSoleil = ligne(COULEURS.etoile, 0.55), visPlanete = ligne(COULEURS.ambre, 0.8);
+const N_ARC = 64, arc = ligne(COULEURS.ambre, 0.9, N_ARC + 1);
+const angleGrp = new THREE.Group(); angleGrp.add(visSoleil, visPlanete, arc); S.scene.add(angleGrp);
+const R_ARC = 1.6, _arcMilieu = new THREE.Vector3();
+const lblElong = S.label("Élongation", () => _arcMilieu.clone().add(new THREE.Vector3(0, 0.35, 0)), { partId: "angle", visible: () => S.state.angle && !depuisTerre() });
+const poser = (l, i, v) => l.geometry.attributes.position.setXYZ(i, v.x, v.y, v.z);
+
+// ---------- Zone de visibilité : le secteur où la planète suivie peut se trouver, vu de la Terre ----------
+const zonePart = S.part("zone", "Zone de visibilité", {
+  etiquette: false,
+  texte: "Les deux lignes partent de la Terre et frôlent l'orbite de la planète intérieure : c'est la plus grande élongation possible, de chaque côté du Soleil. Vue de la Terre, la planète reste toujours dans ce secteur. Pour une planète extérieure comme Mars, il n'y a pas de limite : elle peut se trouver dans toutes les directions.",
+  chiffres: "Orbite circulaire : sin(élongation max) = distance planète–Soleil ÷ distance Terre–Soleil · Vénus : 0,72 → 46° · Mercure : 0,39 → 23° en moyenne",
+});
+const N_ZONE = 48;
+const zoneGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array((N_ZONE + 2) * 3), 3));
+{ const idx = []; for (let i = 1; i <= N_ZONE; i++) idx.push(0, i, i + 1); zoneGeo.setIndex(idx); }
+const zoneMesh = new THREE.Mesh(zoneGeo, M.lumineux(COULEURS.ambre, 0.07)); zoneMesh.frustumCulled = false;
+const tangentes = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(12), 3)),
+  new THREE.LineDashedMaterial({ color: COULEURS.ambre, dashSize: 0.25, gapSize: 0.15, transparent: true, opacity: 0.7, depthWrite: false }));
+tangentes.frustumCulled = false;
+const zoneGrp = new THREE.Group(); zoneGrp.add(zoneMesh, tangentes); S.scene.add(zoneGrp);
+const _zt = [new THREE.Vector3(), new THREE.Vector3()], _zl = new THREE.Vector3();
+S.label("Zone de visibilité", () => _zl.clone(), { partId: "zone", visible: () => S.state.zone && INTERIEURE[sim.planete] && !depuisTerre() });
+
+function majZone(e) {
+  // points de l'orbite vus le plus à l'est et le plus à l'ouest du Soleil (projection sur l'écliptique)
+  const ls = longitude(_s.copy(e).negate());
+  let maxE = -1, maxO = 1, pE = null, pO = null;
+  for (const p of traces[sim.planete]) {
+    const a = ecartAngle(longitude(_u.subVectors(p, e)) - ls);
+    if (a > maxE) { maxE = a; pE = p; }
+    if (a < maxO) { maxO = a; pO = p; }
+  }
+  const L = e.length() + 1.5; // les lignes vont un peu au-delà du Soleil
+  const dir = (a, out) => out.set(Math.cos((ls + a) * DEG), 0, -Math.sin((ls + a) * DEG)).multiplyScalar(L).add(e).setY(0);
+  const P = zoneGeo.attributes.position;
+  P.setXYZ(0, e.x, 0, e.z);
+  for (let i = 0; i <= N_ZONE; i++) { dir(maxO + (maxE - maxO) * i / N_ZONE, _u); P.setXYZ(i + 1, _u.x, _u.y, _u.z); }
+  P.needsUpdate = true;
+  dir(maxE, _zt[0]); dir(maxO, _zt[1]);
+  const T = tangentes.geometry.attributes.position;
+  T.setXYZ(0, e.x, 0, e.z); T.setXYZ(1, _zt[0].x, 0, _zt[0].z); T.setXYZ(2, e.x, 0, e.z); T.setXYZ(3, _zt[1].x, 0, _zt[1].z);
+  T.needsUpdate = true; tangentes.computeLineDistances();
+  _zl.lerpVectors(e, _zt[0], 0.78).add(new THREE.Vector3(0, 0.3, 0));
+  zoneMesh.material.color.setHex(TEINTE[sim.planete] === COULEURS.orange ? COULEURS.orange : COULEURS.ambre);
+}
+
+// ---------- Encart : élongation au fil des mois, vue de la Terre ----------
+const ap = S.apercu;
+let legendePrec = "";
+const MOIS = [];
+for (let a = 2026, m = 1; ; m++) { if (m > 12) { m = 1; a++; } if (a === 2027 && m > 3) break; MOIS.push({ d: jour(a, m, 1), a, m }); }
+const NOM_MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+const rgba = (hex, a) => `rgba(${(hex >> 16) & 255},${(hex >> 8) & 255},${hex & 255},${a})`;
+function dessinerApercu() {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.95);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#04070e"); g.addColorStop(1, "#0c1528");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const etroit = W < 280; // encart réduit sur téléphone : moins de textes
+  const G = etroit ? 30 : 34, D = 10; // marge gauche (mois), marge droite
+  // échelle resserrée vers ±180° (racine carrée) : on lit mieux les petits écarts de Mercure et de Vénus ; est à gauche
+  const X = (a) => G + (W - G - D) / 2 * (1 - Math.sign(a) * Math.sqrt(Math.min(1, Math.abs(a) / 180)));
+  const Y0 = 64, Y1 = H - 10, Y = (d) => Y0 + (d - D_MIN) / N_JOURS * (Y1 - Y0);
+
+  // bande du haut : le ciel ce jour-là, le long de l'écliptique
+  const yb = 32;
+  ctx.font = "bold 9px Arial"; ctx.fillStyle = css(COULEURS.accent); ctx.textBaseline = "top";
+  ctx.textAlign = "left"; ctx.fillText(etroit ? "← EST" : "← EST · le soir", G, 4);
+  ctx.textAlign = "right"; ctx.fillText(etroit ? "OUEST →" : "le matin · OUEST →", W - D, 4);
+  ctx.strokeStyle = "rgba(139,154,176,0.35)"; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(G, yb); ctx.lineTo(W - D, yb); ctx.stroke(); ctx.setLineDash([]);
+  const gs = ctx.createRadialGradient(X(0), yb, 0, X(0), yb, 16);
+  gs.addColorStop(0, "rgba(255,217,138,1)"); gs.addColorStop(0.35, "rgba(255,200,97,0.6)"); gs.addColorStop(1, "rgba(255,200,97,0)");
+  ctx.fillStyle = gs; ctx.fillRect(X(0) - 16, yb - 16, 32, 32);
+  ctx.font = "9.5px Arial"; ctx.textBaseline = "middle"; ctx.textAlign = "center";
+  for (const nom of PLANETES) {
+    const c = config(nom, sim.d), a = Math.sign(c.dl) * c.elong, x = X(a), sel = nom === sim.planete;
+    ctx.fillStyle = css(TEINTE[nom]); ctx.globalAlpha = c.elong < 10 ? 0.35 : 1;
+    ctx.beginPath(); ctx.arc(x, yb, sel ? 3.6 : 2.6, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillText(NOMS[nom], x, nom === "venus" ? yb - 11 : yb + 12);
+    ctx.globalAlpha = 1;
+  }
+
+  // à moins de 10° du Soleil, une planète est noyée dans sa lumière
+  ctx.fillStyle = "rgba(255,200,97,0.07)"; ctx.fillRect(X(10), Y0 - 2, X(-10) - X(10), Y1 - Y0 + 2);
+  // graduations
+  ctx.font = "9px Arial"; ctx.textBaseline = "bottom";
+  for (const a of [-180, -90, -47, -28, -10, 0, 10, 28, 47, 90, 180]) {
+    const x = X(a), maj = a % 90 === 0;
+    ctx.strokeStyle = maj ? "rgba(255,255,255,0.12)" : Math.abs(a) === 10 ? "rgba(255,200,97,0.12)" : rgba(Math.abs(a) === 47 ? COULEURS.etoile : 0xc9c2b8, 0.3);
+    ctx.setLineDash(maj ? [] : [2, 3]);
+    ctx.beginPath(); ctx.moveTo(x, Y0 - 2); ctx.lineTo(x, Y1); ctx.stroke();
+    ctx.setLineDash([]);
+    if (Math.abs(a) !== 10 && !(etroit && (Math.abs(a) === 28 || Math.abs(a) === 90))) { ctx.fillStyle = "rgba(196,208,224,0.7)"; ctx.textAlign = "center"; ctx.fillText(Math.abs(a) + "°", x, Y0 - 3); }
+  }
+  // mois
+  ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.font = "9px Arial";
+  for (const { d, a, m } of MOIS) {
+    const y = Y(d);
+    ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.beginPath(); ctx.moveTo(G, y); ctx.lineTo(W - D, y); ctx.stroke();
+    if ((m - 1) % 3 === 0) { ctx.fillStyle = "rgba(196,208,224,0.7)"; ctx.fillText(NOM_MOIS[m - 1], G - 4, y); if (m === 1) ctx.fillText(String(a), G - 4, y + 10); }
+  }
+  // courbes jusqu'à la date du jour
+  const kMax = Math.min(N_JOURS, Math.floor(sim.d - D_MIN));
+  for (const nom of PLANETES) {
+    const s = SERIE[nom], sel = nom === sim.planete;
+    ctx.strokeStyle = rgba(TEINTE[nom], sel ? 0.95 : 0.4); ctx.lineWidth = sel ? 2 : 1.2;
+    ctx.beginPath();
+    let pa = null;
+    for (let k = 0; k <= kMax; k++) {
+      const a = Math.sign(s[k].dl) * s[k].elong;
+      if (pa === null || Math.abs(a - pa) > 90) ctx.moveTo(X(a), Y(D_MIN + k)); else ctx.lineTo(X(a), Y(D_MIN + k));
+      pa = a;
+    }
+    ctx.stroke();
+    // événements déjà passés
+    for (const e of EVTS[nom]) {
+      if (e.d > sim.d || !sel) continue;
+      const c = config(nom, e.d), x = X(Math.sign(c.dl) * c.elong), y = Y(e.d);
+      ctx.strokeStyle = css(COULEURS.orange); ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // date du jour
+  const yd = Y(sim.d);
+  ctx.strokeStyle = rgba(COULEURS.accent, 0.8); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(G, yd); ctx.lineTo(W - D, yd); ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  // légende
+  const nom = sim.planete, c = config(nom, sim.d), cote = c.dl >= 0 ? "est" : "ouest";
+  const proche = EVTS[nom].find((e) => Math.abs(e.d - sim.d) < 3);
+  const TITRES = {
+    conjSup: "Conjonction supérieure", conjInf: "Conjonction inférieure", conj: "Conjonction", opp: "Opposition",
+    elongEst: "Plus grande élongation du soir", elongOuest: "Plus grande élongation du matin", quadEst: "Quadrature est", quadOuest: "Quadrature ouest",
+  };
+  const EXPLI = {
+    conjSup: `${NOMS[nom]} passe derrière le Soleil, de notre point de vue. Noyée dans sa lumière, elle est invisible.`,
+    conjInf: `${NOMS[nom]} passe entre le Soleil et la Terre : au plus près de nous, mais invisible, perdue dans la lumière du Soleil.`,
+    conj: "Mars passe derrière le Soleil, de notre point de vue : invisible, et au plus loin de nous.",
+    opp: "La Terre passe entre le Soleil et Mars : Mars se lève au coucher du Soleil et reste visible toute la nuit, au plus près et au plus brillant.",
+    elongEst: `${NOMS[nom]} est au plus loin du Soleil, côté est : c'est le meilleur moment pour l'observer le soir, à l'ouest, après le coucher du Soleil.`,
+    elongOuest: `${NOMS[nom]} est au plus loin du Soleil, côté ouest : c'est le meilleur moment pour l'observer le matin, à l'est, avant le lever du Soleil.`,
+    quadEst: "Mars est à angle droit du Soleil, côté est : elle passe au plus haut dans le ciel vers le coucher du Soleil et se couche vers minuit.",
+    quadOuest: "Mars est à angle droit du Soleil, côté ouest : elle se lève vers minuit et passe au plus haut vers le lever du Soleil.",
+  };
+  let titre, quoi;
+  if (proche) { titre = TITRES[proche.type] + " · " + fmtDate(proche.d); quoi = EXPLI[proche.type]; }
+  else {
+    titre = `${NOMS[nom]} à ${fmt(c.elong, 0)}° ${cote === "est" ? "à l'est" : "à l'ouest"} du Soleil`;
+    if (c.elong < 10) quoi = "Trop près du Soleil : noyée dans sa lumière, elle est invisible.";
+    else if (!INTERIEURE[nom] && c.elong > 150) quoi = "Presque à l'opposé du Soleil : visible pratiquement toute la nuit.";
+    else if (cote === "est") quoi = INTERIEURE[nom] ? "Visible le soir, à l'ouest, après le coucher du Soleil, puis elle se couche à son tour." : "Visible le soir, dès le coucher du Soleil, puis elle se couche avant le jour.";
+    else quoi = INTERIEURE[nom] ? "Visible le matin, à l'est, avant le lever du Soleil." : "Visible en fin de nuit et le matin, avant le lever du Soleil.";
+  }
+  const html = `<h2>${titre}</h2><p class="spec">${fmtDate(sim.d)} · élongation ${fmt(c.elong, 1)}° ${cote} · à ${fmt(c.km)} millions de km</p><p>${quoi}</p>`;
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+}
+
+// ---------- Animation ----------
+let affiche = null, tPrec = 0;
+function recalerDate() {
+  const v = Math.min(N_JOURS, Math.floor(sim.d - D_MIN)); // jour en cours (D_MIN est à 0 h)
+  if (v === affiche) return;
+  affiche = v; pilote = true; S.regler("date", v); pilote = false;
+}
+const _a = new THREE.Vector3(), _b = new THREE.Vector3();
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (sim.anim) {
+    sim.anim.t = S.reduced ? 1 : Math.min(1, sim.anim.t + dt / 1.6);
+    sim.d = sim.anim.de + (sim.anim.vers - sim.anim.de) * ease(sim.anim.t);
+    if (sim.anim.t >= 1) sim.anim = null;
+  } else if (dtt > 0) {
+    sim.d += dtt * S.state.vitesse;
+    if (sim.d > D_MAX) sim.d = D_MIN;
+  }
+  sim.d = Math.min(D_MAX, Math.max(D_MIN, sim.d));
+  recalerDate();
+
+  for (const nom of ["mercure", "venus", "terre", "mars"]) {
+    position(ORB[nom], sim.d, groupes[nom].position);
+    groupes[nom].rotation.y += dt * 0.3;
+  }
+  const e = groupes.terre.position, p = groupes[sim.planete].position;
+
+  // angle d'élongation
+  angleGrp.visible = S.state.angle && !depuisTerre();
+  if (angleGrp.visible) {
+    poser(visSoleil, 0, e); poser(visSoleil, 1, _a.set(0, 0, 0));
+    poser(visPlanete, 0, e); poser(visPlanete, 1, p);
+    visSoleil.geometry.attributes.position.needsUpdate = visPlanete.geometry.attributes.position.needsUpdate = true;
+    // arc tracé autour de la Terre, dans le plan de l'écliptique, de la direction du Soleil vers celle de la planète
+    const ls = longitude(_s.copy(e).negate()), dl = config(sim.planete, sim.d).dl;
+    for (let i = 0; i <= N_ARC; i++) {
+      const l = (ls + dl * i / N_ARC) * DEG;
+      poser(arc, i, _b.set(Math.cos(l), 0, -Math.sin(l)).multiplyScalar(R_ARC).add(e));
+      if (i === N_ARC >> 1) _arcMilieu.copy(_b);
+    }
+    arc.geometry.attributes.position.needsUpdate = true;
+    lblElong.el.textContent = `Élongation ${fmt(config(sim.planete, sim.d).elong, 1)}°`;
+  }
+  // zone de visibilité (planètes intérieures seulement)
+  zoneGrp.visible = S.state.zone && INTERIEURE[sim.planete];
+  if (zoneGrp.visible) majZone(e);
+
+  orbites.visible = S.state.orbites;
+  dessinerApercu();
+});
+
+choisir(sim.planete);
+S.start();
+</script>
+</body>
+</html>
