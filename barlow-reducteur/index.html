@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Barlow et réducteur de focale</title>
+<meta name="description" content="Schéma 3D interactif d'une lentille de Barlow et d'un réducteur de focale sur une lunette 80/480 : effet sur la focale, le rapport F/D, le champ, le temps de pose et l'échantillonnage.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, lentille, objectifLunette, textures, alea } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 20 mm, proportions réelles ----------
+// Lunette 80/480 : objectif de 40 mm de rayon (2 unités), foyer 480 mm (24 unités) derrière lui.
+// Les accessoires sont calculés en lentille mince (une seule lentille équivalente) :
+//  lentille placée à u mm avant le foyer de l'objectif, capteur à v mm derrière elle (le tirage),
+//  1/v = 1/u + 1/f → u = v·f / (f − v), coefficient M = v / u = 1 − v / f.
+//  Barlow : f = −100 mm → M = 1 + v/100 (×2 à 100 mm). Réducteur : f = +275 mm → M = 1 − v/275 (×0,8 à 55 mm).
+const U = 20;                         // mm par unité
+const XO = 12, LF = 480 / U, XF = XO - LF;   // objectif, foyer de l'objectif seul
+const R = 2, RT = 2.25;               // rayon de l'objectif, du tube
+const TB = XF + 7;                    // arrière du tube (140 mm avant le foyer)
+const D = 80, F0 = 480;               // lunette (mm)
+const ARC = 206.265;                  // ″ par radian, ÷ 1000 (pixel en µm, focale en mm)
+const LUNE = 0.52 * Math.PI / 180;    // diamètre apparent de la Lune (rad)
+const MARS = 20;                      // diamètre de Mars à une bonne opposition (″)
+const TACHE = 1.5;                    // pouvoir séparateur de la lunette de 80 mm (″, largeur de la tache de diffraction)
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+
+const ACCESSOIRES = {
+  aucun: { bouton: "Sans", nom: "Lunette seule" },
+  barlow: { bouton: "Barlow ×2", nom: "Avec la Barlow", f: -100, min: 50, max: 200, pas: 5, defaut: 100 },
+  reducteur: { bouton: "Réducteur ×0,8", nom: "Avec le réducteur", f: 275, min: 40, max: 70, pas: 1, defaut: 55 },
+};
+const CAMERAS = {
+  apsc: { bouton: "APS-C · 3,76 µm", nom: "Caméra APS-C (IMX571)", pix: 3.76, w: 23.5, h: 15.7, def: "6248 × 4176 pixels" },
+  plan: { bouton: "Planétaire · 2,9 µm", nom: "Caméra planétaire (IMX585)", pix: 2.9, w: 11.2, h: 6.3, def: "3840 × 2160 pixels" },
+};
+let acc = "barlow", cam = "apsc";
+const tirages = { barlow: 100, reducteur: 55 };
+
+const v = (x, d = 2) => (+x.toFixed(d)).toString().replace(".", ",");
+const ent = (x) => Math.round(x).toLocaleString("fr-FR");
+
+// ---------- Optique : position des pièces et chiffres ----------
+let cur = {};
+function calculer() {
+  const a = ACCESSOIRES[acc], c = CAMERAS[cam], g = { acc, c };
+  if (acc === "aucun") { g.M = 1; g.XL = null; g.XS = XF; }
+  else {
+    const t = tirages[acc], u = t * a.f / (a.f - t);
+    g.tirage = t; g.u = u; g.M = t / u;
+    g.XL = XF + u / U; g.XS = g.XL - t / U;
+  }
+  g.F = F0 * g.M; g.N = g.F / D;
+  g.ech = ARC * c.pix / g.F;
+  g.champ = [57.2958 * c.w / g.F, 57.2958 * c.h / g.F];
+  g.pose = g.M * g.M;
+  // bout du coulant du porte-oculaire : il avance ou recule pour la mise au point
+  g.xPO = acc === "barlow" ? g.XL - 1.1 : acc === "reducteur" ? g.XL + 0.55 : g.XS + 1.9;
+  // début des bagues (côté lunette)
+  g.xB = acc === "barlow" ? g.XL - 1.4 : acc === "reducteur" ? g.XL - 0.45 : g.xPO;
+  cur = g;
+}
+calculer();
+
+// ---------- Schéma ----------
+const S = createSchema({
+  surtitre: "Support de formation · Astrophoto",
+  titre: "Barlow et réducteur de focale",
+  sousTitre: "Exemple : lunette 80/480 · f/6",
+  eclate: true,
+  distanceMax: 80,
+  apercu: { titre: "Sur le capteur" },
+  commandes: [
+    { type: "raccourcis", id: "accessoires", label: "Accessoire", boutons: Object.entries(ACCESSOIRES).map(([id, a]) => ({ id: "a-" + id, label: a.bouton, onClick: () => choisirAcc(id) })) },
+    { type: "curseur", id: "tirage", label: "Tirage", min: 50, max: 200, pas: 5, valeur: 100,
+      format: (x) => (acc === "aucun" ? "—" : `${x} mm · ×${v(1 - x / ACCESSOIRES[acc].f)}`),
+      onInput: (x) => { if (acc !== "aucun") tirages[acc] = x; maj(); } },
+    { type: "raccourcis", id: "cameras", label: "Caméra", boutons: Object.entries(CAMERAS).map(([id, c]) => ({ id: "c-" + id, label: c.bouton, onClick: () => choisirCam(id) })) },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "origine", label: "Foyer d'origine", actif: true },
+    { type: "bascule", id: "coupe", label: "Tube en coupe", actif: true, onChange: () => { construireFixe(); construireTrain(); } },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [9, 13, 36], cible: [-1, 0, 0] },
+    { id: "profil", label: "Profil", pos: [-3, 0.3, 36], cible: [-3, 0, 0] },
+    { id: "train", label: "Porte-oculaire", pos: () => [(TB + cur.XS - 2.6) / 2 + 4, 4, 10], cible: () => [(TB + cur.XS - 2.6) / 2, 0, 0] },
+    { id: "capteur", label: "Au capteur", pos: () => [cur.XS + 2.2, 0.9, 1.9], cible: () => [cur.XS, 0, 0], fov: 30, exacte: true },
+  ],
+  intro: () => {
+    const g = cur;
+    let bilan;
+    if (acc === "aucun") bilan = "La lunette seule forme son image à 480 mm de l'objectif. Essayez la Barlow, puis le réducteur, et comparez les chiffres ci-dessous.";
+    else if (acc === "barlow") bilan = `La Barlow multiplie la focale par ${v(g.M)}. L'image est ${v(g.M)} fois plus grande sur le capteur : chaque pixel voit un plus petit morceau de ciel, ce qui sert pour les planètes. Mais la même lumière s'étale sur une surface ${v(g.pose, 1)} fois plus grande : il faut poser ${v(g.pose, 1)} fois plus longtemps. Éloignez le capteur avec le curseur « Tirage » (distance de la lentille au capteur) : le coefficient augmente.`;
+    else bilan = `Le réducteur multiplie la focale par ${v(g.M)}. Le champ est ${v(1 / g.M)} fois plus large et l'image plus lumineuse : on pose ${v(1 / g.pose)} fois moins longtemps. C'est l'accessoire du ciel profond : la turbulence étale déjà les étoiles sur 2 à 4″, des pixels de 1 à 2″ suffisent.`;
+    return `
+    <div class="eyebrow">Allonger ou raccourcir la focale</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière de la Lune arrive en faisceaux de rayons parallèles : un faisceau par point du disque lunaire." },
+      { couleur: SEG[1], texte: "L'objectif fait converger chaque faisceau. Seul, il forme l'image à 480 mm : c'est sa focale." },
+      { couleur: SEG[2], texte: "Une Barlow (lentille divergente) ouvre le cône : il converge plus loin. Un réducteur (lentille convergente) le referme : il converge plus tôt." },
+      { couleur: SEG[3], texte: "L'image se forme sur le capteur. Plus la focale résultante est longue, plus l'image est grande." },
+    ])}
+    <p><strong>${ACCESSOIRES[acc].nom}.</strong> ${bilan}</p>
+    <p>Le diamètre reste 80 mm : l'accessoire ne capte pas plus de lumière. Il change la focale, donc le rapport F/D, et le temps de pose varie comme le carré de F/D.</p>
+    <p class="spec">Focale ${ent(g.F)} mm · f/${v(g.N, 1)} · ${v(g.ech)}″ par pixel · champ ${v(g.champ[0])}° × ${v(g.champ[1])}° · pose ×${v(g.pose)}</p>
+    <p class="spec">Échantillonnage = 206 × pixel (µm) ÷ focale (mm) · Champ (°) ≈ 57,3 × côté du capteur (mm) ÷ focale (mm)</p>`;
+  },
+});
+const lienSousTitre = document.querySelector("#panel header p");
+if (S.renderer) S.renderer.localClippingEnabled = true;
+
+// ---------- Éléments ----------
+const objectif = S.part("objectif", "Objectif", {
+  eclate: [3, 0, 0], ancre: [XO, RT + 0.3, 0],
+  texte: "Triplet apochromatique de 80 mm de diamètre. Il fait converger la lumière vers son foyer, 480 mm plus loin. Une Barlow ou un réducteur ne change pas ce diamètre : la quantité de lumière captée reste la même. Ils changent seulement la focale, donc la taille de l'image sur laquelle cette lumière s'étale.",
+  chiffres: "D = 80 mm · F = 480 mm · f/6 · pouvoir séparateur ≈ 1,5″",
+});
+const tube = S.part("tube", "Tube optique", {
+  ancre: [XO - 9, RT + 0.15, 0],
+  texte: "Il tient l'objectif et le porte-oculaire alignés. Son intérieur noir mat absorbe la lumière parasite. Le pare-buée, à l'avant, retarde la buée sur l'objectif.",
+  chiffres: "Longueur ≈ focale de l'objectif · Ø ≈ 90 mm",
+});
+const focuser = S.part("focuser", "Porte-oculaire", {
+  eclate: [-1.5, 0, 0], ancre: [TB - 0.45, 1.75 + 0.3, 0],
+  texte: "Son tube coulissant avance ou recule pour amener le foyer exactement sur le capteur : c'est la mise au point. Chaque accessoire déplace le foyer : on refait la mise au point après l'avoir ajouté, et la course du porte-oculaire doit suffire.",
+  chiffres: "Coulant 50,8 mm (2″) · course ≈ 100 mm · molette démultipliée 1:10",
+});
+const barlow = S.part("barlow", "Lentille de Barlow", {
+  eclate: [-3, 0, 0], etiquette: false,
+  texte: "Lentille divergente placée avant le foyer. Elle ouvre un peu le cône de lumière, qui converge donc plus loin : tout se passe comme si l'objectif avait une focale plus longue. Le diamètre ne change pas, le rapport F/D augmente : l'image est plus grande mais moins lumineuse. Son coefficient dépend de la distance jusqu'au capteur : plus on l'éloigne, plus il grandit.",
+});
+const reducteur = S.part("reducteur", "Réducteur de focale", {
+  eclate: [-3, 0, 0], etiquette: false,
+  texte: "Groupe de lentilles convergent placé avant le foyer. Il referme le cône de lumière, qui converge plus tôt : la focale raccourcit. Le diamètre ne change pas, le rapport F/D diminue : le champ s'élargit et l'image devient plus lumineuse. Il corrige aussi la courbure de champ, mais seulement à la distance du capteur prévue par le fabricant, souvent 55 mm.",
+});
+for (const p of [barlow, reducteur]) S.label(p.nom, () => p.group.localToWorld(p.ancre.clone()), { partId: p.id, visible: () => p.group.children.length > 0 });
+const bagues = S.part("bagues", "Bagues", { eclate: [-4.5, 0, 0], etiquette: false });
+const lblBagues = S.label("", () => bagues.group.localToWorld(bagues.ancre.clone()), { partId: "bagues", visible: () => bagues.group.children.length > 0 });
+const camera = S.part("camera", "Caméra", {
+  eclate: [-6, 0, 0],
+  texte: "Caméra astro (ou appareil photo sans son objectif). Son capteur découpe l'image en pixels : chaque pixel reçoit la lumière d'un petit carré de ciel, mesuré en secondes d'arc (″). Cette valeur, l'échantillonnage, dépend seulement de la taille du pixel et de la focale. Pour bien choisir, voir le support « Capteur et pixel ».",
+});
+
+const ouvert = (m) => { m.side = THREE.DoubleSide; return m; };
+function cylindre(r, x0, x1, mat, coupe) {
+  const g = coupe ? new THREE.CylinderGeometry(r, r, x1 - x0, 64, 1, true, Math.PI / 2, Math.PI)
+                  : new THREE.CylinderGeometry(r, r, x1 - x0, 64, 1, true);
+  return mesh(axeX(g), ouvert(mat), (x0 + x1) / 2);
+}
+// cerceau d'axe X (bague, ailette) : demi-cerceau du côté conservé quand l'ensemble est en coupe
+function cerceau(r, e, x, mat, coupe) {
+  const g = new THREE.TorusGeometry(r, e, 6, 48, coupe ? Math.PI : 2 * Math.PI);
+  if (coupe) g.rotateZ(Math.PI);
+  return mesh(axeX(g.rotateX(Math.PI / 2)), mat, x);
+}
+function anneau(r0, r1, x, mat, coupe) {
+  const g = coupe ? new THREE.RingGeometry(r0, r1, 64, 1, -Math.PI / 2, Math.PI) : new THREE.RingGeometry(r0, r1, 64);
+  return mesh(g.rotateY(Math.PI / 2), ouvert(mat), x);
+}
+
+// objectif et tube : ne bougent pas
+function construireFixe() {
+  const coupe = S.state.coupe;
+  for (const p of [objectif, tube]) S.viderElement(p);
+  const lent = objectifLunette("apo", R, XO);
+  for (const l of lent) S.add(objectif, lentille(R, l.xv, l.t, l.sf, l.sb));
+  S.add(objectif, cylindre(RT - 0.03, lent.at(-1).xv - lent.at(-1).t - 0.1, lent[0].xv + 0.1, M.noir(), coupe));
+  S.add(tube, cylindre(RT, TB, XO - 0.25, M.peinture(), coupe));
+  S.add(tube, cylindre(RT - 0.02, TB, XO - 0.25, M.flocage(), coupe));
+  S.add(tube, cylindre(RT + 0.2, XO - 0.6, XO + 3.6, M.noir(), coupe));        // pare-buée
+  S.add(tube, cylindre(RT + 0.19, XO - 0.6, XO + 3.6, M.flocage(), coupe));
+  S.add(tube, anneau(1.75, RT, TB, M.noir(), coupe));                              // fond du tube
+}
+
+// porte-oculaire, accessoire, bagues, caméra : suivent l'accessoire et le tirage
+function construireTrain() {
+  const coupe = S.state.coupe, g = cur, c = g.c;
+  for (const p of [focuser, barlow, reducteur, bagues, camera]) S.viderElement(p);
+
+  // porte-oculaire : embase, tube coulissant, molettes
+  S.add(focuser, cylindre(1.75, TB - 0.9, TB + 0.1, M.noir(), coupe));
+  S.add(focuser, anneau(1.38, 1.75, TB - 0.9, M.noir(), coupe));
+  S.add(focuser, cylindre(1.35, g.xPO, TB + 0.8, M.alu(), coupe));
+  S.add(focuser, cylindre(1.33, g.xPO, TB + 0.8, M.flocage(), coupe));          // intérieur noir mat
+  S.add(focuser, cerceau(1.37, 0.04, g.xPO, M.noir(), coupe));
+  S.add(focuser, mesh(new THREE.BoxGeometry(0.7, 0.35, 1.6), M.noir(), TB - 0.45, -1.9, 0));
+  S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.07, 0.07, 3, 12)), M.alu(), TB - 0.45, -2.0, 0));
+  for (const s of [-1, 1]) S.add(focuser, mesh(axeZ(new THREE.CylinderGeometry(0.4, 0.4, 0.22, 24)), M.caoutchouc(), TB - 0.45, -2.0, s * 1.35));
+
+  // lentille de Barlow : lentilles au bout du coulant, corps, sortie filetée
+  if (acc === "barlow") {
+    const X = g.XL;
+    barlow.ancre.set(X - 0.6, 1.75, 0);
+    barlow.chiffres = `Focale ≈ −100 mm · tirage ${g.tirage} mm → ×${v(g.M)} · coefficient = 1 + tirage ÷ 100 · en visuel avec un oculaire de 10 mm : ${Math.round(g.F / 10)}× au lieu de 48×`;
+    S.add(barlow, lentille(1.1, X + 0.1, 0.1, -0.035, -0.04));
+    S.add(barlow, lentille(1.1, X - 0.02, 0.07, 0.04, 0.0));
+    S.add(barlow, cylindre(1.2, X - 1.1, X + 0.12, M.alu(), coupe));
+    S.add(barlow, cylindre(1.18, X - 1.4, X + 0.12, M.flocage(), coupe));
+    S.add(barlow, cylindre(1.5, X - 1.4, X - 1.1, M.noir(), coupe));
+    S.add(barlow, anneau(1.2, 1.5, X - 1.1, M.noir(), coupe));
+  }
+  // réducteur : corps vissé au bout du porte-oculaire, deux lentilles
+  if (acc === "reducteur") {
+    const X = g.XL;
+    reducteur.ancre.set(X, 1.95, 0);
+    reducteur.chiffres = `Focale ≈ +275 mm · tirage ${g.tirage} mm → ×${v(g.M)} · coefficient = 1 − tirage ÷ 275 · tirage prévu : 55 mm`;
+    S.add(reducteur, lentille(1.15, X + 0.3, 0.16, 0.05, 0.04));
+    S.add(reducteur, lentille(1.15, X + 0.04, 0.08, -0.04, 0.0));
+    S.add(reducteur, cylindre(1.55, X - 0.45, X + 0.55, M.noir(), coupe));
+    S.add(reducteur, anneau(1.2, 1.55, X + 0.55, M.noir(), coupe));
+  }
+  // bagues : rallonge (Barlow), bagues de tirage (réducteur) ou adaptateur
+  {
+    const x0 = g.XS + 0.9, x1 = g.xB;
+    const noms = { barlow: "Bague allonge", reducteur: "Bagues de tirage", aucun: "Adaptateur" };
+    bagues.nom = lblBagues.el.textContent = noms[acc];
+    bagues.ancre.set((x0 + x1) / 2, -1.6, 0);
+    bagues.texte = acc === "barlow"
+      ? "Tube vide qui éloigne le capteur de la Barlow. C'est lui qui règle le coefficient : avec cette Barlow, chaque 50 mm de plus ajoute 0,5 au coefficient. Une Barlow vissée directement sur la caméra donne souvent ×1,5 au lieu de ×2."
+      : acc === "reducteur"
+      ? "Bagues qui placent le capteur à la distance prévue du réducteur. Changer cette distance change un peu le coefficient, mais surtout déforme les étoiles du bord : on respecte le tirage du fabricant, au millimètre près."
+      : "Simple bague qui relie la caméra au porte-oculaire. Sans lentille supplémentaire, sa longueur ne change rien à la focale : on fait seulement la mise au point.";
+    bagues.chiffres = acc === "barlow" ? `Tirage : ${g.tirage} mm de la lentille au capteur`
+      : acc === "reducteur" ? `Tirage : ${g.tirage} mm (prévu : 55 mm, tolérance ≈ ±1 mm)` : "Filetage T2 (M42 × 0,75) ou M48";
+    if (x1 > x0 + 0.01) {
+      S.add(bagues, cylindre(1.3, x0, x1, M.noir(), coupe));
+      const n = Math.max(1, Math.round((x1 - x0) / 0.9));
+      for (let i = 0; i <= n; i++) S.add(bagues, cerceau(1.31, 0.025, x0 + (x1 - x0) * i / n, M.alu(), coupe));
+    }
+  }
+  // caméra : boîtier toujours ouvert pour montrer le capteur
+  {
+    const X = g.XS;
+    camera.ancre.set(X - 1.2, 2.2, 0);
+    camera.chiffres = `${c.nom} · capteur ${v(c.w, 1)} × ${v(c.h, 1)} mm · ${c.def} · pixel ${v(c.pix)} µm → ${v(g.ech)}″ par pixel à ${ent(g.F)} mm`;
+    S.add(camera, cylindre(1.9, X - 2.6, X + 0.9, M.noir(), true));
+    S.add(camera, mesh(axeX(new THREE.CylinderGeometry(1.9, 1.9, 0.04, 64)), M.noir(), X - 2.6));
+    S.add(camera, anneau(1.0, 1.9, X + 0.9, M.alu(), true));
+    for (let k = 0; k < 5; k++) S.add(camera, cerceau(1.91, 0.035, X - 2.4 + k * 0.25, M.alu(), true));
+    const boitier = S.add(camera, mesh(new THREE.BoxGeometry(0.12, c.h / U + 0.25, c.w / U + 0.25), M.noir(), X - 0.08, 0, 0));
+    boitier.material.color.set(0x2a2d34);
+    const capteur = S.add(camera, mesh(new THREE.BoxGeometry(0.02, c.h / U, c.w / U), M.noir(), X - 0.01, 0, 0));
+    capteur.material.color.set(0x1d2740);
+  }
+  poserRayons();
+}
+
+// ---------- Trajet de la lumière : trois faisceaux (centre et bords de la Lune) ----------
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const lum = faisceau(0.5, 0.3, 80);
+S.scene.add(lum.group);
+const foyer = halo(COULEURS.corail, 0.18); lum.group.add(foyer);
+// image de la Lune sur le capteur (renversée), coupée aux bords du capteur
+const plans = [new THREE.Plane(V(0, 1, 0), 0), new THREE.Plane(V(0, -1, 0), 0), new THREE.Plane(V(0, 0, 1), 0), new THREE.Plane(V(0, 0, -1), 0)];
+const texLune = new THREE.CanvasTexture(textures.faceLune()); texLune.colorSpace = THREE.SRGBColorSpace;
+const imageLune = mesh(new THREE.CircleGeometry(1, 64).rotateY(Math.PI / 2).rotateX(Math.PI),
+  new THREE.MeshBasicMaterial({ map: texLune, transparent: true, toneMapped: false, clippingPlanes: plans, depthWrite: false }));
+S.scene.add(imageLune);
+// cône d'origine (sans accessoire), en pointillés
+const origine = new THREE.Group(); S.scene.add(origine);
+const traitsOrigine = new THREE.LineSegments(new THREE.BufferGeometry(),
+  new THREE.LineDashedMaterial({ color: COULEURS.ambre, dashSize: 0.12, gapSize: 0.1, transparent: true, opacity: 0.6, depthWrite: false }));
+origine.add(traitsOrigine);
+const foyerOrigine = halo(COULEURS.ambre, 0.22); origine.add(foyerOrigine);
+foyerOrigine.position.set(XF, 0, 0);
+
+function poserRayons() {
+  const g = cur, th = LUNE / 2, trajets = [], tirets = [];
+  const bundles = [[0, [[0.85 * R, 0], [-0.85 * R, 0], [0, 0.85 * R], [0, -0.85 * R]]], [th, [[0.85 * R, 0], [-0.85 * R, 0]]], [-th, [[0.85 * R, 0], [-0.85 * R, 0]]]];
+  for (const [t, entrees] of bundles) {
+    const P0 = V(XF, -LF * t, 0);                         // image par l'objectif seul
+    const P1 = V(g.XS, P0.y * g.M, 0);                    // image finale, sur le capteur
+    for (const [y0, z0] of entrees) {
+      const C = V(XO, y0, z0), A = V(XO + 6, y0 + 6 * t, z0);
+      if (g.XL === null) { trajets.push({ pts: [A, C, P0], cols: [SEG[0], SEG[1]] }); continue; }
+      const Q = C.clone().lerp(P0, (g.XL - XO) / (XF - XO));
+      trajets.push({ pts: [A, C, Q, P1], cols: [SEG[0], SEG[1], SEG[2]] });
+      if (t === 0) tirets.push(Q, P0);
+    }
+  }
+  lum.poser(trajets);
+  foyer.position.set(g.XS + 0.02, 0, 0);
+  const geo = new THREE.BufferGeometry().setFromPoints(tirets);
+  traitsOrigine.geometry.dispose(); traitsOrigine.geometry = geo;
+  traitsOrigine.computeLineDistances();
+  // image de la Lune : rayon F·θ/2, posée sur le capteur
+  imageLune.scale.setScalar(g.F * LUNE / 2 / U);
+  imageLune.position.set(g.XS + 0.004, 0, 0);
+  const hh = g.c.h / 2 / U, hw = g.c.w / 2 / U;
+  plans[0].constant = hh; plans[1].constant = hh; plans[2].constant = hw; plans[3].constant = hw;
+}
+
+const lightVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière de la Lune", () => V(XO + 4.5, 2.6, 0), { lumiere: true, visible: lightVisible });
+S.label("Foyer", () => V(cur.XS, -0.45, 0), { lumiere: true, visible: lightVisible });
+S.label("Foyer d'origine", () => V(XF, 0.4, 0), { lumiere: true, visible: () => lightVisible() && S.state.origine && acc !== "aucun" });
+
+// ---------- Encart « Sur le capteur » : le champ (Lune pour échelle) et Mars pixel par pixel ----------
+const fondCiel = (() => {
+  const r = alea(41), pts = [];
+  for (let i = 0; i < 40; i++) pts.push([r(), r(), 0.3 + r() * r() * 1.4]);
+  return pts;
+})();
+function dessinerChamp(ctx, x, s) {
+  const g = cur, c = g.c;
+  // la largeur dessinée couvre le champ du capteur avec le réducteur au plus fort (×0,74), plus une marge
+  const champMax = 57.2958 * c.w / (F0 * 0.74) * 1.06, k = s / champMax; // px par degré
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, 0, s, s); ctx.clip();
+  ctx.fillStyle = "#04070d"; ctx.fillRect(x, 0, s, s);
+  for (const [a, b, br] of fondCiel) {
+    ctx.fillStyle = `rgba(230,236,250,${0.25 + 0.4 * br / 1.7})`;
+    ctx.beginPath(); ctx.arc(x + a * s, b * s, br * 0.8, 0, 2 * Math.PI); ctx.fill();
+  }
+  const cx = x + s / 2, cy = s / 2, dl = 0.52 * k;
+  ctx.drawImage(textures.faceLune(), cx - dl / 2, cy - dl / 2, dl, dl);
+  const rw = g.champ[0] * k, rh = g.champ[1] * k;
+  ctx.fillStyle = "rgba(4,7,13,0.6)"; // hors du capteur : assombri
+  ctx.beginPath(); ctx.rect(x, 0, s, s); ctx.rect(cx + rw / 2, cy - rh / 2, -rw, rh); ctx.fill("evenodd");
+  if (acc !== "aucun" && S.state.origine) {
+    const w0 = 57.2958 * c.w / F0 * k, h0 = 57.2958 * c.h / F0 * k;
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = "rgba(255,200,97,0.75)"; ctx.lineWidth = 1;
+    ctx.strokeRect(cx - w0 / 2, cy - h0 / 2, w0, h0);
+    ctx.setLineDash([]);
+  }
+  ctx.lineWidth = 1.5; ctx.strokeStyle = "#f6f9fd";
+  ctx.strokeRect(cx - rw / 2, cy - rh / 2, rw, rh);
+  ctx.restore();
+}
+const NPX = 40, SUB = 6;
+let cacheMars = { cle: "", cv: null };
+function imageMars(ech) {
+  const cle = v(ech, 4);
+  if (cacheMars.cle === cle) return cacheMars.cv;
+  const n = NPX * SUB, cv = document.createElement("canvas"); cv.width = cv.height = n;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, n, n);
+  const d = MARS / ech * SUB;                             // diamètre de Mars en sous-pixels
+  ctx.drawImage(textures.faceMars(), n / 2 - d / 2, n / 2 - d / 2, d, d);
+  // flou de la tache de diffraction (largeur à mi-hauteur TACHE), puis moyenne dans chaque pixel
+  const src = ctx.getImageData(0, 0, n, n).data, sig = TACHE / 2.355 / ech * SUB, GR = Math.ceil(3 * sig);
+  const ker = []; let s = 0;
+  for (let i = -GR; i <= GR; i++) { const w = Math.exp(-i * i / (2 * sig * sig)); ker.push(w); s += w; }
+  for (let i = 0; i < ker.length; i++) ker[i] /= s;
+  let buf = [0, 1, 2].map((ch) => { const a = new Float32Array(n * n); for (let q = 0; q < n * n; q++) a[q] = src[q * 4 + ch]; return a; });
+  for (const horiz of [true, false]) {
+    buf = buf.map((a) => {
+      const o = new Float32Array(n * n);
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+        let t = 0;
+        for (let k = -GR; k <= GR; k++) {
+          const xx = horiz ? Math.min(n - 1, Math.max(0, x + k)) : x, yy = horiz ? y : Math.min(n - 1, Math.max(0, y + k));
+          t += a[yy * n + xx] * ker[k + GR];
+        }
+        o[y * n + x] = t;
+      }
+      return o;
+    });
+  }
+  const out = document.createElement("canvas"); out.width = out.height = NPX;
+  const octx = out.getContext("2d"), img = octx.createImageData(NPX, NPX);
+  for (let j = 0; j < NPX; j++) for (let i = 0; i < NPX; i++) {
+    for (let ch = 0; ch < 3; ch++) {
+      let t = 0;
+      for (let b = 0; b < SUB; b++) for (let a = 0; a < SUB; a++) t += buf[ch][(j * SUB + b) * n + i * SUB + a];
+      img.data[(j * NPX + i) * 4 + ch] = t / (SUB * SUB);
+    }
+    img.data[(j * NPX + i) * 4 + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+  cacheMars = { cle, cv: out };
+  return out;
+}
+function dessinerMars(ctx, x, s) {
+  const p = s / NPX;
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(imageMars(cur.ech), x, 0, s, s);
+  if (p >= 4) {
+    ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let i = 1; i < NPX; i++) { const q = Math.round(i * p) + 0.5; ctx.moveTo(x + q, 0); ctx.lineTo(x + q, s); ctx.moveTo(x, q); ctx.lineTo(x + s, q); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function dessinerEncart() {
+  const ap = S.apercu, g = cur, c = g.c, canvas = ap.canvas;
+  const dpr = Math.min(devicePixelRatio, 2), W = canvas.clientWidth;
+  if (W) {
+    const gap = 10, lab = 20, s = Math.floor((W - gap) / 2), H = s + lab;
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = H + "px";
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    dessinerChamp(ctx, 0, s);
+    dessinerMars(ctx, s + gap, s);
+    ctx.font = "11.5px Arial"; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
+    ctx.fillText("Champ (Lune : 0,5°)", s / 2, s + 14);
+    ctx.fillText(`Mars : ${NPX} × ${NPX} pixels`, s + gap + s / 2, s + 14);
+  }
+  const deborde = g.champ[1] < 0.52, dp = MARS / g.ech;
+  let verdict;
+  if (g.ech > 0.9) verdict = "Trop peu de pixels sur la planète : l'image reste pixellisée et des détails que la lunette sépare sont perdus.";
+  else if (g.ech >= 0.45) verdict = "Bon compromis pour les planètes : 2 à 3 pixels pour la plus petite tache que la lunette sépare (≈ 1,5″).";
+  else verdict = "L'image est plus grande, mais pas plus détaillée : la lunette ne sépare rien sous ≈ 1,5″. La lumière est diluée, l'image plus bruitée.";
+  ap.legende.innerHTML = `<h2>${v(g.champ[0])}° × ${v(g.champ[1])}° · ${v(g.ech)}″ par pixel</h2>
+    <p><strong>Champ.</strong> Le rectangle blanc est ce que photographie le capteur ${c.bouton.split(" ·")[0]}${acc !== "aucun" && S.state.origine ? " ; en pointillés, sans accessoire" : ""}. La Lune ${deborde ? "déborde du capteur" : `occupe ${Math.round(100 * 0.52 / g.champ[1])} % de sa hauteur`}.</p>
+    <p><strong>Échantillonnage.</strong> Mars (≈ ${MARS}″) fait ${Math.round(dp)} pixels de diamètre. ${verdict}</p>`;
+}
+
+// ---------- Mise à jour ----------
+const inputTirage = document.querySelector("#c-tirage");
+function maj() {
+  calculer();
+  construireTrain();
+  dessinerEncart();
+  const c = CAMERAS[cam];
+  lienSousTitre.textContent = acc === "aucun" ? `Exemple : lunette 80/480 · f/6 · ${c.bouton}`
+    : `Exemple : lunette 80/480 + ${acc === "barlow" ? "Barlow" : "réducteur"} ×${v(cur.M)} → ${ent(cur.F)} mm · f/${v(cur.N, 1)}`;
+  S.refreshInfo();
+}
+function choisirAcc(id) {
+  acc = id;
+  for (const k in ACCESSOIRES) document.getElementById("r-a-" + k).setAttribute("aria-pressed", String(k === id));
+  const a = ACCESSOIRES[id];
+  inputTirage.disabled = id === "aucun";
+  if (id !== "aucun") { inputTirage.min = a.min; inputTirage.max = a.max; inputTirage.step = a.pas; }
+  S.regler("tirage", id === "aucun" ? inputTirage.value : tirages[id]);
+}
+function choisirCam(id) {
+  cam = id;
+  for (const k in CAMERAS) document.getElementById("r-c-" + k).setAttribute("aria-pressed", String(k === id));
+  maj();
+}
+
+let largeur = 0;
+S.onFrame(({ time }) => {
+  const W = S.apercu.canvas.clientWidth;
+  if (W !== largeur) { largeur = W; dessinerEncart(); }
+  const vis = lightVisible();
+  lum.group.visible = vis;
+  imageLune.visible = vis;
+  origine.visible = vis && S.state.origine && acc !== "aucun";
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière."
+    : acc === "reducteur" && cur.tirage !== 55 ? "Tirage différent de 55 mm : en vrai, les étoiles du bord du champ se déforment. Le réducteur est conçu pour une seule distance."
+    : null);
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 3);
+});
+
+S.start();
+choisirAcc(acc);
+choisirCam(cam);
+</script>
+</body>
+</html>

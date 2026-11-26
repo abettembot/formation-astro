@@ -229,24 +229,29 @@ export const textures = {
   /** Lune avec ses mers : texture pour une sphère. Face visible (longitude 0) côté +X local : tourner la sphère pour la présenter à la Terre. */
   lune: () => versTexture(cvLune()),
   /** Face visible de la Lune vue de la Terre, nord en haut : canvas carré de 256 px (bord adouci) pour les dessins 2D. */
-  faceLune() {
-    if (_face) return _face;
-    const N = 256, src = cvLune(), px = src.getContext("2d").getImageData(0, 0, src.width, src.height).data;
-    const cv = document.createElement("canvas"); cv.width = cv.height = N;
-    const ctx = cv.getContext("2d"), img = ctx.createImageData(N, N);
-    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-      const x = (i + 0.5) / N * 2 - 1, y = 1 - (j + 0.5) / N * 2, q = x * x + y * y;
-      if (q > 1) continue;
-      const z = Math.sqrt(1 - q), lat = Math.asin(y), lon = Math.atan2(x, z);
-      const u = Math.floor((0.5 + lon / (2 * Math.PI)) * src.width), v = Math.floor((0.5 - lat / Math.PI) * src.height);
-      const s = (v * src.width + u) * 4, k = (j * N + i) * 4, assomb = 0.82 + 0.18 * z;
-      img.data[k] = px[s] * assomb; img.data[k + 1] = px[s + 1] * assomb; img.data[k + 2] = px[s + 2] * assomb;
-      img.data[k + 3] = 255 * Math.min(1, (1 - Math.sqrt(q)) * N / 2); // bord adouci
-    }
-    ctx.putImageData(img, 0, 0);
-    return (_face = cv);
-  },
+  faceLune: () => (_face ??= faceVisible(cvLune(), 0.82)),
+  /** Mars vue de la Terre à l'opposition (disque plein), nord en haut : canvas carré de 256 px (bord adouci) pour les dessins 2D. */
+  faceMars: () => (_faceMars ??= faceVisible(cvMars(), 0.6)),
 };
+let _faceMars;
+/** Projette une texture équirectangulaire sur un disque vu de face (longitude 0 au centre).
+ *  bordMin : luminosité relative au bord du disque (assombrissement centre-bord). */
+function faceVisible(src, bordMin) {
+  const N = 256, px = src.getContext("2d").getImageData(0, 0, src.width, src.height).data;
+  const cv = document.createElement("canvas"); cv.width = cv.height = N;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(N, N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const x = (i + 0.5) / N * 2 - 1, y = 1 - (j + 0.5) / N * 2, q = x * x + y * y;
+    if (q > 1) continue;
+    const z = Math.sqrt(1 - q), lat = Math.asin(y), lon = Math.atan2(x, z);
+    const u = Math.floor((0.5 + lon / (2 * Math.PI)) * src.width), v = Math.floor((0.5 - lat / Math.PI) * src.height);
+    const s = (v * src.width + u) * 4, k = (j * N + i) * 4, assomb = bordMin + (1 - bordMin) * z;
+    img.data[k] = px[s] * assomb; img.data[k + 1] = px[s + 1] * assomb; img.data[k + 2] = px[s + 2] * assomb;
+    img.data[k + 3] = 255 * Math.min(1, (1 - Math.sqrt(q)) * N / 2); // bord adouci
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
 
 // ---------- Aides géométriques ----------
 export const axeX = (geo) => geo.rotateZ(-Math.PI / 2); // axe Y -> axe X

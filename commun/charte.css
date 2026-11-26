@@ -125,7 +125,8 @@ body.schema > .brand:hover { opacity: .95; }
 }
 #panel button:hover { border-color: var(--ink-dim); }
 #panel button[aria-pressed="true"] { border-color: var(--accent); color: #fff; background: rgba(91, 155, 213, 0.16); }
-.slider { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+/* le curseur garde toujours une largeur confortable : un libellé trop long passe à la ligne */
+.slider { display: grid; grid-template-columns: auto minmax(130px, 1fr) auto; gap: 10px; align-items: center; }
 .slider label { font-size: 12.5px; color: var(--ink-dim); }
 .slider output { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; color: var(--ink-strong); }
 input[type=range] { width: 100%; accent-color: var(--accent); }
