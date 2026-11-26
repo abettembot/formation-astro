@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cycle de vie des étoiles</title>
+<meta name="description" content="Schéma 3D interactif du diagramme de Hertzsprung-Russell : la vie d'une naine rouge, du Soleil et de deux étoiles massives, jusqu'à la nébuleuse planétaire, la naine blanche, la supernova, le pulsar ou le trou noir.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, mesh, legende, css, halo, alea } from "../commun/schema.js";
+
+// ---------- Échelle et repère ----------
+// Le diagramme H-R est posé dans le plan XY (z = 0), face à +Z.
+// Hauteur : y = log10(L / L☉) : 1 unité = un facteur 10 de luminosité (de 10^-4,5 à 10^6 L☉).
+// Largeur : x = 9 × (4,3 − log10 T) : 1 unité = 1/9 de décade de température, les étoiles chaudes à gauche
+// (de 158 000 K à 2 500 K). Les tailles des boules sont indicatives (rayon en échelle logarithmique).
+const KX = 9, LT0 = 4.3;
+const LT_MAX = 5.2, LT_MIN = 3.4, LL_MIN = -4.5, LL_MAX = 6;
+const T_SOLEIL = 5772;
+const lg = Math.log10;
+const X = (lt) => (LT0 - lt) * KX;
+const Y = (ll) => ll;
+const XG = X(LT_MAX), XD = X(LT_MIN), YB = LL_MIN, YH = LL_MAX; // bords du cadre
+const rayonDe = (T, L) => Math.sqrt(L) * (T_SOLEIL / T) ** 2;   // L = 4πR²σT⁴, en unités solaires
+const R_TERRE = 6371 / 695700;                                    // rayon de la Terre en R☉
+const ORBITES = [["Mercure", 83.2], ["Vénus", 155.5], ["Terre", 215], ["Mars", 327.7], ["Jupiter", 1118]]; // en R☉
+const POS_NS = [-3.2, LL_MIN - 2.6], POS_TN = [0.6, LL_MIN - 2.6]; // repères « hors diagramme », sous le cadre
+
+// ---------- Couleur d'une étoile selon sa température ----------
+const TABLE_T = [[2500, 0xff7a3a], [3000, 0xff9a4a], [3500, 0xffb468], [4000, 0xffc58a], [5000, 0xffe2b8], [5800, 0xfff3dc],
+  [6500, 0xfffaf2], [7500, 0xeef0ff], [10000, 0xcfdcff], [15000, 0xb4c8ff], [25000, 0x9fb6ff], [50000, 0x92abff]];
+const rgb = (h) => [(h >> 16) & 255, (h >> 8) & 255, h & 255];
+const rgba = (h, a) => { const [r, g, b] = rgb(h); return `rgba(${r},${g},${b},${a})`; };
+function couleurT(T) {
+  if (T <= TABLE_T[0][0]) return TABLE_T[0][1];
+  for (let i = 1; i < TABLE_T.length; i++) {
+    if (T <= TABLE_T[i][0]) {
+      const [t0, c0] = TABLE_T[i - 1], [t1, c1] = TABLE_T[i], f = (lg(T) - lg(t0)) / (lg(t1) - lg(t0));
+      const a = rgb(c0), b = rgb(c1);
+      return a.reduce((h, v, k) => (h << 8) | Math.round(v + (b[k] - v) * f), 0);
+    }
+  }
+  return TABLE_T[TABLE_T.length - 1][1];
+}
+
+// ---------- Mise en forme ----------
+const fmt = (v, max = 0) => v.toLocaleString("fr-FR", { maximumFractionDigits: max });
+/** Nombre arrondi à deux chiffres significatifs. */
+function fmtNb(v) {
+  const p = Math.floor(lg(v));
+  if (p >= 2) return fmt(Math.round(v / 10 ** (p - 1)) * 10 ** (p - 1));
+  return fmt(v, Math.max(0, 1 - p));
+}
+/** Âge dans l'unité de l'étoile suivie (milliards ou millions d'années), toujours avec 3 chiffres.
+ *  court : sans « d'années » (libellé du curseur, qui tient ainsi sur une ligne de largeur constante). */
+function fmtAge(t, court = false) {
+  const milliards = TRAJETS[sim.cle].unite === 1e9, v = t / (milliards ? 1e9 : 1e6);
+  const n = v < 10 ? 2 : v < 100 ? 1 : 0;
+  const nombre = v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+  return nombre + " " + (milliards ? (v < 2 ? "milliard" : "milliards") : (v < 2 ? "million" : "millions")) + (court ? "" : " d'années");
+}
+
+// ---------- Les phases de la vie d'une étoile ----------
+// couches : coupe schématique, de l'extérieur vers le centre (f = fraction du rayon affiché)
+const GRIS = 0x8a919e;
+const PH = {
+  sp: { nom: "Séquence principale", texte: "L'étoile fusionne l'hydrogène en hélium dans son cœur. La pression de la chaleur équilibre exactement son poids : elle reste stable très longtemps.",
+    couches: [{ f: 0.25, c: COULEURS.ambre, n: "cœur : hydrogène → hélium" }] },
+  spc: { nom: "Séquence principale", texte: "Toute l'étoile brasse son gaz, comme une casserole qui bout : elle finira par brûler tout son hydrogène, très lentement.",
+    couches: [{ f: 0.3, c: COULEURS.ambre, n: "cœur : hydrogène → hélium" }] },
+  sg: { nom: "Sous-géante", texte: "L'hydrogène du cœur est épuisé. Le cœur d'hélium se contracte et chauffe ; l'hydrogène brûle maintenant dans une couche autour de lui.",
+    couches: [{ f: 0.18, c: COULEURS.ambre, n: "couche : hydrogène → hélium" }, { f: 0.12, c: GRIS, n: "cœur d'hélium éteint" }] },
+  gr: { nom: "Géante rouge", texte: "L'enveloppe gonfle et refroidit : l'étoile devient énorme, rouge et très lumineuse. Elle perd une partie de sa masse dans un vent d'étoile.",
+    couches: [{ f: 0.18, c: COULEURS.ambre, n: "couche : hydrogène → hélium" }, { f: 0.12, c: GRIS, n: "cœur d'hélium éteint" }] },
+  flash: { nom: "Flash de l'hélium", texte: "Le cœur atteint 100 millions de degrés : l'hélium s'allume d'un coup. L'étoile se réorganise, rapetisse et pâlit.",
+    couches: [{ f: 0.18, c: COULEURS.ambre, n: "couche : hydrogène → hélium" }, { f: 0.12, c: COULEURS.orange, n: "cœur : l'hélium s'allume" }] },
+  bh: { nom: "Géante calme", texte: "Le cœur fusionne l'hélium en carbone et en oxygène, l'hydrogène brûle en couche autour. L'étoile, plus petite, est stable pour un temps (on parle de « branche horizontale »).",
+    couches: [{ f: 0.22, c: COULEURS.ambre, n: "couche : hydrogène → hélium" }, { f: 0.15, c: COULEURS.orange, n: "cœur : hélium → carbone, oxygène" }] },
+  agb: { nom: "Géante rouge, 2ᵉ fois", texte: "Le cœur de carbone et d'oxygène s'éteint ; l'hélium et l'hydrogène brûlent dans deux couches. L'étoile gonfle encore et souffle ses couches externes (« branche asymptotique des géantes »).",
+    couches: [{ f: 0.2, c: COULEURS.ambre, n: "couche : hydrogène → hélium" }, { f: 0.15, c: COULEURS.orange, n: "couche : hélium → carbone" }, { f: 0.1, c: GRIS, n: "cœur de carbone et d'oxygène" }] },
+  pagb: { nom: "Éjection des couches", texte: "L'enveloppe est soufflée dans l'espace. Le cœur chaud se découvre : sa surface passe de 3 000 K à plus de 100 000 K en quelques milliers d'années." },
+  pn: { nom: "Nébuleuse planétaire", texte: "Le cœur nu, très chaud, illumine le gaz éjecté qui s'éloigne. La nébuleuse brille quelques dizaines de milliers d'années, puis se dissipe. Rien à voir avec des planètes : le nom vient de leur aspect de petit disque au télescope." },
+  nb: { nom: "Naine blanche", texte: "Plus aucune fusion : il reste une braise de carbone et d'oxygène de la taille de la Terre. Elle refroidit et pâlit pendant des milliards d'années." },
+  nbl: { nom: "Naine bleue (théorique)", texte: "Presque toute en hélium, l'étoile se contracte et chauffe : elle devient bleue sans jamais être géante. Aucune naine bleue n'existe encore : l'Univers est bien trop jeune.",
+    couches: [{ f: 0.35, c: COULEURS.ambre, n: "hydrogène → hélium (les derniers restes)" }] },
+  nbhe: { nom: "Naine blanche d'hélium", texte: "Trop légère pour allumer l'hélium, l'étoile s'éteint en une naine blanche faite d'hélium, qui refroidit lentement." },
+  trav: { nom: "Supergéante en transit", texte: "L'hydrogène du cœur est épuisé. L'étoile gonfle et traverse le diagramme de gauche à droite en quelques dizaines de milliers d'années : c'est pourquoi on en voit très peu à ce stade.",
+    couches: [{ f: 0.22, c: COULEURS.ambre, n: "couche : hydrogène → hélium" }, { f: 0.15, c: COULEURS.orange, n: "cœur : hélium → carbone" }] },
+  sgr: { nom: "Supergéante rouge", texte: "Le cœur fusionne des éléments de plus en plus lourds, rangés en couches comme un oignon : hélium, carbone, néon, oxygène, silicium. Chaque étape est plus courte : le silicium brûle en un jour. Le fer final ne libère plus d'énergie.",
+    couches: [{ f: 0.3, c: COULEURS.ambre, n: "hydrogène → hélium" }, { f: 0.25, c: COULEURS.orange, n: "hélium → carbone" }, { f: 0.2, c: COULEURS.corail, n: "carbone → néon, oxygène" },
+      { f: 0.15, c: COULEURS.rouge, n: "oxygène → silicium" }, { f: 0.1, c: COULEURS.violet, n: "silicium → fer" }, { f: 0.05, c: GRIS, n: "cœur de fer" }] },
+  sn: { nom: "Supernova", texte: "Le cœur de fer s'effondre en moins d'une seconde. Le rebond et un flot de neutrinos soufflent l'étoile : pendant des semaines, elle brille comme un milliard de Soleils." },
+  ns: { nom: "Étoile à neutrons", texte: "Il reste un cœur de 1,4 masse solaire écrasé dans une boule de 20 km. Elle tourne très vite et balaie l'espace de deux faisceaux, comme un phare : c'est un pulsar. Autour, les débris de l'explosion forment un rémanent, comme la nébuleuse du Crabe (M1)." },
+  tn: { nom: "Trou noir", texte: "Le cœur est trop lourd : rien n'arrête plus l'effondrement, même la lumière ne s'échappe plus. L'explosion peut être faible, voire absente : l'étoile semble disparaître. Exemple : Cygnus X-1, dans le Cygne." },
+};
+
+// ---------- Les quatre étoiles suivies ----------
+// Points (T en K, L en L☉, t = âge en années, ph = phase du tronçon qui arrive au point, w = durée d'affichage).
+// Valeurs arrondies d'après les modèles d'évolution stellaire (métallicité solaire).
+const P = (T, L, t, ph, w = 0) => ({ T, L, t, ph, w, lt: lg(T), ll: lg(L) });
+const Q = ([x, y], t, ph, w) => ({ x, y, t, ph, w });
+const TRAJETS = {
+  naine: {
+    nom: "Naine rouge de 0,2 M☉", couleur: COULEURS.etoile, fin: 3, unite: 1e9,
+    durees: { spc: "≈ 1 000 milliards d'années (calcul théorique)", nbl: "≈ 100 milliards d'années (théorique)", nbhe: "des milliers de milliards d'années" },
+    points: [P(3200, 0.005, 0, "spc"), P(3210, 0.0052, 1.38e10, "spc", 3), P(3500, 0.008, 6e11, "spc", 3), P(4300, 0.015, 1.0e12, "spc", 2),
+      P(6500, 0.03, 1.1e12, "nbl", 2), P(8000, 0.01, 1.15e12, "nbl", 1.5), P(7000, 0.0009, 1.2e12, "nbhe", 1.5), P(3500, 6e-5, 1e13, "nbhe", 2)],
+  },
+  soleil: {
+    nom: "Le Soleil, 1 M☉", couleur: COULEURS.ambre, fin: 12, aujourdhui: 1, unite: 1e9,
+    durees: { sp: "≈ 10 milliards d'années", sg: "≈ 1 milliard d'années", gr: "≈ 1 milliard d'années", flash: "quelques minutes, puis ≈ 1 million d'années de réorganisation",
+      bh: "≈ 100 millions d'années", agb: "≈ 20 millions d'années", pagb: "≈ 10 000 ans", pn: "≈ 50 000 ans", nb: "des milliards d'années" },
+    points: [P(5600, 0.70, 0, "sp"), P(5772, 1, 4.57e9, "sp", 3), P(5850, 1.6, 9.0e9, "sp", 3), P(5650, 2.1, 10.0e9, "sp", 1.5),
+      P(5000, 2.6, 10.9e9, "sg", 2), P(4600, 15, 11.5e9, "gr", 1.5), P(4100, 150, 12.0e9, "gr", 1.5), P(3500, 1000, 12.17e9, "gr", 1.5), P(3100, 2500, 12.2e9, "gr", 1.5),
+      P(4700, 45, 12.201e9, "flash", 1.2), P(4600, 55, 12.31e9, "bh", 2.5), P(3800, 400, 12.33e9, "agb", 1.5), P(3000, 5000, 12.35e9, "agb", 1.5),
+      P(30000, 4500, 12.35e9 + 1e4, "pagb", 1.5), P(130000, 1500, 12.35e9 + 3e4, "pn", 2), P(110000, 20, 12.35e9 + 1e5, "pn", 1.5),
+      P(50000, 1, 12.36e9, "nb", 1.5), P(25000, 0.06, 12.47e9, "nb", 1.5), P(10000, 0.0015, 13.35e9, "nb", 1.5), P(5000, 9.5e-5, 19.35e9, "nb", 2)],
+  },
+  m15: {
+    nom: "Étoile massive de 15 M☉", couleur: COULEURS.orange, fin: 5, unite: 1e6,
+    durees: { sp: "≈ 11 millions d'années", trav: "quelques dizaines de milliers d'années", sgr: "≈ 1,4 million d'années (le silicium : un jour)",
+      sn: "quelques mois d'éclat", ns: "pour toujours ; le pulsar s'éteint en ≈ 10 millions d'années" },
+    points: [P(30000, 2.0e4, 0, "sp"), P(29000, 2.5e4, 6e6, "sp", 3), P(24000, 3.5e4, 11.0e6, "sp", 3), P(8000, 4.5e4, 11.03e6, "trav", 2),
+      P(4000, 5.5e4, 11.06e6, "trav", 1.5), P(3700, 7e4, 12.4e6, "sgr", 3), P(3600, 1.0e5, 12.5e6, "sgr", 2),
+      P(15000, 1e9, 12.5e6 + 0.1, "sn", 1.6), Q(POS_NS, 12.5e6 + 1, "ns", 2)],
+  },
+  m30: {
+    nom: "Étoile très massive de 30 M☉", couleur: COULEURS.corail, fin: 4, unite: 1e6,
+    durees: { sp: "≈ 5,3 millions d'années", trav: "quelques dizaines de milliers d'années", sgr: "≈ 600 000 ans", tn: "pour toujours" },
+    points: [P(38000, 1.1e5, 0, "sp"), P(36000, 1.4e5, 3e6, "sp", 3), P(30000, 2.0e5, 5.3e6, "sp", 3), P(10000, 2.3e5, 5.33e6, "trav", 2),
+      P(4000, 2.5e5, 5.36e6, "trav", 1.5), P(3800, 2.8e5, 5.9e6, "sgr", 3), Q(POS_TN, 5.9e6 + 1, "tn", 2.5)],
+  },
+};
+for (const tr of Object.values(TRAJETS)) {
+  tr.cum = [0];
+  for (const p of tr.points) {
+    if (p.lt !== undefined) { p.x = X(p.lt); p.y = Math.min(Y(p.ll), YH + 0.9); } // la supernova sort par le haut du cadre
+  }
+  for (let i = 1; i < tr.points.length; i++) tr.cum.push(tr.cum[i - 1] + tr.points[i].w);
+  tr.total = tr.cum[tr.cum.length - 1];
+}
+/** État de l'étoile suivie à l'avancement u (0 → 1) de sa vie. */
+function etatA(tr, u) {
+  const s = Math.min(1, Math.max(0, u)) * tr.total;
+  let i = 1;
+  while (i < tr.points.length - 1 && s > tr.cum[i]) i++;
+  const a = tr.points[i - 1], b = tr.points[i];
+  const f = Math.min(1, Math.max(0, (s - tr.cum[i - 1]) / (tr.cum[i] - tr.cum[i - 1])));
+  const e = { i, f, ph: b.ph, a, b, x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, t: a.t + (b.t - a.t) * f };
+  if (a.lt !== undefined && b.lt !== undefined) {
+    e.lt = a.lt + (b.lt - a.lt) * f; e.ll = a.ll + (b.ll - a.ll) * f;
+    e.T = 10 ** e.lt; e.L = 10 ** e.ll; e.R = rayonDe(e.T, e.L);
+  }
+  return e;
+}
+const uDuPoint = (tr, i) => tr.cum[i] / tr.total;
+
+const sim = { cle: "soleil", u: uDuPoint(TRAJETS.soleil, 1), anim: null, pause: 0 };
+const DUREE_VIE = 42; // secondes d'animation pour une vie entière
+let pilote = false;
+
+// ---------- Les étoiles connues ----------
+// T (K), L (L☉) ; d = décalage de l'étiquette pour éviter les chevauchements
+const ETOILES = [
+  { id: "soleil", nom: "Soleil", T: 5772, L: 1,
+    texte: "Notre étoile, une naine jaune au milieu de la séquence principale. Elle fusionne l'hydrogène en hélium dans son cœur depuis 4,6 milliards d'années, à peu près la moitié de sa vie. C'est la référence du diagramme : luminosité 1, rayon 1.",
+    chiffres: "5 772 K · 1 L☉ · 1 R☉ (696 000 km) · 1 M☉ · type G2 V" },
+  { id: "proxima", nom: "Proxima du Centaure", T: 3042, L: 0.0017,
+    texte: "L'étoile la plus proche du Soleil, une naine rouge invisible à l'œil nu. Froide et peu lumineuse, elle brûle son hydrogène très lentement et brillera encore des milliers de milliards d'années. Les naines rouges sont les étoiles les plus nombreuses de la Galaxie.",
+    chiffres: "3 040 K · 0,0017 L☉ · 0,15 R☉ · 0,12 M☉ · à 4,2 années-lumière · type M5,5 V" },
+  { id: "procyon", nom: "Procyon", T: 6530, L: 6.9,
+    texte: "L'étoile brillante du Petit Chien, un peu plus chaude et plus massive que le Soleil. Elle commence à épuiser l'hydrogène de son cœur et quitte doucement la séquence principale. Comme Sirius, elle a une naine blanche pour compagne.",
+    chiffres: "6 530 K · 6,9 L☉ · 2,0 R☉ · 1,5 M☉ · à 11,5 années-lumière · type F5 IV-V" },
+  { id: "sirius", nom: "Sirius", T: 9940, L: 25.4,
+    texte: "L'étoile la plus brillante du ciel nocturne, dans le Grand Chien. Blanche et chaude, deux fois plus massive que le Soleil, elle est 25 fois plus lumineuse. Elle forme un couple avec Sirius B, une naine blanche.",
+    chiffres: "9 940 K · 25 L☉ · 1,7 R☉ · 2,1 M☉ · à 8,6 années-lumière · type A1 V" },
+  { id: "regulus", nom: "Régulus", T: 12460, L: 288,
+    texte: "Le cœur du Lion, une étoile bleu-blanc de la séquence principale. Elle tourne si vite sur elle-même, en 16 heures, qu'elle est nettement aplatie.",
+    chiffres: "12 500 K · 290 L☉ · 3,1 à 4,2 R☉ · 3,8 M☉ · à 79 années-lumière · type B8 IV" },
+  { id: "spica", nom: "Spica", T: 25300, L: 20500,
+    texte: "L'Épi de la Vierge, une étoile bleue très chaude, 20 000 fois plus lumineuse que le Soleil. Avec 11 masses solaires, elle ne vivra qu'une vingtaine de millions d'années et finira en supernova.",
+    chiffres: "25 300 K · 20 500 L☉ · 7,5 R☉ · 11 M☉ · à 250 années-lumière · type B1 III-IV" },
+  { id: "arcturus", nom: "Arcturus", T: 4286, L: 170, d: [-1.0, -0.2],
+    texte: "L'étoile orangée du Bouvier, une géante rouge à peine plus massive que le Soleil. Elle a déjà épuisé l'hydrogène de son cœur et s'est dilatée : elle montre ce que deviendra le Soleil dans 7 milliards d'années.",
+    chiffres: "4 290 K · 170 L☉ · 25 R☉ · 1,1 M☉ · à 37 années-lumière · type K1,5 III" },
+  { id: "aldebaran", nom: "Aldébaran", T: 3910, L: 439,
+    texte: "L'œil du Taureau, une géante orange 45 fois plus grande que le Soleil. Elle brûle l'hydrogène en couche autour d'un cœur d'hélium éteint. Au centre du système solaire, elle remplirait la moitié de l'orbite de Mercure.",
+    chiffres: "3 910 K · 440 L☉ · 45 R☉ · 1,2 M☉ · à 65 années-lumière · type K5 III" },
+  { id: "polaris", nom: "Polaire", T: 6000, L: 1260,
+    texte: "L'étoile Polaire, une supergéante jaune de la Petite Ourse. C'est aussi une céphéide : elle pulse et son éclat varie légèrement en 4 jours. Elle a quitté la séquence principale et traverse le diagramme.",
+    chiffres: "6 000 K · 1 300 L☉ · 46 R☉ · 5,4 M☉ · à ≈ 430 années-lumière · type F7 Ib" },
+  { id: "rigel", nom: "Rigel", T: 12100, L: 1.2e5,
+    texte: "Le pied d'Orion, une supergéante bleue 120 000 fois plus lumineuse que le Soleil. Avec une vingtaine de masses solaires, elle finira en supernova, en laissant une étoile à neutrons ou un trou noir.",
+    chiffres: "12 100 K · ≈ 120 000 L☉ · 79 R☉ · ≈ 21 M☉ · à ≈ 860 années-lumière · type B8 Ia" },
+  { id: "deneb", nom: "Deneb", T: 8500, L: 2e5,
+    texte: "La queue du Cygne, l'une des étoiles les plus lumineuses visibles à l'œil nu. Sa distance, donc sa luminosité, reste mal connue : environ 200 000 fois le Soleil. Elle finira elle aussi en supernova.",
+    chiffres: "8 500 K · ≈ 200 000 L☉ · ≈ 200 R☉ · ≈ 19 M☉ · à ≈ 2 600 années-lumière · type A2 Ia" },
+  { id: "betelgeuse", nom: "Bételgeuse", T: 3600, L: 1e5,
+    texte: "L'épaule d'Orion, une supergéante rouge si grande qu'à la place du Soleil elle engloberait l'orbite de Mars. Elle vit ses derniers millénaires : elle explosera en supernova, peut-être dans 100 000 ans. C'est le stade de l'étoile de 15 M☉ juste avant sa fin.",
+    chiffres: "≈ 3 600 K · ≈ 100 000 L☉ · ≈ 760 R☉ · 15 à 20 M☉ · à ≈ 550 années-lumière · type M1-2 Ia" },
+  { id: "siriusb", nom: "Sirius B", T: 25000, L: 0.056,
+    texte: "La compagne de Sirius, la première naine blanche découverte. Elle contient la masse du Soleil dans une boule plus petite que la Terre : une cuillère à café de sa matière pèserait une dizaine de tonnes. Sans fusion, elle refroidit lentement.",
+    chiffres: "≈ 25 000 K · 0,056 L☉ · 0,0084 R☉ (≈ 5 800 km) · 1,0 M☉ · à 8,6 années-lumière" },
+  { id: "eri40b", nom: "40 Eridani B", T: 16500, L: 0.013,
+    texte: "Une naine blanche facile à voir avec un petit télescope, dans l'Éridan (magnitude 9,5). Elle a un peu plus de la moitié de la masse du Soleil dans une boule à peine plus grande que la Terre. C'est l'avenir du Soleil.",
+    chiffres: "≈ 16 500 K · 0,013 L☉ · 0,014 R☉ (≈ 9 700 km) · 0,57 M☉ · à 16 années-lumière" },
+  { id: "m57", nom: "Étoile centrale de M57", T: 125000, L: 200, d: [1.2, 0],
+    texte: "Au centre de la nébuleuse de la Lyre, le cœur mis à nu d'une étoile qui a soufflé ses couches externes il y a quelques milliers d'années. Très chaud mais minuscule, il fait briller le gaz éjecté : c'est une nébuleuse planétaire. Il deviendra une naine blanche.",
+    chiffres: "≈ 125 000 K · ≈ 200 L☉ · ≈ 0,03 R☉ · magnitude 15,8 · à ≈ 2 600 années-lumière" },
+];
+const tailleBoule = (R) => 0.09 + 0.045 * (Math.min(3.2, Math.max(-2.3, lg(R))) + 2);
+
+// ---------- Schéma ----------
+const BOUTONS_ETOILE = [["naine", "Naine rouge"], ["soleil", "Soleil"], ["m15", "15 M☉"], ["m30", "30 M☉"]];
+function allerA(u) { sim.anim = { de: sim.u, vers: u, t: 0 }; sim.pause = 0; }
+
+const S = createSchema({
+  surtitre: "Support de formation · Astrophysique",
+  titre: "Cycle de vie des étoiles",
+  sousTitre: "Exemple : le Soleil, 1 M☉ · 4,6 milliards d'années",
+  apercu: { titre: "L'étoile à cet instant" },
+  commandes: [
+    { type: "raccourcis", id: "etoile", label: "Étoile suivie", boutons: BOUTONS_ETOILE.map(([c, l]) => ({ id: "e-" + c, label: l, onClick: () => choisir(c) })) },
+    { type: "curseur", id: "age", label: "Âge (années)", min: 0, max: 1000, pas: 1, valeur: Math.round(sim.u * 1000),
+      format: (v) => fmtAge(etatA(TRAJETS[sim.cle], v / 1000).t, true),
+      onInput: (v) => { if (!pilote) { sim.u = v / 1000; sim.anim = null; sim.pause = 0; } } },
+    { type: "raccourcis", id: "aller", label: "Aller à", boutons: [
+      { id: "a-debut", label: "Naissance", onClick: () => allerA(0) },
+      { id: "a-auj", label: "Aujourd'hui", onClick: () => allerA(uDuPoint(TRAJETS.soleil, 1)) },
+      { id: "a-fin", label: "Fin de vie", onClick: () => { const tr = TRAJETS[sim.cle]; allerA(uDuPoint(tr, tr.fin)); } },
+    ] },
+    { type: "bascule", id: "etoiles", label: "Étoiles connues", actif: true },
+    { type: "bascule", id: "regions", label: "Régions", actif: true },
+    { type: "bascule", id: "trajet", label: "Trajet complet", actif: true },
+    { type: "bascule", id: "rayons", label: "Rayons constants", actif: false },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [15.5, 2.5, 26], cible: [4.9, 1.6, 0] },
+    { id: "face", label: "Diagramme à plat", pos: [2.6, 0.6, 25], cible: [2.6, 0.6, 0] },
+    { id: "geantes", label: "Géantes et supergéantes", pos: [6.5, 4.6, 11], cible: [4.6, 3.6, 0] },
+    { id: "naines", label: "Naines blanches", pos: [-4.5, -2.6, 12], cible: [-2.6, -1.4, 0] },
+  ],
+  intro: () => `
+    <div class="eyebrow">Lire le diagramme</div>
+    <p>Chaque point est une étoile. À gauche les plus chaudes, bleues ; à droite les plus froides, rouges. En haut les plus lumineuses. La plupart des étoiles sont sur la grande diagonale : la séquence principale. Cliquez sur une étoile, une région ou un axe pour l'expliquer.</p>
+    <div class="eyebrow">La masse décide de la fin</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "Naine rouge (moins de 0,5 M☉) : elle brûle si lentement qu'aucune n'a encore fini sa vie depuis le Big Bang." },
+      { couleur: COULEURS.ambre, texte: "Comme le Soleil (jusqu'à ≈ 8 M☉) : géante rouge, puis nébuleuse planétaire et naine blanche." },
+      { couleur: COULEURS.orange, texte: "Étoile massive (≈ 8 à 20 M☉) : supergéante, supernova, puis étoile à neutrons, souvent un pulsar." },
+      { couleur: COULEURS.corail, texte: "Étoile très massive (au-delà de ≈ 20 à 25 M☉) : supergéante, effondrement, trou noir." },
+    ])}
+    <p class="spec">Les seuils de masse sont approximatifs : les astronomes en discutent encore. Le point suivi ne se déplace pas dans l'espace : c'est l'état de l'étoile qui change avec l'âge.</p>`,
+});
+
+// ---------- Fond du diagramme : grille, graduations, types spectraux (texture) ----------
+const PLAN = { x0: XG - 1.7, x1: XD + 0.5, y0: YB - 1.45, y1: YH + 1.05 };
+const SUP = { "-": "⁻", 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹" };
+const puissance = (k) => (k === 0 ? "1" : "10" + String(k).split("").map((c) => SUP[c]).join(""));
+{
+  const PX = 120, { x0, x1, y0, y1 } = PLAN;
+  const W = Math.round((x1 - x0) * PX), H = Math.round((y1 - y0) * PX);
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const c = cv.getContext("2d");
+  const px = (x) => (x - x0) * PX, py = (y) => (y1 - y) * PX;
+  const u = (v) => v * PX;
+  c.fillStyle = "rgba(9,14,28,0.88)"; c.fillRect(0, 0, W, H);
+  // teinte des températures dans le cadre
+  const g = c.createLinearGradient(px(XG), 0, px(XD), 0);
+  for (let k = 0; k <= 12; k++) g.addColorStop(k / 12, rgba(couleurT(10 ** (LT_MAX - (LT_MAX - LT_MIN) * k / 12)), 0.07));
+  c.fillStyle = g; c.fillRect(px(XG), py(YH), px(XD) - px(XG), py(YB) - py(YH));
+  // lignes de luminosité (une par puissance de 10)
+  c.lineWidth = 2; c.textBaseline = "middle"; c.textAlign = "right";
+  c.font = `${u(0.3)}px Arial`;
+  for (let k = -4; k <= 6; k++) {
+    c.strokeStyle = k === 0 ? "rgba(255,200,97,0.28)" : "rgba(255,255,255,0.08)";
+    c.beginPath(); c.moveTo(px(XG), py(k)); c.lineTo(px(XD), py(k)); c.stroke();
+    c.fillStyle = k === 0 ? css(COULEURS.ambre) : "#c4d0e0";
+    c.fillText(puissance(k), px(XG) - u(0.15), py(k));
+  }
+  // lignes de température
+  c.textAlign = "center"; c.textBaseline = "top";
+  for (const T of [100000, 50000, 30000, 20000, 10000, 7000, 5000, 4000, 3000]) {
+    const x = px(X(lg(T)));
+    c.strokeStyle = "rgba(255,255,255,0.08)";
+    c.beginPath(); c.moveTo(x, py(YH)); c.lineTo(x, py(YB)); c.stroke();
+    c.fillStyle = "#c4d0e0"; c.fillText(fmt(T), x, py(YB) + u(0.15));
+  }
+  // titres des axes
+  c.fillStyle = "#f6f9fd"; c.font = `${u(0.34)}px Arial`;
+  c.fillText("Température de surface (kelvins)", px((XG + XD) / 2), py(YB) + u(0.68));
+  c.font = `${u(0.27)}px Arial`; c.fillStyle = "#8b9ab0";
+  c.textAlign = "left"; c.fillText("← plus chaudes", px(XG), py(YB) + u(0.72));
+  c.textAlign = "right"; c.fillText("plus froides →", px(XD), py(YB) + u(0.72));
+  c.save(); c.translate(px(x0) + u(0.36), py((YB + YH) / 2)); c.rotate(-Math.PI / 2);
+  c.textAlign = "center"; c.textBaseline = "middle"; c.fillStyle = "#f6f9fd"; c.font = `${u(0.34)}px Arial`;
+  c.fillText("Luminosité (Soleil = 1)", 0, 0);
+  c.restore();
+  // types spectraux, au-dessus du cadre
+  const TYPES = [["O", 30000, 158000], ["B", 10000, 30000], ["A", 7500, 10000], ["F", 6000, 7500], ["G", 5200, 6000], ["K", 3700, 5200], ["M", 2500, 3700]];
+  const yb = py(YH) - u(0.14);
+  const gb = c.createLinearGradient(px(XG), 0, px(XD), 0);
+  for (let k = 0; k <= 12; k++) gb.addColorStop(k / 12, rgba(couleurT(10 ** (LT_MAX - (LT_MAX - LT_MIN) * k / 12)), 0.85));
+  c.fillStyle = gb; c.fillRect(px(XG), yb - u(0.06), px(XD) - px(XG), u(0.06));
+  c.textAlign = "center"; c.textBaseline = "bottom"; c.font = `bold ${u(0.38)}px Arial`;
+  for (const [n, a, b] of TYPES) {
+    const xa = px(X(lg(a))), xb = px(X(lg(b)));
+    c.fillStyle = css(couleurT(Math.sqrt(a * b)));
+    c.fillText(n, (xa + xb) / 2, yb - u(0.14));
+    c.fillStyle = "rgba(255,255,255,0.35)"; c.fillRect(xa - 1, yb - u(0.16), 2, u(0.16));
+  }
+  c.textAlign = "left"; c.font = `${u(0.25)}px Arial`; c.fillStyle = "#8b9ab0";
+  c.fillText("TYPE SPECTRAL", px(XG) + u(0.1), yb - u(0.62));
+  // cadre
+  c.strokeStyle = "rgba(255,255,255,0.3)"; c.lineWidth = 3;
+  c.strokeRect(px(XG), py(YH), px(XD) - px(XG), py(YB) - py(YH));
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = S.renderer.capabilities.getMaxAnisotropy();
+  const plan = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, y1 - y0),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }));
+  plan.position.set((x0 + x1) / 2, (y0 + y1) / 2, 0);
+  S.scene.add(plan);
+}
+
+// ---------- Les axes (zones cliquables sur les titres) ----------
+function zone(part, x0, x1, y0, y1) {
+  const m = S.add(part, mesh(new THREE.PlaneGeometry(x1 - x0, y1 - y0), M.lumineux(COULEURS.accent, 0.001), (x0 + x1) / 2, (y0 + y1) / 2, 0.02));
+  m.renderOrder = 1;
+  return m;
+}
+const axeT = S.part("axeT", "Température", {
+  etiquette: false,
+  texte: "L'axe horizontal donne la température de la surface, qui fixe la couleur de l'étoile : bleue au-dessus de 10 000 K, blanche vers 8 000 K, jaune vers 6 000 K, orange et rouge en dessous. Par tradition, il est inversé : les étoiles chaudes sont à gauche. Les lettres O B A F G K M sont les types spectraux correspondants.",
+  chiffres: "Échelle logarithmique · de 2 500 K à 150 000 K · Soleil : 5 772 K",
+});
+const axeL = S.part("axeL", "Luminosité", {
+  etiquette: false,
+  texte: "L'axe vertical donne toute l'énergie émise par l'étoile, comparée à celle du Soleil. L'échelle est logarithmique : chaque ligne multiplie par 10. Une supergéante brille un milliard de fois plus qu'une petite naine rouge.",
+  chiffres: "De 1/30 000 à 1 million de fois le Soleil · L = 4πR²σT⁴ : à température égale, une étoile plus lumineuse est plus grande",
+});
+const zonesAxes = [zone(axeT, XG, XD, PLAN.y0 + 0.05, YB - 0.05), zone(axeL, PLAN.x0 + 0.05, XG - 0.05, YB, YH),
+  zone(axeT, XG, XD, YH + 0.05, PLAN.y1 - 0.05)];
+
+// ---------- Les régions du diagramme ----------
+const regionsGrp = new THREE.Group(); S.scene.add(regionsGrp);
+const forme = (pts) => {
+  const s = new THREE.Shape();
+  pts.forEach(([lt, ll], i) => (i ? s.lineTo(X(lt), Y(ll)) : s.moveTo(X(lt), Y(ll))));
+  s.closePath();
+  return s;
+};
+const SP_CENTRE = [[4.62, 5.5], [4.48, 4.35], [4.255, 3.0], [4.08, 2.2], [3.987, 1.55], [3.857, 0.7], [3.761, 0.0], [3.724, -0.35], [3.643, -0.8], [3.585, -1.15], [3.531, -1.8], [3.491, -2.5], [3.415, -3.5]];
+const lgR = (R) => 2 * lg(R);
+const bordNB = (R, lt) => [lt, lgR(R) + 4 * (lt - lg(T_SOLEIL))];
+const REGIONS = [
+  { id: "reg-sp", nom: "Séquence principale", ancre: [-3.0, 5.1, 0.05],
+    pts: [...SP_CENTRE.map(([lt, ll]) => [lt, ll + 0.55]), ...SP_CENTRE.slice().reverse().map(([lt, ll]) => [lt, ll - 0.4])],
+    texte: "La bande où les étoiles passent environ 90 % de leur vie, à fusionner l'hydrogène dans leur cœur. Leur place y dépend surtout de leur masse : en haut à gauche les étoiles massives, chaudes et brillantes, en bas à droite les petites naines rouges. Le Soleil est au milieu.",
+    chiffres: "De ≈ 0,08 M☉ (2 500 K, 1/10 000 L☉) à ≈ 100 M☉ (50 000 K, ≈ 1 million de L☉)" },
+  { id: "reg-geantes", nom: "Géantes rouges", ancre: [7.0, 3.45, 0.05],
+    pts: [[3.74, 0.9], [3.70, 1.4], [3.62, 1.9], [3.53, 2.6], [3.50, 3.3], [3.56, 3.5], [3.64, 2.9], [3.72, 2.2], [3.78, 1.6], [3.80, 0.9]],
+    texte: "Des étoiles comme le Soleil en fin de vie. L'hydrogène de leur cœur est épuisé : le cœur se contracte et chauffe, tandis que l'enveloppe gonfle et refroidit. Grosses et rouges, elles sont très lumineuses.",
+    chiffres: "≈ 3 500 à 5 000 K · 50 à 3 000 L☉ · 10 à 200 R☉" },
+  { id: "reg-superg", nom: "Supergéantes", ancre: [-0.6, 5.65, 0.05],
+    pts: [[4.45, 6.0], [3.50, 6.0], [3.50, 4.2], [3.70, 3.6], [3.80, 2.8], [3.95, 3.6], [4.20, 4.4], [4.45, 5.1]],
+    texte: "Les étoiles de plus de 8 masses solaires, après la séquence principale. Leur cœur fusionne des éléments de plus en plus lourds, jusqu'au fer. Elles finissent en supernova.",
+    chiffres: "≈ 1 000 à 1 million de L☉ · 30 à 1 500 R☉ · de 3 500 à 30 000 K" },
+  { id: "reg-naines", nom: "Naines blanches", ancre: [-3.4, -0.35, 0.05],
+    pts: [...[4.9, 4.6, 4.3, 4.0, 3.8, 3.65].map((lt) => bordNB(0.02, lt)), ...[3.65, 3.8, 4.0, 4.3, 4.6, 4.9].map((lt) => bordNB(0.008, lt))]
+      .map(([lt, ll]) => [lt, Math.max(LL_MIN, ll)]),
+    texte: "Ce qui reste du cœur d'une étoile comme le Soleil. Sans fusion, elles brillent de leur seule chaleur et glissent lentement vers le bas à droite en refroidissant. Toutes ont à peu près la taille de la Terre.",
+    chiffres: "≈ 0,6 M☉ dans ≈ 0,01 R☉ (≈ 7 000 km) · au plus 1,4 M☉ (limite de Chandrasekhar)" },
+];
+for (const r of REGIONS) {
+  const p = S.part(r.id, r.nom, { parent: regionsGrp, ancre: r.ancre, texte: r.texte, chiffres: r.chiffres });
+  const shape = forme(r.pts);
+  r.fond = S.add(p, mesh(new THREE.ShapeGeometry(shape), M.lumineux(0xffffff, 0.05), 0, 0, 0.01));
+  r.fond.renderOrder = 1;
+  const bord = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(shape.getPoints().map((v) => new THREE.Vector3(v.x, v.y, 0.015))),
+    new THREE.LineDashedMaterial({ color: 0xc4d0e0, transparent: true, opacity: 0.35, dashSize: 0.15, gapSize: 0.1, depthWrite: false }));
+  bord.computeLineDistances();
+  p.group.add(bord);
+  r.part = p;
+}
+
+// ---------- Droites de rayon constant ----------
+const rayonsGrp = new THREE.Group(); S.scene.add(rayonsGrp);
+for (const [R, txt] of [[0.01, "0,01 R☉"], [0.1, "0,1 R☉"], [1, "1 R☉"], [10, "10 R☉"], [100, "100 R☉"], [1000, "1 000 R☉"]]) {
+  // log L = 2 log R + 4 (log T − log T☉), coupée aux bords du cadre
+  const llDe = (lt) => lgR(R) + 4 * (lt - lg(T_SOLEIL)), ltDe = (ll) => (ll - lgR(R)) / 4 + lg(T_SOLEIL);
+  const ltA = Math.max(LT_MIN, ltDe(LL_MIN)), ltB = Math.min(LT_MAX, ltDe(LL_MAX));
+  if (ltA >= ltB) continue;
+  const A = new THREE.Vector3(X(ltA), Y(llDe(ltA)), 0.02), B = new THREE.Vector3(X(ltB), Y(llDe(ltB)), 0.02);
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([A, B]),
+    new THREE.LineDashedMaterial({ color: 0x7eb4e8, transparent: true, opacity: 0.55, dashSize: 0.25, gapSize: 0.15, depthWrite: false }));
+  l.computeLineDistances();
+  rayonsGrp.add(l);
+  const pos = A.clone().lerp(B, 0.1);
+  S.label(txt, () => pos, { visible: () => S.state.rayons });
+}
+
+// ---------- Les étoiles connues ----------
+const etoilesGrp = new THREE.Group(); S.scene.add(etoilesGrp);
+for (const e of ETOILES) {
+  const x = X(lg(e.T)), y = Y(lg(e.L)), r = tailleBoule(rayonDe(e.T, e.L)), col = couleurT(e.T);
+  const [dx, dy] = e.d || [0, 0];
+  const p = S.part(e.id, e.nom, { parent: etoilesGrp, ancre: [x + dx, y + r + 0.08 + dy, 0.06], texte: e.texte, chiffres: e.chiffres });
+  e.boule = S.add(p, mesh(new THREE.SphereGeometry(r, 24, 16), M.lumineux(col), x, y, 0.06));
+  const h = halo(col, r * 5); h.position.set(x, y, 0.06); h.material.opacity = 0.55;
+  p.group.add(h);
+  e.part = p;
+}
+
+// ---------- Restes stellaires, hors du diagramme ----------
+const ns = S.part("ns", "Étoile à neutrons", {
+  ancre: [POS_NS[0], POS_NS[1] + 0.55, 0],
+  texte: "Le cœur effondré d'une étoile massive : 1,4 fois la masse du Soleil dans une boule de 20 km, faite surtout de neutrons. Elle tourne très vite et émet deux faisceaux : si l'un balaie la Terre, on voit un pulsar, comme un phare. Trop petite et presque invisible en lumière visible, elle n'a pas sa place sur le diagramme.",
+  chiffres: "≈ 1,4 M☉ · ≈ 20 km de diamètre · ≈ 1 million de K en surface · pulsar du Crabe (M1) : 30 tours par seconde",
+});
+const pivotNS = new THREE.Group(); pivotNS.position.set(POS_NS[0], POS_NS[1], 0.1); pivotNS.rotation.z = 0.5;
+ns.group.add(pivotNS);
+S.add(ns, mesh(new THREE.SphereGeometry(0.1, 20, 14), M.lumineux(0xe6eeff), POS_NS[0], POS_NS[1], 0.1));
+{
+  const h = halo(0xcfdcff, 0.8); h.position.set(POS_NS[0], POS_NS[1], 0.1); ns.group.add(h);
+  for (const s of [-1, 1]) {
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.16, 1.3, 20, 1, true), M.lumineux(COULEURS.etoile, 0.3));
+    c.position.y = s * 0.65; c.rotation.z = s > 0 ? Math.PI : 0;
+    pivotNS.add(c);
+  }
+}
+const tn = S.part("tn", "Trou noir", {
+  ancre: [POS_TN[0], POS_TN[1] + 0.6, 0],
+  texte: "Quand le cœur effondré dépasse environ 3 masses solaires, rien n'arrête l'effondrement : il devient un trou noir, dont même la lumière ne peut s'échapper. On le repère grâce à la matière qui tombe vers lui et chauffe dans un disque. Il n'émet pas de lumière propre : il n'a pas de place sur le diagramme.",
+  chiffres: "Pour 10 M☉ : horizon de ≈ 30 km de rayon · Cygnus X-1 : 21 M☉, à ≈ 7 200 années-lumière, dans le Cygne",
+});
+S.add(tn, mesh(new THREE.SphereGeometry(0.2, 24, 16), M.lumineux(0x000000), POS_TN[0], POS_TN[1], 0.1));
+const disqueTN = S.add(tn, mesh(new THREE.RingGeometry(0.28, 0.7, 48), M.lumineux(COULEURS.orange, 0.55), POS_TN[0], POS_TN[1], 0.1));
+disqueTN.rotation.x = -1.2;
+{ const h = halo(COULEURS.ambre, 1.0); h.position.set(POS_TN[0], POS_TN[1], 0.05); h.material.opacity = 0.5; tn.group.add(h); }
+
+// ---------- L'étoile suivie ----------
+const suivie = S.part("suivie", "Étoile suivie", {
+  etiquette: false,
+  texte: "Le point qui se déplace représente une seule étoile à différents âges : ce n'est pas un mouvement dans l'espace, c'est son état qui change. Le temps de l'animation n'est pas régulier : chaque phase dure quelques secondes à l'écran, alors que les vraies durées vont de quelques secondes à des milliers de milliards d'années.",
+  chiffres: "Trajets arrondis d'après les modèles d'évolution des étoiles · le détail de la phase en cours est dans l'encart",
+});
+const boule = S.add(suivie, mesh(new THREE.SphereGeometry(1, 32, 20), M.lumineux(0xffffff), 0, 0, 0.14));
+const haloSuivie = halo(0xffffff, 1); suivie.group.add(haloSuivie);
+const anneau = new THREE.Mesh(new THREE.RingGeometry(1.15, 1.3, 48), M.lumineux(0xffffff, 0.8));
+suivie.group.add(anneau);
+const eclair = halo(COULEURS.etoile, 1); eclair.visible = false; S.scene.add(eclair);
+const nebuleuse = new THREE.Group(); S.scene.add(nebuleuse);
+nebuleuse.add(new THREE.Mesh(new THREE.RingGeometry(0.62, 1.0, 64), M.lumineux(COULEURS.corail, 0.35)));
+nebuleuse.add(new THREE.Mesh(new THREE.RingGeometry(0.3, 0.62, 64), M.lumineux(COULEURS.froid, 0.3)));
+const lblPhase = S.label("", () => new THREE.Vector3(boule.position.x, boule.position.y - boule.scale.x * 1.4 - 0.5, 0.2),
+  { lumiere: true, visible: () => boule.visible || sim.etat?.ph === "sn" });
+
+// trajet : complet (pointillés) et parcouru (trait plein)
+const MAXV = 800;
+const geoComplet = new THREE.BufferGeometry(); geoComplet.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAXV * 3), 3));
+const geoParcouru = new THREE.BufferGeometry(); geoParcouru.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAXV * 3), 3));
+const ligneComplete = new THREE.Line(geoComplet, new THREE.LineDashedMaterial({ transparent: true, opacity: 0.45, dashSize: 0.16, gapSize: 0.12, depthWrite: false }));
+const ligneParcourue = new THREE.Line(geoParcouru, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.95, depthWrite: false }));
+for (const l of [ligneComplete, ligneParcourue]) { l.frustumCulled = false; l.renderOrder = 2; S.scene.add(l); }
+let dense = [];
+function construireTrajet(tr) {
+  dense = [];
+  for (let i = 1; i < tr.points.length; i++) {
+    const a = tr.points[i - 1], b = tr.points[i], N = 16;
+    if (b.lt === undefined) break; // le reste (étoile à neutrons, trou noir) n'est pas sur le diagramme
+    for (let k = i === 1 ? 0 : 1; k <= N; k++) {
+      const f = k / N;
+      dense.push({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, u: (tr.cum[i - 1] + f * b.w) / tr.total });
+    }
+  }
+  const p = geoComplet.attributes.position;
+  dense.forEach((d, k) => p.setXYZ(k, d.x, d.y, 0.04));
+  p.needsUpdate = true;
+  geoComplet.setDrawRange(0, dense.length);
+  ligneComplete.computeLineDistances();
+  ligneComplete.material.color.setHex(tr.couleur);
+  ligneParcourue.material.color.setHex(tr.couleur);
+  anneau.material.color.setHex(tr.couleur);
+}
+function majParcouru(e) {
+  const p = geoParcouru.attributes.position;
+  let k = 0;
+  while (k < dense.length && dense[k].u <= sim.u) { p.setXYZ(k, dense[k].x, dense[k].y, 0.05); k++; }
+  if (e.b.lt === undefined) { geoParcouru.setDrawRange(0, k); p.needsUpdate = true; return; }
+  p.setXYZ(k, e.x, e.y, 0.05);
+  p.needsUpdate = true;
+  geoParcouru.setDrawRange(0, k + 1);
+}
+
+function choisir(cle) {
+  sim.cle = cle; sim.anim = null; sim.pause = 0;
+  sim.u = cle === "soleil" ? uDuPoint(TRAJETS.soleil, 1) : 0;
+  for (const [c] of BOUTONS_ETOILE) document.getElementById("r-e-" + c)?.setAttribute("aria-pressed", String(c === cle));
+  const auj = document.getElementById("r-a-auj"); if (auj) auj.hidden = cle !== "soleil";
+  construireTrajet(TRAJETS[cle]);
+  affiche = null;
+  legendePrec = "";
+}
+
+// ---------- Encart : l'étoile à cet instant ----------
+const ap = S.apercu;
+let legendePrec = "";
+const rnd = alea(17), FILAMENTS = Array.from({ length: 70 }, () => ({ a: rnd() * 2 * Math.PI, r: 0.75 + rnd() * 0.35, l: 0.08 + rnd() * 0.2, c: rnd() < 0.5 ? COULEURS.corail : COULEURS.froid }));
+function boule2D(c, x, y, r, hex, aura = true) {
+  const [R, G, B] = rgb(hex);
+  if (aura) {
+    const h = c.createRadialGradient(x, y, r * 0.8, x, y, r * 1.5 + 8);
+    h.addColorStop(0, `rgba(${R},${G},${B},0.35)`); h.addColorStop(1, `rgba(${R},${G},${B},0)`);
+    c.fillStyle = h; c.beginPath(); c.arc(x, y, r * 1.5 + 8, 0, 2 * Math.PI); c.fill();
+  }
+  const g = c.createRadialGradient(x - r * 0.25, y - r * 0.25, 0, x, y, Math.max(r, 0.5));
+  g.addColorStop(0, `rgb(${Math.min(255, R + 40)},${Math.min(255, G + 40)},${Math.min(255, B + 40)})`);
+  g.addColorStop(0.75, `rgb(${R},${G},${B})`);
+  g.addColorStop(1, `rgb(${Math.round(R * 0.7)},${Math.round(G * 0.6)},${Math.round(B * 0.55)})`);
+  c.fillStyle = g; c.beginPath(); c.arc(x, y, Math.max(r, 0.8), 0, 2 * Math.PI); c.fill();
+}
+function coupe(c, x, y, r, couches, hex) {
+  c.save();
+  c.beginPath(); c.moveTo(x, y); c.arc(x, y, r, -Math.PI / 2, 0); c.closePath(); c.clip();
+  const [R, G, B] = rgb(hex);
+  c.fillStyle = `rgb(${Math.round(R * 0.45)},${Math.round(G * 0.38)},${Math.round(B * 0.35)})`;
+  c.fillRect(x, y - r, r, r);
+  for (const k of couches) {
+    c.fillStyle = css(k.c); c.beginPath(); c.arc(x, y, Math.max(2, r * k.f), 0, 2 * Math.PI); c.fill();
+  }
+  c.restore();
+  c.strokeStyle = "rgba(255,255,255,0.55)"; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(x, y - r); c.lineTo(x, y); c.lineTo(x + r, y); c.stroke();
+}
+function texte(c, t, x, y, align = "center", couleur = "rgba(196,208,224,0.9)", taille = 10) {
+  c.font = `${taille}px Arial`; c.fillStyle = couleur; c.textAlign = align; c.textBaseline = "middle"; c.fillText(t, x, y);
+}
+function nebuleuse2D(c, x, y, r, alpha) {
+  c.save(); c.translate(x, y); c.scale(1, 0.8);
+  const g = c.createRadialGradient(0, 0, r * 0.3, 0, 0, r);
+  g.addColorStop(0, rgba(COULEURS.froid, 0)); g.addColorStop(0.5, rgba(COULEURS.froid, 0.4 * alpha));
+  g.addColorStop(0.78, rgba(COULEURS.corail, 0.6 * alpha)); g.addColorStop(1, rgba(COULEURS.corail, 0));
+  c.fillStyle = g; c.beginPath(); c.arc(0, 0, r, 0, 2 * Math.PI); c.fill();
+  c.restore();
+}
+function dessinerEncart(e, time) {
+  const cv = ap.canvas, dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth;
+  if (!W) return;
+  const H = Math.round(W * 0.66);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  }
+  const c = cv.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#04070e"); g.addColorStop(1, "#0c1528");
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  const etroit = W < 280, cx = W / 2, cy = H / 2, Rm = Math.min(W, H) * 0.4;
+  const ph = e.ph;
+
+  if (ph === "sn") {
+    const r = Rm * (0.35 + 0.9 * e.f);
+    const f = c.createRadialGradient(cx, cy, 0, cx, cy, r);
+    f.addColorStop(0, "rgba(255,255,255,1)"); f.addColorStop(0.25, rgba(COULEURS.etoile, 0.95));
+    f.addColorStop(0.55, rgba(COULEURS.ambre, 0.6)); f.addColorStop(0.8, rgba(COULEURS.corail, 0.3)); f.addColorStop(1, rgba(COULEURS.corail, 0));
+    c.fillStyle = f; c.fillRect(0, 0, W, H);
+    texte(c, "≈ 1 milliard de Soleils", cx, H - 14, "center", "#f6f9fd", 11);
+    return;
+  }
+  if (ph === "ns") {
+    const rr = Rm * (0.75 + 0.35 * e.f);
+    c.lineWidth = 1.5;
+    for (const fl of FILAMENTS) {
+      const a = fl.a, r0 = rr * fl.r, r1 = r0 * (1 + fl.l);
+      c.strokeStyle = rgba(fl.c, 0.45 * (1 - 0.4 * e.f));
+      c.beginPath(); c.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0 * 0.85); c.lineTo(cx + Math.cos(a + 0.05) * r1, cy + Math.sin(a + 0.05) * r1 * 0.85); c.stroke();
+    }
+    const ang = time * 2 * Math.PI * 0.4;
+    for (const s of [0, Math.PI]) {
+      const a = ang + s, L = Rm * 1.15, d = 0.14;
+      const gb = c.createLinearGradient(cx, cy, cx + Math.cos(a) * L, cy + Math.sin(a) * L);
+      gb.addColorStop(0, "rgba(255,255,255,0.75)"); gb.addColorStop(1, "rgba(207,220,255,0)");
+      c.fillStyle = gb; c.beginPath(); c.moveTo(cx, cy);
+      c.lineTo(cx + Math.cos(a - d) * L, cy + Math.sin(a - d) * L); c.lineTo(cx + Math.cos(a + d) * L, cy + Math.sin(a + d) * L); c.closePath(); c.fill();
+    }
+    boule2D(c, cx, cy, 4, 0xe6eeff);
+    if (!etroit) {
+      texte(c, "débris de l'explosion", 10, 14, "left");
+      texte(c, "faisceaux ralentis : le pulsar du Crabe fait 30 tours par seconde", cx, H - 12, "center", "rgba(196,208,224,0.8)", 9.5);
+    }
+    return;
+  }
+  if (ph === "tn") {
+    if (e.f < 0.3) { // l'étoile s'effondre
+      const k = 1 - e.f / 0.3;
+      boule2D(c, cx, cy, Math.max(2, Rm * 0.9 * k * k), couleurT(3800));
+      return;
+    }
+    const al = Math.min(1, (e.f - 0.3) / 0.25), rh = Rm * 0.26;
+    c.globalAlpha = al;
+    const disque = (moitie) => {
+      c.save(); c.translate(cx, cy); c.scale(1, 0.26);
+      c.beginPath(); c.rect(-W, moitie < 0 ? -H * 4 : 0, 2 * W, H * 4); c.clip();
+      const gd = c.createRadialGradient(0, 0, rh * 1.3, 0, 0, Rm * 1.05);
+      gd.addColorStop(0, rgba(COULEURS.etoile, 0.95)); gd.addColorStop(0.35, rgba(COULEURS.ambre, 0.8)); gd.addColorStop(0.7, rgba(COULEURS.orange, 0.5)); gd.addColorStop(1, rgba(COULEURS.corail, 0));
+      c.fillStyle = gd; c.beginPath(); c.arc(0, 0, Rm * 1.05, 0, 2 * Math.PI); c.arc(0, 0, rh * 1.3, 0, 2 * Math.PI, true); c.fill();
+      for (let k = 0; k < 5; k++) { // grumeaux chauds qui tournent
+        const a = time * 1.6 + k * 1.26, r = rh * (1.6 + 0.4 * k);
+        c.fillStyle = rgba(COULEURS.etoile, 0.5); c.beginPath(); c.arc(Math.cos(a) * r, Math.sin(a) * r, 5, 0, 2 * Math.PI); c.fill();
+      }
+      c.restore();
+    };
+    disque(-1);
+    // lumière du disque arrière déviée au-dessus du trou noir
+    c.strokeStyle = rgba(COULEURS.ambre, 0.7); c.lineWidth = 3;
+    c.beginPath(); c.ellipse(cx, cy, rh * 1.45, rh * 1.3, 0, Math.PI, 2 * Math.PI); c.stroke();
+    c.fillStyle = "#000"; c.beginPath(); c.arc(cx, cy, rh, 0, 2 * Math.PI); c.fill();
+    c.strokeStyle = rgba(COULEURS.etoile, 0.8); c.lineWidth = 1.2; c.beginPath(); c.arc(cx, cy, rh * 1.04, 0, 2 * Math.PI); c.stroke();
+    disque(1);
+    c.globalAlpha = 1;
+    if (!etroit) {
+      texte(c, "horizon : rien n'en ressort", cx, cy - rh * 1.6 - 6);
+      texte(c, "disque de matière qui tombe", cx + Rm * 0.62, cy + Rm * 0.38);
+    }
+    return;
+  }
+  if (ph === "pagb" || ph === "pn") {
+    const r = ph === "pagb" ? Rm * (0.15 + 0.35 * e.f) : Rm * (0.5 + 0.5 * e.f);
+    nebuleuse2D(c, cx, cy, r, ph === "pagb" ? 0.5 + 0.5 * e.f : 1 - 0.55 * e.f);
+    if (ph === "pagb" && e.f < 0.4) boule2D(c, cx, cy, Rm * 0.45 * (1 - e.f / 0.4) + 3, couleurT(e.T));
+    boule2D(c, cx, cy, 3.5, couleurT(e.T));
+    if (!etroit) {
+      texte(c, "gaz éjecté", cx + r * 0.72, cy - r * 0.72);
+      texte(c, "cœur nu, très chaud", cx, cy + 16);
+      if (ph === "pn") texte(c, "c'est l'aspect de M57, la nébuleuse de la Lyre", cx, H - 12, "center", "rgba(196,208,224,0.8)", 9.5);
+    }
+    return;
+  }
+
+  // étoile entière : taille réelle comparée à une référence, et coupe schématique
+  const R = e.R, hex = couleurT(e.T), couches = PH[ph].couches || [];
+  let x = cx, r;
+  if (R < 0.05) { // naine blanche : comparée à la Terre
+    const ech = Rm * 0.6 / Math.max(R, R_TERRE);
+    x = cx - W * 0.2; r = R * ech;
+    boule2D(c, x, cy, r, hex);
+    const xt = cx + W * 0.22, rt = R_TERRE * ech;
+    const gt = c.createRadialGradient(xt - rt * 0.3, cy - rt * 0.3, 0, xt, cy, rt);
+    gt.addColorStop(0, "#8fc0ea"); gt.addColorStop(1, "#2d5f8f");
+    c.fillStyle = gt; c.beginPath(); c.arc(xt, cy, rt, 0, 2 * Math.PI); c.fill();
+    texte(c, "Terre", xt, cy + rt + 12);
+    texte(c, ph === "nbhe" ? "naine blanche d'hélium" : "naine blanche", x, cy + r + 12);
+  } else if (R < 4) { // comparée au Soleil
+    const ech = Rm * 0.62 / Math.max(R, 1);
+    x = cx - W * 0.2; r = R * ech;
+    boule2D(c, x, cy, r, hex);
+    const xs = cx + W * 0.22, rs = ech;
+    c.setLineDash([3, 3]); c.strokeStyle = rgba(COULEURS.ambre, 0.8); c.lineWidth = 1;
+    c.beginPath(); c.arc(xs, cy, rs, 0, 2 * Math.PI); c.stroke(); c.setLineDash([]);
+    texte(c, "Soleil actuel", xs, cy + rs + 12);
+  } else { // géante : l'étoile au centre, avec le Soleil ou les orbites des planètes à la même échelle
+    const ech = Rm * 0.85 / R;
+    r = R * ech;
+    boule2D(c, x, cy, r, hex);
+    if (R < 60) {
+      const rs = Math.max(1, ech);
+      boule2D(c, 22, H - 30, rs, couleurT(5772), false);
+      texte(c, "Soleil, à la même échelle", 22 + rs + 6, H - 30, "left");
+    } else {
+      c.setLineDash([3, 4]); c.lineWidth = 1;
+      for (const [nom, o] of ORBITES) {
+        const ro = o * ech;
+        if (ro > Math.hypot(W, H) * 0.55) continue;
+        c.strokeStyle = "rgba(196,208,224,0.55)";
+        c.beginPath(); c.arc(cx, cy, ro, 0, 2 * Math.PI); c.stroke();
+        if (!etroit && ro < W * 0.48 && ro > 24) texte(c, nom, cx - ro * 0.94, cy + ro * 0.34 + 2, "center", "rgba(232,238,246,0.95)", 9.5);
+      }
+      c.setLineDash([]);
+      if (!etroit) texte(c, "orbites des planètes, à la même échelle", 8, H - 10, "left", "rgba(196,208,224,0.8)", 9.5);
+    }
+  }
+  if (couches.length && r > 16) {
+    coupe(c, x, cy, r, couches, hex);
+    if (!etroit) {
+      let yl = 12;
+      for (const k of couches.slice().reverse()) {
+        c.fillStyle = css(k.c); c.beginPath(); c.arc(12, yl, 4, 0, 2 * Math.PI); c.fill();
+        texte(c, k.n, 21, yl, "left", "rgba(232,238,246,0.95)", 9.5);
+        yl += 14;
+      }
+      texte(c, "coupe schématique, cœur agrandi", W - 8, H - 10, "right", "rgba(139,154,176,0.9)", 9);
+    }
+  }
+}
+function legendeEncart(e) {
+  const tr = TRAJETS[sim.cle], ph = PH[e.ph];
+  let chiffres;
+  if (e.ph === "sn") chiffres = `${fmtAge(e.t)} · ≈ 1 milliard de L☉ pendant quelques semaines`;
+  else if (e.ph === "ns") chiffres = `≈ 1,4 M☉ · ≈ 20 km de diamètre · ≈ 1 million de K, rayonne surtout en X`;
+  else if (e.ph === "tn") chiffres = `≈ 10 M☉ · horizon de ≈ 30 km de rayon · aucune lumière propre`;
+  else chiffres = `${fmtAge(e.t)} · ${fmtNb(e.T)} K · ${fmtNb(e.L)} L☉ · ${fmtNb(e.R)} R☉`;
+  const t = tr.aujourdhui !== undefined && Math.abs(e.t - tr.points[tr.aujourdhui].t) < 5e7 ? " (aujourd'hui)" : "";
+  return `<h2>${ph.nom}${t}</h2><p class="spec">${chiffres}</p><p>${ph.texte}</p><p class="spec">Durée de cette phase : ${tr.durees[e.ph]}</p>`;
+}
+
+// ---------- Animation ----------
+let affiche = null, tPrec = 0;
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+function recaler() {
+  const v = Math.round(sim.u * 1000);
+  if (v === affiche) return;
+  affiche = v; pilote = true; S.regler("age", v); pilote = false;
+}
+S.onFrame(({ dt, time }) => {
+  const dtt = time - tPrec; tPrec = time;
+  if (sim.anim) {
+    sim.anim.t = S.reduced ? 1 : Math.min(1, sim.anim.t + dt / 1.4);
+    sim.u = sim.anim.de + (sim.anim.vers - sim.anim.de) * ease(sim.anim.t);
+    if (sim.anim.t >= 1) sim.anim = null;
+  } else if (dtt > 0) {
+    if (sim.u >= 1) { sim.pause += dtt; if (sim.pause > 8) { sim.u = 0; sim.pause = 0; } }
+    else sim.u = Math.min(1, sim.u + dtt / DUREE_VIE);
+  }
+  recaler();
+  const tr = TRAJETS[sim.cle], e = etatA(tr, sim.u);
+  sim.etat = e;
+
+  // étoile suivie
+  const horsDiagramme = e.ph === "ns" || e.ph === "tn" || e.ph === "sn";
+  boule.visible = anneau.visible = haloSuivie.visible = !horsDiagramme;
+  if (!horsDiagramme) {
+    const col = couleurT(e.T), s = tailleBoule(e.R) * 1.25;
+    boule.material.color.setHex(col);
+    boule.position.set(e.x, e.y, 0.14); boule.scale.setScalar(s);
+    anneau.position.set(e.x, e.y, 0.15); anneau.scale.setScalar(s);
+    haloSuivie.material.color.setHex(col); haloSuivie.position.set(e.x, e.y, 0.14); haloSuivie.scale.setScalar(s * 7);
+  } else boule.position.set(e.x, Math.min(e.y, YH + 0.4), 0.14);
+  // éclair de la supernova
+  eclair.visible = e.ph === "sn" || (e.ph === "ns" && e.f < 0.25);
+  if (eclair.visible) {
+    const sn = tr.points.find((p) => p.ph === "sn");
+    const k = e.ph === "sn" ? e.f : 1 - e.f / 0.25;
+    eclair.position.set(sn.x, YH + 0.2, 0.3);
+    eclair.scale.setScalar(1 + 7 * k);
+    eclair.material.opacity = 0.35 + 0.65 * k;
+  }
+  // nébuleuse planétaire autour du cœur nu
+  nebuleuse.visible = e.ph === "pagb" || e.ph === "pn";
+  if (nebuleuse.visible) {
+    nebuleuse.position.set(e.x, e.y, 0.1);
+    nebuleuse.scale.setScalar(e.ph === "pagb" ? 0.2 + 0.4 * e.f : 0.6 + 0.6 * e.f);
+    for (const m of nebuleuse.children) m.material.opacity = (m === nebuleuse.children[0] ? 0.35 : 0.3) * (e.ph === "pn" ? 1 - 0.6 * e.f : 1);
+  }
+  ns.group.visible = e.ph === "ns";
+  tn.group.visible = e.ph === "tn" && e.f > 0.3;
+  pivotNS.rotation.y = time * 2 * Math.PI * 0.4;
+  disqueTN.rotation.z = time * 0.8;
+
+  const nom = PH[e.ph].nom;
+  if (lblPhase.el.textContent !== nom) lblPhase.el.textContent = nom;
+  majParcouru(e);
+  ligneComplete.visible = S.state.trajet;
+
+  // affichages
+  etoilesGrp.visible = S.state.etoiles;
+  regionsGrp.visible = S.state.regions;
+  rayonsGrp.visible = S.state.rayons;
+  for (const r of REGIONS) {
+    const on = S.state.selected === r.id ? 2 : S.state.hovered === r.id ? 1 : 0;
+    r.fond.material.color.setHex(on ? COULEURS.accent : 0xffffff);
+    r.fond.material.opacity = [0.05, 0.12, 0.18][on];
+  }
+  for (const z of zonesAxes) {
+    const id = z.userData.partId, on = S.state.selected === id ? 2 : S.state.hovered === id ? 1 : 0;
+    z.material.opacity = [0.001, 0.08, 0.12][on];
+  }
+  for (const et of ETOILES) et.boule.scale.setScalar(S.state.selected === et.id || S.state.hovered === et.id ? 1.5 : 1);
+
+  dessinerEncart(e, time);
+  const html = legendeEncart(e);
+  if (html !== legendePrec) { ap.legende.innerHTML = html; legendePrec = html; }
+});
+
+S.start();
+choisir("soleil");
+</script>
+</body>
+</html>
