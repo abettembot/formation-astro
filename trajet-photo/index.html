@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trajet optique d'une photo</title>
+<meta name="description" content="Schéma 3D interactif du train photo d'une lunette 80/480 avec réducteur ×0,8 : bague T, allonges, roue à filtres, boîtier, filtres et calcul du tirage de 55 mm.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, mesh, legende, faisceau, halo, lentille, objectifLunette, vuesRondes, pupille, champEtoiles } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 10 mm, à l'échelle réelle ----------
+// Axe optique selon X. Le capteur est près de l'origine, l'objectif vers +X.
+// Réducteur ×0,8 (lentille mince de focale 275 mm) : placé 68,75 mm avant le foyer de la lunette,
+// il forme l'image 55 mm derrière sa face arrière. 480 mm → 384 mm, f/6 → f/4,8.
+const U = 0.1;                       // mm → unités
+const TIRAGE = 55;                   // tirage du réducteur (mm)
+const XR = TIRAGE * U;               // face arrière du réducteur (filetage M48)
+const XL = XR + 1.0;                 // lentilles du réducteur
+const XF0 = XR - 6.875;              // foyer de la lunette seule
+const XO = XF0 + 48;                 // objectif (focale 480 mm)
+const R = 4.0, RT = 4.5;             // objectif Ø 80 mm, tube Ø 90 mm
+const N_VERRE = 1.52, E_FILTRE = 2;  // filtre : verre de 2 mm
+const DECALAGE = E_FILTRE * (N_VERRE - 1) / N_VERRE; // ≈ 0,68 mm
+const ARCSEC = 206264.8, F_RED = 384, N_RED = 4.8;
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+const v = (x, d = 1) => x.toFixed(d).replace(".", ",");
+const mm = (x) => (Math.abs(x - Math.round(x)) < 0.01 ? String(Math.round(x)) : v(x));
+const signe = (x, d = 1) => (x > 0.04 ? "+" : x < -0.04 ? "−" : "") + v(Math.abs(x), d);
+
+// ---------- Les montages (longueurs optiques réelles, en mm) ----------
+const BAGUE_T = (marque, mm, baionnette, texte) => ({
+  type: "bagueT", nom: `Bague T ${marque}`, mm, r: 2.9,
+  texte, chiffres: `Longueur ${v(mm, 1)} mm · côté réducteur M48 ou T2 (M42 × 0,75) · côté boîtier baïonnette ${baionnette}`,
+});
+const ALLONGE_16 = { type: "allonge", nom: "Allonge M48 → M42", mm: 16.5, r: 2.7,
+  texte: "Tube vide qui allonge le train et passe du filetage M48 du réducteur au filetage T2 (M42) de la caméra. Seule sa longueur compte : elle n'a aucune optique.",
+  chiffres: "16,5 mm · M48 × 0,75 / M42 × 0,75 · livrée avec la caméra" };
+const MONTAGES = {
+  canon: {
+    bouton: "Reflex Canon EF", nom: "Reflex Canon EF",
+    pieces: [BAGUE_T("Canon EF", 11, "EF",
+      "Elle relie le filetage du réducteur à la baïonnette de l'appareil photo, sans optique. Sa longueur est calculée pour que bague + boîtier = 55 mm. Attention aux bagues bon marché plus courtes (9,8 mm au lieu de 11) : il manque alors 1,2 mm.")],
+    boitier: { type: "reflex", nom: "Boîtier Canon EF", mm: 44,
+      texte: "Appareil photo reflex sans son objectif. Le tirage du boîtier, distance entre sa baïonnette et le capteur, est fixé par la marque. Un reflex garde de la place pour son miroir, relevé pendant la pose : 44 mm chez Canon. On ne peut pas le changer, on l'additionne.",
+      chiffres: "Tirage du boîtier 44 mm · capteur APS-C 22,3 × 14,9 mm (EOS 2000D, 250D…)" },
+  },
+  nikon: {
+    bouton: "Reflex Nikon F", nom: "Reflex Nikon F",
+    pieces: [BAGUE_T("Nikon F", 8.5, "F",
+      "Même rôle que pour Canon, mais le boîtier Nikon est plus profond : sa bague T est plus courte. Bague + boîtier = 55 mm, là encore. Une bague T se choisit donc selon la marque du boîtier.")],
+    boitier: { type: "reflex", nom: "Boîtier Nikon F", mm: 46.5,
+      texte: "Reflex Nikon sans son objectif. Sa baïonnette est à 46,5 mm du capteur, 2,5 mm de plus que chez Canon : c'est sa bague T qui rattrape la différence.",
+      chiffres: "Tirage du boîtier 46,5 mm · capteur APS-C 23,5 × 15,6 mm (D5300, D7500…)" },
+  },
+  hybride: {
+    bouton: "Hybride Canon RF", nom: "Hybride Canon RF",
+    pieces: [BAGUE_T("Canon RF", 35, "RF",
+      "Un hybride n'a plus de miroir : sa baïonnette est tout près du capteur. La bague T devient un long tube de 35 mm qui comble la différence. Même principe pour Sony E et Canon EF-M (boîtier 18 mm, bague 37 mm).")],
+    boitier: { type: "hybride", nom: "Boîtier hybride Canon RF", mm: 20,
+      texte: "Appareil hybride, sans miroir. Sa baïonnette est à 20 mm seulement du capteur. Le boîtier est plus mince, mais le tirage total à respecter ne change pas : 55 mm.",
+      chiffres: "Tirage du boîtier 20 mm · capteur APS-C ou plein format selon le modèle" },
+  },
+  astro: {
+    bouton: "Caméra astro", nom: "Caméra astro refroidie",
+    pieces: [ALLONGE_16, { type: "allonge", nom: "Allonge M42", mm: 21, r: 2.7,
+      texte: "Deuxième allonge livrée avec la caméra : 17,5 + 16,5 + 21 = 55 mm. C'est elle qu'on retire pour faire de la place à une roue à filtres.",
+      chiffres: "21 mm · M42 × 0,75 des deux côtés · livrée avec la caméra" }],
+    boitier: { type: "camera", nom: "Caméra astro", mm: 17.5,
+      texte: "Caméra astro refroidie, comme l'ASI2600MC Pro, très répandue dans les clubs. Son tirage propre, de la face avant au capteur, est très court : 17,5 mm. Les allonges livrées avec elle complètent jusqu'à 55 mm, ou laissent la place à une roue à filtres.",
+      chiffres: "Tirage de la caméra 17,5 mm · capteur APS-C 23,5 × 15,7 mm · pixels 3,76 µm" },
+  },
+  roue: {
+    bouton: "Caméra + roue à filtres", nom: "Caméra astro et roue à filtres",
+    pieces: [ALLONGE_16, { type: "allonge", nom: "Bague T2-T2", mm: 2, r: 2.7,
+      texte: "Fine bague d'adaptation, livrée avec la roue à filtres. Elle complète le montage.",
+      chiffres: "2 mm · M42 × 0,75 des deux côtés" },
+    { type: "roue", nom: "Roue à filtres", mm: 20, r: 7,
+      texte: "Roue motorisée qui porte plusieurs filtres et les place tour à tour devant le capteur, sans démonter le train. Elle occupe 20 mm. La chaîne fait alors 56 mm, et non 55 : le millimètre de plus est prévu pour le filtre, qui repousse le foyer d'environ 0,7 mm.",
+      chiffres: "Épaisseur optique 20 mm · 7 filtres de 36 mm (type EFW 7 × 36) · chaîne totale 56 mm" }],
+    boitier: { type: "camera", nom: "Caméra astro", mm: 17.5,
+      texte: "La même caméra : son tirage reste 17,5 mm. On a retiré l'allonge de 21 mm pour loger la roue à filtres (20 mm) et sa bague de 2 mm.",
+      chiffres: "Tirage de la caméra 17,5 mm · 17,5 + 20 + 2 + 16,5 = 56 mm" },
+  },
+};
+let montage = "canon", cales = 0;
+
+// ---------- Calcul du tirage ----------
+function bilan() {
+  const m = MONTAGES[montage], filtre = S.state.filtre;
+  const meca = m.pieces.reduce((s, p) => s + p.mm, 0) + m.boitier.mm + cales;
+  const cible = TIRAGE + (filtre ? DECALAGE : 0);
+  return { m, filtre, meca, cible, ecart: meca - cible };
+}
+
+const S = createSchema({
+  surtitre: "Support de formation · Astrophoto",
+  titre: "Trajet optique d'une photo",
+  sousTitre: "Exemple : lunette 80/480 · réducteur ×0,8 · tirage 55 mm",
+  eclate: true,
+  apercu: [{ titre: "Budget de tirage" }, { titre: "Sur la photo" }],
+  commandes: [
+    { type: "raccourcis", id: "montages", label: "Appareil", boutons: Object.entries(MONTAGES).map(([id, o]) => ({ id: "m-" + id, label: o.bouton, onClick: () => choisir(id) })) },
+    { type: "bascule", id: "filtre", label: "Filtre", actif: false, onChange: () => maj() },
+    { type: "curseur", id: "cales", label: "Cales", min: 0, max: 2, pas: 0.1, valeur: 0, retour: "Sans cale",
+      format: (x) => `${v(x)} mm`, onInput: (x) => { cales = x; maj(); } },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true },
+    { type: "bascule", id: "coupe", label: "Train en coupe", actif: true, onChange: () => maj() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [-20, 12, 30], cible: [7, -0.5, 0] },
+    { id: "train", label: "Train photo", pos: [2.5, 0.6, 40], cible: [2.5, -0.5, 0], fov: 32 },
+    { id: "profil", label: "Lunette entière", pos: [24, 3, 72], cible: [22, 0, 0] },
+    { id: "capteur", label: "Au capteur", pos: () => [xCapteur() + 5.5, 2.2, 6.5], cible: () => [xCapteur(), 0, 0], fov: 30, exacte: true },
+  ],
+  intro: () => {
+    const b = bilan();
+    return `
+    <div class="eyebrow">Le trajet de la lumière</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile entre dans la lunette et traverse l'objectif." },
+      { couleur: SEG[1], texte: "L'objectif la fait converger vers son foyer, 480 mm plus loin, en un cône étroit (f/6)." },
+      { couleur: SEG[2], texte: "Le réducteur, au bout du porte-oculaire, resserre le cône (f/4,8) et rend le champ plat. Son foyer se forme 55 mm derrière sa face arrière : c'est son tirage." },
+      { couleur: SEG[3], texte: "Un filtre de verre placé dans le cône repousse le foyer d'environ un tiers de son épaisseur." },
+    ])}
+    <p>Entre le réducteur et le capteur, chaque pièce occupe une partie des 55 mm : bague T, allonges, roue à filtres et boîtier. On additionne leurs longueurs, données par les fabricants, et l'on complète avec des cales.</p>
+    <p><strong>${b.m.nom}.</strong> ${detailCalcul(b)} → écart ${signe(b.ecart)} mm.</p>
+    <p class="spec">La mise au point ne corrige pas un tirage faux : le porte-oculaire déplace tout le train, réducteur compris. Le centre devient net, mais les coins restent déformés.</p>`;
+  },
+});
+const sousTitre = document.querySelector("#panel header p");
+const xCapteur = () => XR - bilan().meca * U;
+
+function detailCalcul(b) {
+  const termes = [...(cales > 0 ? [`${v(cales)} (cales)`] : []), ...b.m.pieces.map((p) => mm(p.mm)), `${mm(b.m.boitier.mm)} (boîtier)`];
+  return `${termes.join(" + ")} = ${v(b.meca)} mm${b.filtre ? `, pour ${v(b.cible)} mm visés avec le filtre` : ", pour 55 mm visés"}`;
+}
+
+// ---------- Éléments ----------
+const lunette = S.part("lunette", "Lunette 80/480", {
+  ancre: [XO - 6, RT + 0.3, 0],
+  texte: "Lunette apochromatique de 80 mm de diamètre. Seule, elle forme l'image au foyer de son objectif, 480 mm derrière lui. En photo, c'est le réducteur placé au bout du porte-oculaire qui fixe où le capteur doit se trouver.",
+  chiffres: "D = 80 mm · F = 480 mm · f/6 · avec le réducteur : 384 mm à f/4,8",
+});
+const porte = S.part("porte", "Porte-oculaire", {
+  eclate: [1.5, 0, 0],
+  texte: "Il porte tout le train photo et sert à faire la mise au point : il avance ou recule l'ensemble, réducteur compris. La distance entre le réducteur et le capteur ne change donc pas : la mise au point ne rattrape pas une erreur de tirage.",
+  chiffres: "Coulant 2″ · molette démultipliée 1:10 · doit tenir 1 à 2 kg sans glisser",
+});
+const reducteur = S.part("reducteur", "Réducteur ×0,8", {
+  eclate: [0, 0, 0],
+  texte: "Groupe de lentilles glissé dans le porte-oculaire. Il raccourcit la focale de 20 % et rend le champ plat. Le fabricant indique son tirage : la distance entre sa face arrière filetée et le capteur. Tout le train photo se calcule à partir de cette valeur.",
+  chiffres: "480 → 384 mm · f/6 → f/4,8 · tirage 55 mm · filetage arrière M48 × 0,75",
+});
+const calesP = S.part("cales", "Cales", { etiquette: false,
+  texte: "Fines bagues calibrées, ou bague de longueur réglable, que l'on ajoute pour ajuster le tirage au dixième de millimètre. Elles servent surtout à compenser un filtre, ou une bague un peu courte.",
+  chiffres: "Jeux de cales de 0,1 à 1 mm · filetage M48 ou T2",
+});
+const pieces = [0, 1, 2].map((i) => S.part("piece" + i, "", { etiquette: false }));
+const filtreP = S.part("filtre", "Filtre", { etiquette: false,
+  texte: "Filtre d'imagerie (anti-pollution, Hα, OIII…) : une lame de verre traitée. Placé dans le cône de lumière qui converge, il repousse le foyer d'environ un tiers de son épaisseur. On ajoute donc ce tiers au tirage, avec des cales.",
+  chiffres: `Verre de ${E_FILTRE} mm · indice n ≈ 1,52 · décalage = e × (n − 1) / n ≈ ${v(DECALAGE, 2)} mm`,
+});
+const boitier = S.part("boitier", "", { etiquette: false });
+
+const lblCales = S.label("", () => calesP.group.localToWorld(calesP.ancre.clone()), { partId: "cales", visible: () => calesP.group.children.length > 0 });
+const lblPieces = pieces.map((p) => S.label("", () => p.group.localToWorld(p.ancre.clone()), { partId: p.id, visible: () => p.group.children.length > 0 }));
+const lblFiltre = S.label("Filtre", () => filtreP.group.localToWorld(filtreP.ancre.clone()), { partId: "filtre", visible: () => filtreP.group.children.length > 0 });
+const lblBoitier = S.label("", () => boitier.group.localToWorld(boitier.ancre.clone()), { partId: "boitier" });
+
+// ---------- Fabriques de formes (axe X, coupe = demi-pièce côté z < 0) ----------
+const ouvert = (m) => { m.side = THREE.DoubleSide; return m; };
+const phi = (coupe) => (coupe ? [Math.PI / 2, Math.PI] : [0, 2 * Math.PI]);
+/** Tube épais (anneau) de rIn à rOut, de x0 à x1. */
+function anneau(rIn, rOut, x0, x1, mat, coupe) {
+  const pts = [[rIn, x0], [rOut, x0], [rOut, x1], [rIn, x1], [rIn, x0]].map(([r, x]) => new THREE.Vector2(r, x));
+  return mesh(axeX(new THREE.LatheGeometry(pts, 64, ...phi(coupe))), ouvert(mat));
+}
+function disque(r, x, mat, coupe, rIn = 0) {
+  const g = coupe ? new THREE.RingGeometry(rIn, r, 64, 1, -Math.PI / 2, Math.PI) : new THREE.RingGeometry(rIn, r, 64);
+  return mesh(g.rotateY(Math.PI / 2), ouvert(mat), x);
+}
+/** Boîte de x0 à x1, y0 à y1, z0 à z1, coupée à z = 0 si besoin. */
+function boite(x0, x1, y0, y1, z0, z1, mat, coupe) {
+  if (coupe) z1 = Math.min(z1, 0);
+  if (z1 <= z0) return null;
+  return mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+}
+const ajouter = (p, m) => m && S.add(p, m);
+const filet = (p, r, x0, x1) => { // stries d'un filetage ou d'une bague moletée
+  const n = Math.max(2, Math.round((x1 - x0) / 0.15));
+  for (let i = 0; i <= n; i++) S.add(p, mesh(axeX(new THREE.TorusGeometry(r, 0.025, 6, 48).rotateX(Math.PI / 2)), M.alu(), x0 + (x1 - x0) * i / n));
+};
+
+// ---------- Lunette et porte-oculaire (fixes) ----------
+function construireLunette(coupe) {
+  S.viderElement(lunette); S.viderElement(porte); S.viderElement(reducteur);
+  const XB = XR + 15;                                   // arrière du tube
+  const cylOuvert = (r, x0, x1, mat) => mesh(axeX(new THREE.CylinderGeometry(r, r, x1 - x0, 72, 1, true, ...phi(coupe))), mat, (x0 + x1) / 2);
+  S.add(lunette, cylOuvert(RT, XB, XO - 0.6, M.peinture()));
+  S.add(lunette, cylOuvert(RT - 0.03, XB, XO - 0.6, M.flocage()));
+  ajouter(lunette, anneau(RT + 0.05, RT + 0.3, XO - 2.5, XO + 11, M.noir(), coupe)); // pare-buée
+  ajouter(lunette, anneau(R + 0.05, RT, XO - 0.6, XO + 0.6, M.noir(), coupe));        // barillet
+  ajouter(lunette, disque(RT, XB, M.noir(), coupe, 3.25));
+  for (const l of objectifLunette("apo", R, XO)) S.add(lunette, lentille(R, l.xv, l.t, l.sf, l.sb));
+  // collier et queue d'aronde
+  ajouter(lunette, anneau(RT, RT + 0.25, XO - 22, XO - 19, M.noir(), coupe));
+  ajouter(lunette, anneau(RT, RT + 0.25, XO - 12, XO - 9, M.noir(), coupe));
+  ajouter(lunette, boite(XO - 23, XO - 8, -RT - 0.9, -RT - 0.15, -0.9, 0.9, M.alu(), coupe));
+
+  // porte-oculaire : embase, coulant, molettes
+  const XD = XR + 3.2;                                  // bout du coulant
+  porte.ancre.set(XB - 1.5, 4.6, 0);
+  ajouter(porte, anneau(3.25, 4.0, XB - 4, XB, M.noir(), coupe));
+  ajouter(porte, anneau(2.95, 3.2, XD, XB + 1, M.noir(), coupe));
+  ajouter(porte, boite(XB - 3.6, XB - 0.6, -4.6, -3.9, -2.2, 2.2, M.noir(), false));
+  S.add(porte, mesh(new THREE.CylinderGeometry(0.18, 0.18, 7, 16).rotateX(Math.PI / 2), M.alu(), XB - 2.1, -4.5, 0));
+  for (const s of [-1, 1]) S.add(porte, mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.45, 32).rotateX(Math.PI / 2), M.caoutchouc(), XB - 2.1, -4.5, s * 3.0));
+  S.add(porte, mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.35, 24).rotateX(Math.PI / 2), M.alu(), XB - 2.1, -4.5, 3.4));
+  ajouter(porte, anneau(3.2, 3.55, XD, XD + 0.8, M.noir(), coupe)); // bague de serrage
+
+  // réducteur : corps, coulant 2″ engagé dans le porte-oculaire, lentilles, filetage M48
+  reducteur.ancre.set(XR + 1.4, 3.6, 0);
+  ajouter(reducteur, anneau(2.55, 3.1, XR + 0.3, XR + 3.0, M.noir(), coupe));
+  ajouter(reducteur, anneau(2.4, 2.54, XR + 3.0, XR + 8.0, M.noir(), coupe));
+  ajouter(reducteur, anneau(2.2, 2.4, XR, XR + 0.3, M.alu(), coupe));
+  S.add(reducteur, lentille(2.3, XL + 0.45, 0.4, 0.06, 0.12));
+  S.add(reducteur, lentille(2.3, XL - 0.1, 0.25, -0.1, 0.03));
+}
+
+// ---------- Train photo (reconstruit à chaque changement) ----------
+let xFiltre = null; // position du filtre sur l'axe (pour les rayons)
+function construireTrain(coupe) {
+  const b = bilan(), m = b.m;
+  for (const p of [calesP, ...pieces, filtreP, boitier]) S.viderElement(p);
+  xFiltre = null;
+  let x = XR, rang = 0;
+  const pas = 2.2;                                      // écartement de la vue éclatée
+  // cales, vissées contre le réducteur
+  if (cales > 0) {
+    const x1 = x - cales * U;
+    ajouter(calesP, anneau(2.2, 2.75, x1, x, M.alu(), coupe));
+    calesP.ancre.set((x + x1) / 2, -3.3, 0);
+    calesP.eclate.set(-pas * ++rang, 0, 0);
+    lblCales.el.textContent = `Cales · ${v(cales)} mm`;
+    x = x1;
+  }
+  m.pieces.forEach((pc, i) => {
+    const p = pieces[i], x1 = x - pc.mm * U;
+    p.nom = pc.nom; p.texte = pc.texte; p.chiffres = pc.chiffres;
+    lblPieces[i].el.textContent = `${pc.nom} · ${mm(pc.mm)} mm`;
+    p.eclate.set(-pas * ++rang, 0, 0);
+    if (pc.type === "roue") {
+      const YC = 4.6;                                   // centre de la roue : les filtres tournent autour
+      const cyl = (r, x0, x1, mat) => {
+        const g = coupe ? new THREE.CylinderGeometry(r, r, x0 - x1, 72, 1, false, Math.PI / 2, Math.PI) : new THREE.CylinderGeometry(r, r, x0 - x1, 72);
+        return mesh(axeX(g), ouvert(mat), (x0 + x1) / 2, YC, 0);
+      };
+      S.add(p, cyl(pc.r, x - 0.15, x1 + 0.15, M.noir()));
+      for (const xx of [x - 0.075, x1 + 0.075]) S.add(p, cyl(pc.r + 0.05, xx + 0.075, xx - 0.075, M.alu()));
+      const couleurs = [null, 0xdfe6ee, 0xd8574c, 0x5fbf6a, 0x5c74d8, 0x3fb5ad, 0x8c2a2a]; // emplacement 0 : celui de l'axe
+      couleurs.forEach((c, k) => {
+        if (k === 0) return;
+        const a = -Math.PI / 2 + k * 2 * Math.PI / 7, y = YC + 4.6 * Math.sin(a), z = 4.6 * Math.cos(a);
+        if (coupe && z > 0.1) return;
+        S.add(p, mesh(axeX(new THREE.CylinderGeometry(1.8, 1.8, 0.2, 40)), M.filtre(c), (x + x1) / 2, y, z));
+      });
+      ajouter(p, anneau(2.0, 2.7, x1 - 0.05, x + 0.05, M.alu(), coupe)); // passage de la lumière
+      p.ancre.set((x + x1) / 2, YC + pc.r + 0.2, 0);
+      if (b.filtre) {
+        xFiltre = (x + x1) / 2;
+        S.add(filtreP, mesh(axeX(new THREE.CylinderGeometry(1.8, 1.8, E_FILTRE * U, 40)), M.filtre(0xd8574c), xFiltre));
+        filtreP.ancre.set(xFiltre, 1.4, 0);
+        filtreP.eclate.set(p.eclate.x, -5.5, 0);
+      }
+    } else {
+      const r = pc.r;
+      ajouter(p, anneau(r - 0.4, r, x1, x, M.noir(), coupe));
+      if (pc.type === "allonge" && pc.mm > 5) filet(p, r + 0.01, x1 + 0.15, x1 + 0.6);
+      if (pc.type === "bagueT") ajouter(p, anneau(r - 0.4, 3.35, x1, x1 + 0.35, M.alu(), coupe)); // baïonnette
+      p.ancre.set((x + x1) / 2, -(r + 0.6) - (i % 2) * 1.3, 0);
+    }
+    x = x1;
+  });
+  // filtre 2″ vissé à l'entrée de la première pièce (hors roue)
+  if (b.filtre && xFiltre === null) {
+    xFiltre = XR - (cales * U) - 0.35;
+    ajouter(filtreP, anneau(2.4, 2.65, xFiltre - 0.2, xFiltre + 0.2, M.alu(), coupe));
+    S.add(filtreP, mesh(axeX(new THREE.CylinderGeometry(2.4, 2.4, E_FILTRE * U, 48)), M.filtre(0x7a9ad8), xFiltre));
+    filtreP.ancre.set(xFiltre, 3.4, 0);
+    filtreP.eclate.set(pieces[0].eclate.x, 5, 0);
+  }
+  lblFiltre.el.textContent = `Filtre · verre ${E_FILTRE} mm`;
+
+  // boîtier : de sa face avant (x) au capteur
+  const bt = m.boitier, xs = x - bt.mm * U;
+  boitier.nom = bt.nom; boitier.texte = bt.texte; boitier.chiffres = bt.chiffres;
+  lblBoitier.el.textContent = `${bt.nom} · ${mm(bt.mm)} mm`;
+  boitier.eclate.set(-pas * (rang + 1.5), 0, 0);
+  const capteur = (w, h) => { const c = S.add(boitier, mesh(new THREE.BoxGeometry(0.04, h, w), M.noir(), xs)); c.material.color.set(0x1d2740); };
+  if (bt.type === "camera") {
+    ajouter(boitier, anneau(1.9, 2.7, x - 0.25, x, M.alu(), coupe));          // filetage avant M42
+    ajouter(boitier, anneau(3.6, 3.9, xs - 6.5, x - 0.25, M.noir(), coupe));   // corps
+    ajouter(boitier, disque(3.9, x - 0.25, M.noir(), coupe, 1.9));
+    ajouter(boitier, disque(3.9, xs - 6.5, M.noir(), coupe));
+    for (let k = 0; k < 6; k++) ajouter(boitier, anneau(3.9, 4.15, xs - 6.2 + k * 0.5, xs - 6.05 + k * 0.5, M.alu(), coupe)); // ailettes
+    S.add(boitier, mesh(new THREE.BoxGeometry(0.04, 1.75, 2.6), M.verre(), xs + 0.6));  // fenêtre de protection
+    capteur(2.35, 1.57);
+    boitier.ancre.set(xs - 2, 4.6, 0);
+  } else {
+    const reflex = bt.type === "reflex";
+    const xf = x - 0.35, xb = xs - (reflex ? 3.2 : 2.6);  // face avant, dos
+    const hy = reflex ? 4.6 : 4.0, bas = reflex ? -4.8 : -4.2, lz = reflex ? 6.6 : 6.2;
+    ajouter(boitier, anneau(2.3, 3.0, xf, x, M.alu(), coupe));                 // baïonnette
+    if (coupe) { // boîtier ouvert : on voit la chambre noire, le capteur et le miroir
+      const hc = 2.3;
+      ajouter(boitier, boite(xb, xf, hc, hy, -lz, 0, M.noir(), false));
+      ajouter(boitier, boite(xb, xf, bas, -hc, -lz, 0, M.noir(), false));
+      ajouter(boitier, boite(xb, xs - 0.05, -hc, hc, -lz, 0, M.noir(), false));
+      ajouter(boitier, boite(xs - 0.05, xf, -hc, hc, -lz, -2.4, M.flocage(), false)).material.side = THREE.DoubleSide;
+    } else ajouter(boitier, boite(xb, xf, bas, hy, -lz, lz, M.noir(), false));
+    ajouter(boitier, boite(xb + 0.4, xf - 0.3, hy, hy + (reflex ? 2.2 : 1.6), -2.4, 2.4, M.noir(), coupe)); // prisme ou viseur
+    ajouter(boitier, boite(xf - 0.2, xf + 1.4, bas, hy - 0.6, -lz - 0.2, -lz + 2.6, M.caoutchouc(), coupe)); // poignée
+    if (reflex) ajouter(boitier, boite(xs + 0.4, xf - 0.4, 1.9, 1.98, -1.3, 1.3, M.miroir(), coupe));       // miroir relevé
+    capteur(2.35, 1.57);
+    boitier.ancre.set((xb + xf) / 2, hy + (reflex ? 2.6 : 2.0), 0);
+  }
+  construireCote(xs);
+}
+
+// ---------- Cote du tirage, sous le train ----------
+const coteMat = new THREE.LineBasicMaterial({ color: 0xc4d0e0, transparent: true, opacity: 0.75, depthWrite: false });
+const cote = new THREE.LineSegments(new THREE.BufferGeometry(), coteMat);
+S.scene.add(cote);
+const YC_COTE = -6.4;
+let xCote = [XR, 0];
+function construireCote(xs) {
+  xCote = [XR, xs];
+  const t = 0.5, pts = [[XR, YC_COTE, 0], [xs, YC_COTE, 0], [XR, YC_COTE - t, 0], [XR, YC_COTE + t, 0], [xs, YC_COTE - t, 0], [xs, YC_COTE + t, 0]];
+  // lignes de rappel vers le réducteur et le capteur
+  pts.push([XR, YC_COTE + t, 0], [XR, -2.2, 0], [xs, YC_COTE + t, 0], [xs, -0.8, 0]);
+  cote.geometry.dispose();
+  cote.geometry = new THREE.BufferGeometry().setFromPoints(pts.map((p) => new THREE.Vector3(...p)));
+}
+const lblCote = S.label("", () => new THREE.Vector3((xCote[0] + xCote[1]) / 2, YC_COTE - 0.8, 0), { visible: () => S.state.explode < 0.01 });
+
+// ---------- Trajet de la lumière : étoile au centre du champ ----------
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const surPlan = (P, Q, x) => P.clone().lerp(Q, (x - P.x) / (Q.x - P.x));
+const lum = faisceau(0.55, 0.42, 64);
+S.scene.add(lum.group);
+const foyer = halo(COULEURS.corail, 0.6);
+lum.group.add(foyer);
+function poserRayons() {
+  const b = bilan(), xs = XR - b.meca * U;
+  const P = V(XR - b.cible * U, 0, 0);                 // foyer du réducteur (repoussé par le filtre)
+  foyer.position.set(xs, 0, 0);
+  const trajets = [];
+  for (const [dy, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [0.7, 0.7], [-0.7, -0.7]]) {
+    const C = V(XO, 0.8 * R * dy, 0.8 * R * dz), A = C.clone().add(V(14, 0, 0));
+    const Q = surPlan(C, V(XF0, 0, 0), XL);
+    const fin = surPlan(Q, P, xs);
+    if (xFiltre !== null) {
+      const Fp = surPlan(Q, P, xFiltre);
+      trajets.push({ pts: [A, C, Q, Fp, fin], cols: SEG });
+    } else trajets.push({ pts: [A, C, Q, fin], cols: SEG.slice(0, 3) });
+  }
+  lum.poser(trajets);
+}
+const lumiereVisible = () => S.state.lumiere && S.state.explode < 0.01;
+S.label("Lumière d'une étoile", () => V(XO + 9, R + 0.8, 0), { lumiere: true, visible: lumiereVisible });
+S.label("Image de l'étoile", () => foyer.position.clone().add(V(0, 1.3, 0)), { lumiere: true, visible: () => lumiereVisible() && S.state.explode < 0.01 });
+
+// ---------- Encarts : budget de tirage et étoiles sur la photo ----------
+const PUPILLE = pupille(41);
+const tacheEllipse = (a, b, angle) => {
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  return PUPILLE.map(([u, w]) => [u * a * ca - w * b * sa, u * a * sa + w * b * ca]);
+};
+const enSec = (mm) => mm / (2 * N_RED) / F_RED * ARCSEC; // demi-largeur de la tache (″) pour un défaut de foyer en mm
+let vuesPhoto = null, cleDessin = "";
+
+function dessinerBudget() {
+  const canvas = S.apercus[0].canvas, W = canvas.clientWidth;
+  if (!W) return;
+  const dpr = Math.min(devicePixelRatio, 2), H = 150;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = H + "px";
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const b = bilan(), g = 10, L = W - 2 * g, MAX = 60, X = (mm) => g + (mm / MAX) * L;
+  ctx.font = "11px Arial"; ctx.textBaseline = "middle";
+  // barre empilée : du réducteur (0) vers le capteur
+  const segs = [...(cales > 0 ? [{ mm: cales, nom: "cales", c: "#7c8aa3" }] : []),
+    ...b.m.pieces.map((p, i) => ({ mm: p.mm, nom: p.nom, c: i % 2 ? "#3d5075" : "#2e3d5c" })),
+    { mm: b.m.boitier.mm, nom: "boîtier", c: "#4a5f8a" }];
+  let a = 0;
+  const y0 = 26, h = 28;
+  for (const s of segs) {
+    const x0 = X(a), x1 = X(a + s.mm);
+    ctx.fillStyle = s.c; ctx.fillRect(x0, y0, x1 - x0, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, h - 1);
+    const t = mm(s.mm);
+    if (ctx.measureText(t).width + 6 < x1 - x0) { ctx.fillStyle = "#f6f9fd"; ctx.textAlign = "center"; ctx.fillText(t, (x0 + x1) / 2, y0 + h / 2); }
+    a += s.mm;
+  }
+  // repères : 55 mm du réducteur, cible avec filtre
+  const repere = (mm, txt, couleur, haut) => {
+    ctx.strokeStyle = couleur; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(X(mm), y0 - 6); ctx.lineTo(X(mm), y0 + h + 6); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = couleur; ctx.textAlign = X(mm) > W - 60 ? "right" : "center";
+    ctx.fillText(txt, Math.min(X(mm), W - 2), haut ? y0 - 13 : y0 + h + 13);
+  };
+  repere(TIRAGE, "55 mm", "#c4d0e0", false);
+  if (b.filtre) repere(b.cible, `${v(b.cible)} mm avec filtre`, "#7eb4e8", true);
+  if (!b.filtre) { ctx.fillStyle = "#c4d0e0"; ctx.textAlign = "left"; ctx.fillText("Du réducteur au capteur", g, 9); }
+
+  // jauge de l'écart, agrandie : de −3 à +3 mm
+  const yj = 118, E = 3, XE = (e) => g + ((e + E) / (2 * E)) * L;
+  ctx.fillStyle = "rgba(126,180,232,0.14)"; ctx.fillRect(XE(-1), yj - 9, XE(1) - XE(-1), 18);
+  ctx.fillStyle = "rgba(126,180,232,0.28)"; ctx.fillRect(XE(-0.5), yj - 9, XE(0.5) - XE(-0.5), 18);
+  ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.beginPath(); ctx.moveTo(XE(-E), yj); ctx.lineTo(XE(E), yj); ctx.stroke();
+  for (let e = -E; e <= E; e++) { ctx.beginPath(); ctx.moveTo(XE(e), yj - 4); ctx.lineTo(XE(e), yj + 4); ctx.stroke(); }
+  const large = W > 300;
+  ctx.fillStyle = "#c4d0e0"; ctx.textAlign = "left"; ctx.fillText(large ? "trop court" : "court", g, yj - 18);
+  ctx.textAlign = "right"; ctx.fillText(large ? "trop long" : "long", W - g, yj - 18);
+  ctx.textAlign = "center"; ctx.fillText(large ? "écart (mm)" : "mm", W / 2, yj - 18);
+  for (const e of [-3, -1, 0, 1, 3]) ctx.fillText(e > 0 ? "+" + e : e < 0 ? "−" + -e : "0", XE(e), yj + 17);
+  const ec = Math.max(-E, Math.min(E, b.ecart)), hors = Math.abs(b.ecart) > 1;
+  ctx.fillStyle = hors ? "#ff6b5e" : Math.abs(b.ecart) > 0.5 ? "#ffc861" : "#f6f9fd";
+  ctx.beginPath(); ctx.moveTo(XE(ec), yj + 1); ctx.lineTo(XE(ec) - 6, yj - 9); ctx.lineTo(XE(ec) + 6, yj - 9); ctx.closePath(); ctx.fill();
+}
+
+function majApercus() {
+  const b = bilan(), e = b.ecart, ae = Math.abs(e);
+  // légende du budget
+  let conseil;
+  if (montage === "roue" && !b.filtre) conseil = "La roue est prévue pour recevoir un filtre. Sans filtre, sa chaîne de 56 mm dépasse de 1 mm : c'est le millimètre réservé au filtre.";
+  else if (ae <= 0.5) conseil = b.filtre && montage !== "roue" && cales > 0 ? "Les cales compensent le filtre : le capteur est de nouveau là où le réducteur forme l'image." : "Le capteur est là où le réducteur forme l'image. Les étoiles restent rondes jusque dans les coins.";
+  else if (e < 0) conseil = b.filtre && ae < 1.5 ? `Le filtre a repoussé le foyer de ${v(DECALAGE, 2)} mm : ajoutez environ ${v(Math.round(ae * 10) / 10)} mm de cales.` : `Le train est trop court de ${v(ae)} mm : ajoutez des cales ou une allonge.`;
+  else conseil = `Le train est trop long de ${v(ae)} mm : retirez des cales, ou remplacez une allonge par une plus courte.`;
+  S.apercus[0].legende.innerHTML = `<h2>Écart ${signe(e)} mm · ${ae <= 0.5 ? "bon tirage" : ae <= 1 ? "à la limite" : "tirage faux"}</h2>
+    <p class="spec">${detailCalcul(b)}</p><p>${conseil}</p>`;
+  // étoiles : décalage de foyer au coin d'un capteur APS-C, radial et tangentiel (mêmes valeurs que le support « Lunette astrographe »)
+  const aR = enSec(0.06 * ae), aT = enSec(0.025 * ae);
+  vuesPhoto = [
+    { image: champEtoiles(tacheEllipse(0, 0, 0)), titre: "Centre de l'image" },
+    { image: champEtoiles(tacheEllipse(aR, aT, Math.PI / 4)), titre: "Coin de l'image" },
+  ];
+  cleDessin = "";
+  const tache = (a) => Math.max(2 * a, 2.4);
+  S.apercus[1].legende.innerHTML = `<h2>${tache(aR) > 5 ? "Étoiles déformées dans les coins" : "Étoiles fines partout"}</h2>
+    <p class="spec">Taille des étoiles : centre ≈ 2″ · coin ≈ ${Math.round(tache(aR))}″ × ${Math.round(tache(aT))}″ · 1 pixel de 3,76 µm = 2″</p>
+    <p>${tache(aR) > 5 ? "La mise au point est faite au centre, mais le réducteur n'est pas à la bonne distance du capteur : les étoiles des coins s'étirent." : "Au centre comme dans les coins, les étoiles gardent la taille fixée par la turbulence."}</p>`;
+}
+
+// ---------- Mise à jour ----------
+function maj() {
+  const coupe = S.state.coupe;
+  construireLunette(coupe);
+  construireTrain(coupe);
+  poserRayons();
+  const b = bilan();
+  lblCote.el.textContent = `Tirage : ${v(b.meca)} mm`;
+  majApercus();
+  if (S.state.selected && !S.parts.find((p) => p.id === S.state.selected)?.group.children.length) S.select(null);
+  S.refreshInfo();
+}
+function choisir(id) {
+  montage = id;
+  for (const k in MONTAGES) document.getElementById("r-m-" + k).setAttribute("aria-pressed", String(k === id));
+  sousTitre.textContent = `Exemple : lunette 80/480 · réducteur ×0,8 · ${MONTAGES[id].bouton.replace("Caméra", "caméra").replace("Reflex", "reflex").replace("Hybride", "hybride")}`;
+  maj();
+}
+
+S.onFrame(({ time }) => {
+  const W = S.apercus[1].canvas.clientWidth, cle = W + "|" + S.apercus[0].canvas.clientWidth;
+  if (cle !== cleDessin && vuesPhoto) {
+    cleDessin = cle;
+    const court = W < 300;
+    vuesRondes(S.apercus[1].canvas, vuesPhoto.map((x, i) => ({ ...x, titre: court ? ["Centre", "Coin"][i] : x.titre })));
+    dessinerBudget();
+  }
+  const vis = lumiereVisible();
+  lum.group.visible = vis;
+  cote.visible = S.state.explode < 0.01;
+  lum.photons.visible = S.state.anim || S.reduced;
+  if (vis) lum.animer(time, 3);
+  S.notice(S.state.lumiere && !vis ? "Rassemblez les pièces (éclaté à 0 %) pour voir le trajet de la lumière." : null);
+});
+
+choisir(montage);
+S.start();
+</script>
+</body>
+</html>
