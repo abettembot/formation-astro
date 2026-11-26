@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Seeing et turbulence</title>
+<meta name="description" content="Schéma 3D interactif de la turbulence atmosphérique : cellules d'air, front d'onde déformé et image d'une étoile à fort grossissement dans un Newton 200/1000.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeZ, mesh, legende, faisceau, imageEtoile, vuesRondes, alea } from "../commun/schema.js";
+
+// ---------- Échelle ----------
+// Horizontalement, 1 unité = 10 cm : les cellules d'air (taille r0) et le miroir de 200 mm sont à la même échelle.
+// Verticalement, les altitudes sont très comprimées (le courant-jet est en réalité à ≈ 10 km).
+const D_MM = 200, F_MM = 1000, OBST = 0.29;   // Newton 200/1000, secondaire de 58 mm
+const LAMBDA = 550e-9, ARCSEC = 206264.8;
+const RM = 1.0, RT = 1.25;                     // rayon du miroir (100 mm) et du tube
+const Y_MIROIR = 1.6, Y_HAUT_TUBE = 11.4;      // miroir au fond, tube de 1 m pointé au zénith
+const LARG = 8;                                // largeur de la colonne d'air représentée (80 cm)
+const SOL = { bas: 13.5, haut: 17.5, vent: [0.25, 0.45] };   // couche au sol (0 à ≈ 1 km)
+const JET = { bas: 27.5, haut: 30, vent: [1.6, 0] };         // courant-jet (≈ 10 km)
+const Y_ETOILE = 37;                           // naissance du front d'onde (plat)
+const SEG = [COULEURS.etoile, COULEURS.ambre, COULEURS.orange, COULEURS.corail];
+const OCULAIRES = [25, 10, 5, 4];              // → 40×, 100×, 200×, 250×
+const CHAMP_APP = 15 * 60;                     // largeur des vues rondes : 15′ du champ apparent
+
+const fr = (v, n = 1) => v.toFixed(n).replace(".", ",");
+const r0De = (s) => 0.98 * LAMBDA / (s / ARCSEC);                   // seeing (″) → r0 (m)
+const LOCAL = 1.5;                                                   // turbulence locale ajoutée (″)
+const seeing = () => {                                               // les couches s'additionnent en r0^(-5/3)
+  const s = S.state.seeing;
+  return S.state.locale ? Math.pow(Math.pow(s, 5 / 3) + Math.pow(LOCAL, 5 / 3), 3 / 5) : s;
+};
+const appreciation = (s) => s <= 1 ? "excellent" : s <= 1.7 ? "bon" : s <= 2.7 ? "moyen" : s <= 3.4 ? "médiocre" : "mauvais";
+const AIRY = 2.44 * LAMBDA / (D_MM / 1000) * ARCSEC;               // diamètre du disque d'Airy (″)
+const DAWES = 116 / D_MM;
+let oculaire = 5;
+const G = () => F_MM / oculaire;
+
+const S = createSchema({
+  surtitre: "Support de formation · Atmosphère",
+  titre: "Seeing et turbulence",
+  sousTitre: "Exemple : Newton 200/1000 · seeing 2″",
+  commandes: [
+    { type: "curseur", id: "seeing", label: "Turbulence", min: 0.5, max: 4, pas: 0.1, valeur: 2, retour: "Soirée moyenne (2″)",
+      format: (v) => `${fr(v)}″ · r₀ ${fr(r0De(v) * 100)} cm`, onInput: () => majTurbulence() },
+    { type: "raccourcis", id: "gross", label: "Grossissement",
+      boutons: OCULAIRES.map((f) => ({ id: "g" + f, label: `${F_MM / f}×`, onClick: () => { oculaire = f; majGross(); } })) },
+    { type: "bascule", id: "fronts", label: "Fronts d'onde", actif: true },
+    { type: "bascule", id: "cellules", label: "Cellules d'air", actif: true },
+    { type: "bascule", id: "locale", label: "Turbulence locale", actif: false, onChange: () => majTurbulence() },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [36, 29, 54], cible: [0, 19.5, 0] },
+    { id: "profil", label: "Profil", pos: [0.5, 19.5, 66], cible: [0, 19, 0] },
+    { id: "miroir", label: "Près du miroir", pos: [11, 18, 17], cible: [0, 11.5, 0] },
+    { id: "jet", label: "Courant-jet", pos: [9, 33, 13], cible: [0, 28.5, 0] },
+  ],
+  apercu: { titre: "Vu à l'oculaire" },
+  intro: () => `
+    <div class="eyebrow">Le voyage de la lumière dans l'air</div>
+    ${legende([
+      { couleur: SEG[0], texte: "La lumière d'une étoile arrive avec un front d'onde parfaitement plat : l'étoile est si loin que ses rayons sont parallèles." },
+      { couleur: SEG[1], texte: "En altitude, le courant-jet mélange de l'air de températures différentes. Le front d'onde commence à onduler." },
+      { couleur: SEG[2], texte: "Près du sol, l'air chauffé le jour remonte la nuit en bulles : c'est souvent là que naît la plus grande partie de la turbulence." },
+      { couleur: SEG[3], texte: "Chaque morceau du miroir reçoit la lumière d'une direction un peu différente : l'image danse et se brouille. Le grossissement rend ce défaut visible." },
+    ])}
+    <p class="spec">Les ondulations sont très exagérées : en réalité, le front d'onde ne se déforme que de quelques dixièmes de micromètre.</p>`,
+});
+
+// ---------- Sol et télescope ----------
+{
+  const sol = mesh(new THREE.CircleGeometry(22, 64).rotateX(-Math.PI / 2), M.sol(), 0, 0, 0);
+  S.scene.add(sol);
+}
+const telescope = S.part("telescope", "Newton 200/1000", {
+  ancre: [RT + 0.3, Y_HAUT_TUBE - 2, 0],
+  texte: "Il est pointé ici au zénith. Son miroir de 200 mm pourrait séparer deux étoiles distantes de 0,6″, mais l'air au-dessus de lui ne le laisse presque jamais faire. Quand le miroir est plus grand que les cellules d'air (r₀), plusieurs cellules se partagent sa surface : l'image se brise et bout. Une petite lunette, plus petite que r₀, voit au contraire une image nette qui danse.",
+  chiffres: `Disque d'Airy ${fr(AIRY, 2)}″ · limite de Dawes ${fr(DAWES, 2)}″ · par seeing 2″, la résolution réelle est ≈ 3,5 fois moins bonne`,
+  extra: () => {
+    const s = seeing(), r0 = r0De(s) * 1000;
+    return `<p class="spec">Ce soir : seeing ${fr(s)}″ (${appreciation(s)}) · r₀ ≈ ${Math.round(r0 / 10)} cm · miroir = ${fr(D_MM / r0)} × r₀</p>
+      <p>Viser haut aide : à 30° au-dessus de l'horizon, la lumière traverse deux fois plus d'air qu'au zénith.</p>`;
+  },
+});
+{
+  const H = Y_HAUT_TUBE - Y_MIROIR + 0.4, yc = (Y_HAUT_TUBE + Y_MIROIR - 0.4) / 2;
+  // tube ouvert sur le devant (en coupe) pour voir le front d'onde descendre jusqu'au miroir
+  const coupe = (r, mat) => mesh(new THREE.CylinderGeometry(r, r, H, 72, 1, true, Math.PI * 0.62, Math.PI * 1.3), mat, 0, yc, 0);
+  S.add(telescope, coupe(RT, M.peinture()));
+  S.add(telescope, coupe(RT - 0.015, M.flocage()));
+  // miroir primaire (face concave vers le haut) et son barillet
+  const miroir = S.add(telescope, mesh(new THREE.CylinderGeometry(RM, RM, 0.2, 72), M.miroir(), 0, Y_MIROIR - 0.1, 0));
+  S.add(telescope, mesh(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.14, 72), M.noir(), 0, Y_MIROIR - 0.45, 0));
+  // secondaire à 45° et porte-oculaire sur le côté
+  const ys = Y_HAUT_TUBE - 1.05;
+  const sec = S.add(telescope, mesh(new THREE.CylinderGeometry(0.29, 0.29, 0.05, 40).scale(1, 1, Math.SQRT2), M.miroir(), 0, ys, 0));
+  sec.rotation.x = Math.PI / 4;
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + k * Math.PI / 2, len = RT - 0.15;
+    const b = S.add(telescope, mesh(new THREE.BoxGeometry(0.02, 0.12, len), M.noir(), Math.sin(a) * (0.15 + len / 2), ys + 0.4, Math.cos(a) * (0.15 + len / 2)));
+    b.rotation.y = a;
+  }
+  S.add(telescope, mesh(axeZ(new THREE.CylinderGeometry(0.33, 0.33, 0.5, 32)), M.noir(), 0, ys, -RT - 0.2));
+  S.add(telescope, mesh(axeZ(new THREE.CylinderGeometry(0.22, 0.22, 0.55, 32)), M.alu(), 0, ys, -RT - 0.7));
+  S.add(telescope, mesh(axeZ(new THREE.CylinderGeometry(0.28, 0.25, 0.5, 32)), M.caoutchouc(), 0, ys, -RT - 1.2));
+  // caisse Dobson en bois
+  S.add(telescope, mesh(new THREE.BoxGeometry(3.2, 0.25, 3.2), M.bois(), 0, 0.15, 0));
+  for (const s of [-1, 1]) S.add(telescope, mesh(new THREE.BoxGeometry(0.2, 3.4, 3.0), M.bois(), s * (RT + 0.35), 1.95, 0));
+  S.add(telescope, mesh(axeZ(new THREE.TorusGeometry(RT + 0.02, 0.04, 8, 72, Math.PI * 1.3).rotateZ(-Math.PI * 1.42)), M.noir(), 0, Y_HAUT_TUBE, 0));
+  miroir.material.side = THREE.DoubleSide;
+}
+
+// ---------- Cellules d'air (instances) ----------
+function nuage(couche, graine) {
+  const MAX = 6000;
+  const inst = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.5, 1), M.air(0xffffff, 0.2), MAX);
+  inst.frustumCulled = false;
+  return { inst, couche, graine, max: MAX, cells: [] };
+}
+const chaud = new THREE.Color(COULEURS.orange), froid = new THREE.Color(COULEURS.froid);
+function remplir(n, r0) {
+  const { inst, couche } = n, rnd = alea(n.graine);
+  n.cells = [];
+  const pas = Math.max(r0, 0.22);
+  const nx = Math.floor(LARG / pas), ny = Math.max(1, Math.floor((couche.haut - couche.bas) / pas));
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nx; k++) {
+    if (rnd() > 0.42 || n.cells.length >= n.max) continue;
+    n.cells.push({
+      x: -LARG / 2 + (i + 0.2 + rnd() * 0.6) * pas,
+      y: couche.bas + (j + 0.2 + rnd() * 0.6) * pas,
+      z: -LARG / 2 + (k + 0.2 + rnd() * 0.6) * pas,
+      t: r0 * (0.75 + rnd() * 0.5), ph: rnd() * 6.28, chaud: rnd() < 0.5,
+    });
+  }
+  n.cells.forEach((c, q) => inst.setColorAt(q, c.chaud ? chaud : froid));
+  inst.instanceColor.needsUpdate = true;
+  inst.userData.n = n.cells.length;
+}
+const m4 = new THREE.Matrix4(), q0 = new THREE.Quaternion(), v3 = new THREE.Vector3(), sc = new THREE.Vector3();
+function animerNuage(n, time) {
+  const { inst, couche } = n, [vx, vz] = couche.vent;
+  const enroule = (v) => ((v + LARG / 2) % LARG + LARG) % LARG - LARG / 2;
+  n.cells.forEach((c, q) => {
+    v3.set(enroule(c.x + vx * time), c.y + 0.08 * Math.sin(time * 0.7 + c.ph), enroule(c.z + vz * time));
+    const bord = Math.min(1, (LARG / 2 - Math.abs(v3.x)) / 0.4, (LARG / 2 - Math.abs(v3.z)) / 0.4); // entrée et sortie en douceur
+    sc.setScalar(Math.max(0.001, c.t * bord * (1 + 0.12 * Math.sin(time * 1.3 + c.ph * 2))));
+    inst.setMatrixAt(q, m4.compose(v3, q0, sc));
+  });
+  inst.count = inst.userData.n;
+  inst.instanceMatrix.needsUpdate = true;
+}
+
+const coucheSol = S.part("sol", "Couche au sol", {
+  ancre: [LARG / 2 + 0.2, SOL.haut + 0.3, 0],
+  texte: "Le jour, le sol, les routes et les toits stockent la chaleur du Soleil. La nuit, ils la rendent : des bulles d'air tiède montent et se mélangent à l'air frais. Ce brassage des premières centaines de mètres fournit souvent plus de la moitié de la turbulence. Un terrain herbeux, loin des bâtiments, en limite une partie.",
+  chiffres: "Épaisseur ≈ 0 à 1 km (comprimée ici) · vent faible · souvent > 50 % de la turbulence",
+});
+const nSol = nuage(SOL, 11);
+S.add(coucheSol, nSol.inst);
+
+const jet = S.part("jet", "Courant-jet", {
+  ancre: [LARG / 2 + 0.2, JET.haut + 0.3, 0],
+  texte: "Rivière de vent très rapide qui circule vers 10 km d'altitude. À sa frontière, des masses d'air de températures différentes se mélangent. Les cellules défilent vite devant le télescope : l'image frémit rapidement. Les prévisions de seeing (cartes du courant-jet) aident à choisir une bonne soirée.",
+  chiffres: "Altitude ≈ 9 à 12 km · vent souvent 100 à 300 km/h · défilement des cellules en quelques millisecondes",
+});
+const nJet = nuage(JET, 23);
+S.add(jet, nJet.inst);
+
+// cellule témoin, juste au-dessus du tube : sa taille (r0) se compare au miroir
+const cellule = S.part("cellule", "Cellule d'air (r₀)", {
+  ancre: [0.4, Y_HAUT_TUBE + 2.1, 0],
+  texte: "Zone d'air où la température, donc l'indice de réfraction, est à peu près la même. La lumière qui la traverse reste « en phase » : sur cette largeur, le front d'onde reste plat. Sa taille typique s'appelle le paramètre de Fried, r₀. Plus r₀ est petit, plus la turbulence est forte.",
+  chiffres: "r₀ ≈ 5 à 20 cm en lumière visible · seeing ≈ 0,98 λ / r₀ · 1″ ↔ r₀ ≈ 11 cm",
+  extra: () => {
+    const s = seeing(), r0 = r0De(s) * 100;
+    return `<p class="spec">Réglage actuel : seeing ${fr(s)}″ → r₀ ≈ ${Math.round(r0)} cm · ${D_MM / 10 > r0 ? `le miroir couvre ≈ ${Math.round((D_MM / 10 / r0) ** 2)} cellules` : "le miroir tient dans une seule cellule"}</p>`;
+  },
+});
+const celluleMesh = S.add(cellule, mesh(new THREE.IcosahedronGeometry(0.5, 3), M.air(COULEURS.orange, 0.6), 0, Y_HAUT_TUBE + 1.2, 0));
+{
+  const anneau = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.012, 8, 64), M.lumineux(COULEURS.orange, 0.9));
+  anneau.rotation.x = Math.PI / 2;
+  celluleMesh.add(anneau);
+}
+
+// ---------- Turbulence locale : toit chaud et tube pas à température (maison symbolique, hors échelle) ----------
+const locale = S.part("locale", "Turbulence locale", {
+  ancre: [-13, 5.4, -7],
+  texte: "Un toit encore chaud, une cheminée ou un parking rejettent des panaches d'air tiède juste devant le télescope. Le tube lui-même crée de la turbulence tant que le miroir est plus chaud que l'air : il faut le sortir 30 min à 1 h avant d'observer. Cette turbulence-là, on peut l'éviter.",
+  chiffres: `Bouton « Turbulence locale » : + ${fr(LOCAL)}″ environ · miroir de 200 mm : 30 min à 1 h de mise en température · écart utile < 1 à 2 °C`,
+});
+{
+  const X = -13, Z = -7;
+  S.add(locale, mesh(new THREE.BoxGeometry(3.4, 3, 2.8), M.peinture(), X, 1.5, Z));
+  const toit = new THREE.CylinderGeometry(0.01, 2.3, 1.4, 4, 1).rotateY(Math.PI / 4).scale(1.05, 1, 0.86);
+  S.add(locale, mesh(toit, M.noir(), X, 3.7, Z));
+  S.add(locale, mesh(new THREE.BoxGeometry(0.4, 1.1, 0.4), M.noir(), X + 0.8, 4.2, Z + 0.4));
+}
+const PANACHE = 70;
+const panache = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.5, 1), M.air(COULEURS.orange, 0.22), PANACHE);
+panache.frustumCulled = false;
+S.add(locale, panache);
+const graines = []; { const r = alea(5); for (let i = 0; i < PANACHE; i++) graines.push([r(), r(), r(), i < 25 ? 1 : 0]); }
+function animerPanache(time) {
+  graines.forEach(([a, b, c, tube], i) => {
+    const age = (time * (tube ? 0.35 : 0.22) + a) % 1;
+    if (tube) v3.set((b - 0.5) * 1.6, Y_HAUT_TUBE - 3 + age * 5, (c - 0.5) * 1.6);   // air tiède qui monte du miroir
+    else v3.set(-13 + (b - 0.5) * 2.6 + age * 6, 4.4 + age * 8, -7 + (c - 0.5) * 2 + age * 3.5);
+    sc.setScalar(Math.max(0.001, (tube ? 0.35 : 0.6) * (0.4 + age) * Math.sin(Math.PI * age)));
+    panache.setMatrixAt(i, m4.compose(v3, q0, sc));
+  });
+  panache.instanceMatrix.needsUpdate = true;
+}
+
+// ---------- Fronts d'onde ----------
+// Chaque couche est un « écran » de bosses (somme de sinusoïdes) dont la taille est r0, qui défile avec le vent.
+function ecran(graine) {
+  const r = alea(graine), ondes = [];
+  for (let i = 0; i < 7; i++) {
+    const a = r() * Math.PI, l = 1.6 + r() * 2.4; // longueur d'onde en multiples de r0
+    ondes.push([Math.cos(a) / l, Math.sin(a) / l, r() * 6.28, 0.5 + r()]);
+  }
+  const somme = ondes.reduce((s, o) => s + o[3], 0);
+  return (x, z, r0) => {
+    let h = 0;
+    for (const [kx, kz, ph, w] of ondes) h += w * Math.sin(2 * Math.PI * (kx * x + kz * z) / r0 + ph);
+    return h / somme;
+  };
+}
+const ecranJet = ecran(3), ecranSol = ecran(9);
+let r0u = 0.55, ampli = 0.4; // r0 en unités, amplitude visuelle des ondulations
+function deformation(x, y, z, time) {
+  const tJ = THREE.MathUtils.clamp((JET.haut - y) / (JET.haut - JET.bas), 0, 1);
+  const tS = THREE.MathUtils.clamp((SOL.haut - y) / (SOL.haut - SOL.bas), 0, 1);
+  return ampli * (0.4 * tJ * ecranJet(x - JET.vent[0] * time, z, r0u) + 0.6 * tS * ecranSol(x - SOL.vent[0] * time, z - SOL.vent[1] * time, r0u));
+}
+const fronts = S.part("front", "Front d'onde", {
+  ancre: [-LARG / 2 - 0.2, Y_ETOILE - 1, 0],
+  texte: "Surface qui relie les points où la lumière de l'étoile est « en phase », comme le sommet d'une vague. Elle arrive plate. Chaque cellule d'air la retarde un peu plus ou un peu moins selon sa température : elle se gondole. Les variations de luminosité qui en résultent font scintiller les étoiles ; les planètes, dont le disque fait la moyenne, scintillent beaucoup moins.",
+  chiffres: "Déformation réelle ≈ quelques dixièmes de micromètre (λ = 0,55 µm) · ondulations exagérées sur le schéma",
+});
+const N_FRONTS = 6, ESPACE = (Y_ETOILE - Y_MIROIR) / N_FRONTS, VITESSE = 2.2;
+const couleurY = (y) => y > JET.bas ? SEG[0] : y > SOL.haut ? SEG[1] : y > Y_HAUT_TUBE ? SEG[2] : SEG[3];
+const nappes = [];
+for (let i = 0; i < N_FRONTS; i++) {
+  const carre = new THREE.PlaneGeometry(LARG, LARG, 28, 28).rotateX(-Math.PI / 2);
+  const disque = new THREE.RingGeometry(0.001, RM - 0.02, 32, 8).rotateX(-Math.PI / 2);
+  const mk = (geo) => {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(geo, M.lumineux(SEG[0], 0.06)));
+    const fil = M.lumineux(SEG[0], 0.22); fil.wireframe = true;
+    g.add(new THREE.Mesh(geo, fil));
+    return g;
+  };
+  const gc = mk(carre), gd = mk(disque);
+  S.add(fronts, gc); S.add(fronts, gd);
+  nappes.push({ gc, gd, carre, disque, base: [carre, disque].map((g) => Float32Array.from(g.attributes.position.array)) });
+}
+function animerFronts(time) {
+  nappes.forEach((n, i) => {
+    const y = Y_ETOILE - ((time * VITESSE + i * ESPACE) % (Y_ETOILE - Y_MIROIR));
+    const dansTube = y < Y_HAUT_TUBE;
+    n.gc.visible = !dansTube; n.gd.visible = dansTube;
+    const grp = dansTube ? n.gd : n.gc, geo = dansTube ? n.disque : n.carre, base = n.base[dansTube ? 1 : 0];
+    const P = geo.attributes.position;
+    for (let k = 0; k < P.count; k++) {
+      const x = base[k * 3], z = base[k * 3 + 2];
+      P.setY(k, y + deformation(x, y, z, time));
+    }
+    P.needsUpdate = true;
+    const c = couleurY(y);
+    for (const m of grp.children) m.material.color.setHex(c);
+    // le front s'efface en arrivant sur le miroir
+    const fondu = Math.min(1, (y - Y_MIROIR) / 1.2, (Y_ETOILE - y) / 1.5);
+    grp.children[0].material.opacity = 0.06 * fondu; grp.children[1].material.opacity = 0.22 * fondu;
+  });
+}
+
+// ---------- Rayons : perpendiculaires au front d'onde, ils changent de direction à chaque couche ----------
+const rayons = faisceau(0.45, 0.32, 80);
+S.scene.add(rayons.group);
+const DEPARTS = [[-0.7, 0], [0.7, 0], [0, -0.7], [0, 0.7], [-0.25, 0.35], [0.35, -0.3]];
+function majRayons() {
+  // déviation (en unités) au bas de chaque couche, proportionnelle à la pente locale du front d'onde
+  const pente = (f, x, z) => [(f(x + 0.05, z, r0u) - f(x - 0.05, z, r0u)) / 0.1, (f(x, z + 0.05, r0u) - f(x, z - 0.05, r0u)) / 0.1];
+  rayons.poser(DEPARTS.map(([x, z]) => {
+    const [ax, az] = pente(ecranJet, x, z), [bx, bz] = pente(ecranSol, x, z);
+    const k = 0.18 * ampli;
+    const p1 = [x, JET.bas, z];
+    const p2 = [x + ax * k * (JET.bas - SOL.haut) * 0.12, SOL.bas, z + az * k * (JET.bas - SOL.haut) * 0.12];
+    const dx = (p2[0] - x) / (JET.bas - SOL.bas) + bx * k * 0.25, dz = (p2[2] - z) / (JET.bas - SOL.bas) + bz * k * 0.25;
+    const h = SOL.bas - Y_MIROIR;
+    const p3 = [THREE.MathUtils.clamp(p2[0] + dx * h, -RM + 0.05, RM - 0.05), Y_MIROIR, THREE.MathUtils.clamp(p2[2] + dz * h, -RM + 0.05, RM - 0.05)];
+    return { pts: [[x, Y_ETOILE, z], p1, [p2[0], SOL.haut, p2[2]], p2, p3], cols: [SEG[0], SEG[1], SEG[1], SEG[2]] };
+  }));
+}
+
+// ---------- Étiquettes libres ----------
+const visFronts = () => S.state.fronts;
+S.label("Lumière de l'étoile", () => new THREE.Vector3(0, Y_ETOILE + 1.2, 0), { lumiere: true, visible: visFronts });
+S.label("≈ 10 km", () => new THREE.Vector3(-LARG / 2 - 0.3, (JET.bas + JET.haut) / 2, LARG / 2), { lumiere: true });
+S.label("≈ 0 à 1 km", () => new THREE.Vector3(-LARG / 2 - 0.3, (SOL.bas + SOL.haut) / 2, LARG / 2), { lumiere: true });
+
+// ---------- Réglages ----------
+function majTurbulence() {
+  const s = seeing();
+  const r0 = r0De(s);
+  r0u = r0 * 10;
+  ampli = 0.15 + 0.17 * s;
+  remplir(nSol, r0u); remplir(nJet, r0u);
+  celluleMesh.scale.setScalar(r0u);
+  majRayons();
+  majTache();
+  majLegende();
+  if (S.state.selected) S.refreshInfo();
+}
+function majGross() {
+  for (const f of OCULAIRES) document.getElementById("r-g" + f).setAttribute("aria-pressed", String(f === oculaire));
+  majLegende();
+}
+
+// ---------- Encart « Vu à l'oculaire » ----------
+// Les deux vues couvrent la même portion du champ apparent (15′). L'œil ne distingue pas mieux que ≈ 1′ :
+// on adoucit l'image de cette quantité, ramenée au ciel (1′ / G).
+const NPX = 121;
+const airy = {};
+function imageAiry(g) {
+  return (airy[g] ??= imageEtoile({ D: D_MM, F: F_MM, obstruction: OBST, champ: CHAMP_APP / g, ecart: () => 0, n: NPX }));
+}
+function adoucir(src, g) {
+  const cv = document.createElement("canvas"); cv.width = cv.height = NPX;
+  const ctx = cv.getContext("2d"), sigma = (25 / g) / (CHAMP_APP / g) * NPX; // œil : FWHM ≈ 1′ apparent
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, NPX, NPX);
+  ctx.filter = `blur(${sigma.toFixed(2)}px)`;
+  ctx.drawImage(src, 0, 0);
+  return cv;
+}
+const nette = {};
+const turb = document.createElement("canvas"); turb.width = turb.height = NPX;
+// tache turbulente : quelques « speckles » (une par groupe de cellules) qui bougent dans une enveloppe de largeur = seeing
+let tache = { n: 1, sigS: 0.2, sigT: 0.2 };
+const rndSp = alea(41), sp = [];
+for (let i = 0; i < 40; i++) sp.push(Array.from({ length: 8 }, () => rndSp()));
+function majTache() {
+  const s = seeing(), r0 = r0De(s), D = D_MM / 1000;
+  const lD = LAMBDA / D * ARCSEC;
+  const sigT = Math.min(0.42 * lD * Math.pow(D / r0, 5 / 6), s / 2.355 * 0.9);  // agitation d'ensemble (″)
+  const sigL = s / 2.355;
+  tache = { n: Math.round(THREE.MathUtils.clamp((D / r0) ** 2, 1, 40)), sigS: Math.sqrt(Math.max(sigL * sigL - sigT * sigT, (0.45 * lD) ** 2)), sigT, lD };
+}
+const bruit = (t, a, b, c) => (Math.sin(t * (1 + 2 * a) + 6.28 * b) + Math.sin(t * (1.7 + 2 * c) + 6.28 * a)) / 2;
+function dessinerTache(time) {
+  const g = G(), champ = CHAMP_APP / g, k = NPX / champ;   // pixels par seconde d'arc
+  const ctx = turb.getContext("2d");
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, NPX, NPX);
+  ctx.globalCompositeOperation = "lighter";
+  const t = time * 4;  // ralenti : dans le ciel, l'image change des dizaines de fois par seconde
+  const tx = tache.sigT * bruit(t * 0.6, 0.1, 0.3, 0.7) * 1.4, ty = tache.sigT * bruit(t * 0.6, 0.5, 0.9, 0.2) * 1.4;
+  const rOeil = 25 / g;                                    // flou de l'œil, ramené au ciel (″)
+  const rSp = Math.hypot(0.5 * tache.lD, rOeil) * k;       // rayon d'un speckle à l'écran (px)
+  for (let i = 0; i < tache.n; i++) {
+    const a = sp[i];
+    const x = NPX / 2 + (tx + tache.sigS * 1.2 * bruit(t, a[0], a[1], a[2])) * k;
+    const y = NPX / 2 + (ty + tache.sigS * 1.2 * bruit(t, a[3], a[4], a[5])) * k;
+    const lum = (0.55 + 0.45 * Math.sin(t * (1 + a[6]) + 6.28 * a[7])) * Math.min(1, 2.2 / Math.sqrt(tache.n));
+    const r = Math.max(rSp * 2.2, 1.2);
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, `rgba(255,244,214,${lum})`);
+    grad.addColorStop(0.35, `rgba(255,236,200,${lum * 0.45})`);
+    grad.addColorStop(1, "rgba(255,230,190,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+  }
+}
+function majLegende() {
+  const s = seeing(), g = G(), app = s * g / 60, appAiry = AIRY * g / 60;
+  let h2, p;
+  if (app < 2) {
+    h2 = "La turbulence passe inaperçue";
+    p = "À ce grossissement, la tache turbulente reste plus petite que ce que l'œil sait distinguer (≈ 1′). L'étoile paraît être un point, simplement un peu scintillant.";
+  } else if (s < 0.9) {
+    h2 = "Air très calme";
+    p = "La tache turbulente est à peine plus grande que le disque d'Airy : on devine les anneaux de diffraction, qui ondulent légèrement. C'est le moment des forts grossissements, mais ces nuits sont rares en plaine.";
+  } else if (app < 5) {
+    h2 = "L'étoile frémit";
+    p = "La tache commence à se voir : l'étoile s'agite et s'élargit. Les détails fins (anneaux, étoiles doubles serrées, détails planétaires) apparaissent par instants, quand l'air se calme.";
+  } else {
+    h2 = "L'étoile bout";
+    p = "On grossit surtout la turbulence : l'étoile est une tache qui bouillonne, bien plus grande que le disque d'Airy. Il vaut mieux baisser le grossissement.";
+  }
+  S.apercu.legende.innerHTML = `<h2>${h2}</h2>
+    <p class="spec">${g}× (oculaire ${oculaire} mm) · seeing ${fr(s)}″ (${appreciation(s)}) → tache de ${fr(app)}′ à l'œil · disque d'Airy ${fr(appAiry)}′</p><p>${p}</p>`;
+}
+
+// ---------- Animation ----------
+S.onFrame(({ time }) => {
+  nSol.inst.visible = nJet.inst.visible = S.state.cellules;
+  if (S.state.cellules) { animerNuage(nSol, time); animerNuage(nJet, time); }
+  fronts.group.visible = S.state.fronts;
+  rayons.group.visible = S.state.fronts;
+  if (S.state.fronts) { animerFronts(time); rayons.animer(time, 4); }
+  rayons.photons.visible = S.state.anim || S.reduced;
+  panache.visible = S.state.locale;
+  if (S.state.locale) animerPanache(time);
+  // encart : vue sans turbulence (fixe) et vue avec turbulence (animée)
+  const g = G();
+  nette[g] ??= adoucir(imageAiry(g), g);
+  dessinerTache(time);
+  vuesRondes(S.apercu.canvas, [
+    { image: nette[g], titre: "Idéal" },
+    { image: turb, titre: "Turbulent" },
+  ]);
+});
+
+majTurbulence();
+majGross();
+S.start();
+</script>
+</body>
+</html>

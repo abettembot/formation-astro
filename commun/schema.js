@@ -24,6 +24,8 @@ export const COULEURS = {
   vert: 0x58e07a,    // raie e, 546 nm
   bleu: 0x4f6bff,    // raie F, 486 nm
   violet: 0xb062ff,  // raie g, 436 nm
+  // température de l'air (turbulence, convection) : air frais, distinct du bleu de l'interface ; l'air chaud prend l'orange
+  froid: 0x8fd3cf,
 };
 export const css = (hex) => "#" + hex.toString(16).padStart(6, "0");
 
@@ -42,6 +44,9 @@ export const materiaux = {
   sol: () => new THREE.MeshStandardMaterial({ color: 0x34462f, roughness: 1, metalness: 0, envMapIntensity: 0.3 }),
   // eau de mer (océans, enveloppe déformée par la marée) : bleu sourd, translucide pour laisser voir le globe
   eau: (opacite = 0.5) => new THREE.MeshStandardMaterial({ color: 0x6aa8d8, roughness: 0.35, metalness: 0, transparent: true, opacity: opacite, depthWrite: false, envMapIntensity: 0 }),
+  // bulle d'air (cellule de turbulence, panache chaud) : très translucide, surlignable.
+  // Sur un InstancedMesh, garder le blanc par défaut et colorer chaque instance (setColorAt).
+  air: (couleur = 0xffffff, opacite = 0.22) => new THREE.MeshStandardMaterial({ color: couleur, roughness: 1, metalness: 0, transparent: true, opacity: opacite, depthWrite: false, envMapIntensity: 0.4 }),
   lentille: () => new THREE.MeshStandardMaterial({ color: 0x6f8fb8, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.55 }),
   // globe oculaire (œil de l'observateur) : blanc laiteux translucide, laisse voir les rayons à l'intérieur
   oeil: () => new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.45, metalness: 0, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }),
