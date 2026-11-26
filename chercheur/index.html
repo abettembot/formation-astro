@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chercheur et viseurs</title>
+<meta name="description" content="Schéma 3D interactif : chercheur 8×50, viseur à point rouge et Telrad sur un Newton 200/1000. Pourquoi un viseur, comment l'aligner, et ce que l'on voit au viseur puis à l'oculaire.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, axeX, axeZ, mesh, legende, faisceau, halo, textureHalo, vuesRondes, alea } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 100 mm ----------
+// Tube d'un Newton 200/1000 couché selon X, ouverture vers +X. Le viseur est posé sur le dessus (+Y).
+// Le ciel visé (les Pléiades) est dans la direction +X : « droite » sur le ciel = +Z, « haut » = +Y.
+const DEG = Math.PI / 180;
+const RT = 1.25, TUBE_BACK = -5.0, TUBE_FRONT = 4.6;
+const ROUGE = COULEURS.laser;        // LED rouge des viseurs
+const LOIN = 300;                    // distance de dessin du ciel (suit la caméra : astres à l'infini)
+const OCU = { f: 25, champApp: 52 }; // oculaire Plössl 25 mm
+const G_OCU = 1000 / OCU.f, CHAMP_OCU = OCU.champApp / G_OCU; // 40×, 1,3°
+const virgule = (v, d = 1) => v.toFixed(d).replace(".", ",");
+
+// ---------- Les trois viseurs ----------
+const MODELES = {
+  chercheur: { bouton: "Chercheur 8×50", nom: "Chercheur 8×50", champ: 6, inverse: true, lim: 9.5, reticule: "la croix du réticule" },
+  point: { bouton: "Point rouge", nom: "Viseur à point rouge", champ: 12, inverse: false, lim: 5.5, reticule: "le point rouge" },
+  telrad: { bouton: "Telrad", nom: "Telrad", champ: 12, inverse: false, lim: 5.5, reticule: "le centre des cercles" },
+};
+let modele = "chercheur";
+
+const S = createSchema({
+  surtitre: "Support de formation · Instruments",
+  titre: "Chercheur et viseurs",
+  sousTitre: "Exemple : Newton 200/1000 · Pléiades",
+  distanceMin: 1.5,
+  apercu: [{ titre: "Ce que l'on voit" }],
+  commandes: [
+    { type: "raccourcis", id: "modeles", label: "Viseur", boutons: Object.entries(MODELES).map(([id, x]) => ({ id, label: x.bouton, onClick: () => choisir(id) })) },
+    { type: "curseur", id: "haut", label: "Écart haut-bas", min: -2, max: 2, pas: 0.05, valeur: 1.2, format: (v) => signe(v), onInput: () => { sale = true; } },
+    { type: "curseur", id: "cote", label: "Écart gauche-droite", min: -2, max: 2, pas: 0.05, valeur: -0.8, format: (v) => signe(v), onInput: () => { sale = true; } },
+    { type: "raccourcis", id: "reglage", label: "Réglage", boutons: [
+      { id: "aligner", label: "Aligner", onClick: () => { S.regler("haut", 0); S.regler("cote", 0); } },
+      { id: "deregler", label: "Dérégler", onClick: deregler },
+    ] },
+    { type: "bascule", id: "lumiere", label: "Trajet lumière", actif: true, onChange: (on) => { coupe(on); sale = true; } },
+    { type: "bascule", id: "axes", label: "Axes de visée", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: [0, 4.2, 8.4], cible: [3.4, 1.9, 0] },
+    { id: "profil", label: "Profil", pos: [8, 2.2, 17], cible: [9, 1.4, 0] },
+    { id: "reglage", label: "Réglage", pos: [0.4, 3.4, 3.6], cible: [2.6, 1.85, 0], exacte: true },
+    { id: "oeil", label: "Derrière le viseur", immersif: true, fov: 30, fovMin: 6, fovMax: 70, pos: () => oeilMonde(), cible: () => oeilMonde().add(axeViseur().multiplyScalar(10)) },
+  ],
+  intro: () => `
+    <div class="eyebrow">Trouver un objet</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "On repère l'objet à l'œil nu et l'on pointe grossièrement le tube dans sa direction." },
+      { couleur: COULEURS.ambre, texte: "Au viseur, qui montre un grand champ, on amène l'objet au centre du réticule : croix, point rouge ou cercles." },
+      { couleur: COULEURS.orange, texte: "Si le viseur est aligné sur le tube, l'objet apparaît dans l'oculaire, au plus faible grossissement." },
+    ])}
+    <p>À 40×, l'oculaire ne montre que ${virgule(CHAMP_OCU)}° de ciel. Un viseur décalé d'un seul degré suffit à faire « disparaître » l'objet.</p>
+    <p class="spec">Aligner le viseur : centrer d'abord l'objet dans l'oculaire, puis tourner les vis du viseur jusqu'à poser le réticule dessus. De jour sur un objet lointain (clocher, antenne), jamais vers le Soleil ; de nuit sur une étoile brillante.</p>`,
+});
+const sousTitre = document.querySelector("#panel header p");
+function signe(v) { return (v > 0 ? "+" : v < 0 ? "−" : "") + virgule(Math.abs(v), 2) + "°"; }
+
+// ---------- Instrument (tout ce qui est solidaire du tube) ----------
+const instr = new THREE.Group();
+S.scene.add(instr);
+
+const tube = S.part("tube", "Tube du télescope", {
+  parent: instr, ancre: [-2.0, RT + 0.1, 0],
+  texte: "Le télescope de l'exemple : un Newton 200/1000. À 40×, son oculaire ne montre que 1,3° de ciel, moins de trois fois le diamètre de la Lune. Sans viseur, trouver un objet dans un champ aussi petit relève de la chance.",
+  chiffres: "D = 200 mm · F = 1000 mm · f/5",
+});
+{
+  const len = TUBE_FRONT - TUBE_BACK, mid = (TUBE_FRONT + TUBE_BACK) / 2;
+  S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT, RT, len, 72, 1, true)), M.peinture(), mid));
+  S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT - 0.015, RT - 0.015, len, 72, 1, true)), M.flocage(), mid));
+  S.add(tube, mesh(axeX(new THREE.TorusGeometry(RT, 0.035, 10, 72).rotateX(Math.PI / 2)), M.noir(), TUBE_FRONT));
+  S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT + 0.04, RT + 0.04, 0.12, 72)), M.noir(), TUBE_BACK - 0.06));
+  for (const x of [-2.6, 0.9]) {
+    S.add(tube, mesh(axeX(new THREE.CylinderGeometry(RT + 0.07, RT + 0.07, 0.3, 72, 1, true)), M.noir(), x)).material.side = THREE.DoubleSide;
+    S.add(tube, mesh(new THREE.BoxGeometry(0.3, 0.32, 0.5), M.noir(), x, -RT - 0.22, 0));
+  }
+  S.add(tube, mesh(new THREE.BoxGeometry(5.0, 0.16, 0.76), M.alu(), -0.85, -RT - 0.46, 0));
+}
+
+// porte-oculaire et oculaire, sur le côté +Z, à hauteur du secondaire
+const XF = 3.3;
+const oculaire = S.part("oculaire", "Oculaire 25 mm", {
+  parent: instr, ancre: [XF, 0.45, RT + 1.15],
+  texte: "L'oculaire de plus faible grossissement, celui qu'on utilise pour trouver un objet et pour aligner le viseur. Plus on grossit, plus le champ se rétrécit : avec un 10 mm (100×), il ne reste qu'un demi-degré de ciel.",
+  chiffres: `Plössl 25 mm · 1000 ÷ 25 = 40× · champ apparent 52° ÷ 40 ≈ ${virgule(CHAMP_OCU)}° de ciel`,
+});
+{
+  S.add(oculaire, mesh(axeZ(new THREE.CylinderGeometry(0.46, 0.46, 0.12, 40)), M.noir(), XF, 0, RT + 0.02));
+  S.add(oculaire, mesh(axeZ(new THREE.CylinderGeometry(0.33, 0.33, 0.5, 40)), M.noir(), XF, 0, RT + 0.3));
+  S.add(oculaire, mesh(axeZ(new THREE.CylinderGeometry(0.05, 0.05, 1.3, 12)).rotateY(Math.PI / 2), M.alu(), XF, 0, RT + 0.3));
+  S.add(oculaire, mesh(axeZ(new THREE.CylinderGeometry(0.25, 0.25, 0.3, 40)), M.alu(), XF, 0, RT + 0.68));
+  S.add(oculaire, mesh(axeZ(new THREE.CylinderGeometry(0.3, 0.27, 0.5, 32)), M.noir(), XF, 0, RT + 1.05));
+  S.add(oculaire, mesh(axeZ(new THREE.CylinderGeometry(0.29, 0.31, 0.18, 32)), M.caoutchouc(), XF, 0, RT + 1.38));
+}
+
+// ---------- Outils de construction ----------
+/** Groupe fixe (sur le tube) et groupe pivotant (incliné par les vis) d'un viseur. */
+function viseur(pivot, axeY, xAvant, oeil) {
+  const fixe = new THREE.Group(), piv = new THREE.Group();
+  piv.position.set(...pivot);
+  instr.add(fixe, piv);
+  const P = (x, y, z = 0) => [x - pivot[0], y - pivot[1], z - pivot[2]]; // repère instrument -> repère pivotant
+  return { fixe, piv, P, axeY, xAvant, oeil: P(...oeil), avant: P(xAvant, axeY), vis: [] };
+}
+/** Molette : cylindre d'axe radial (angle t autour de X, compté depuis +Y vers +Z), avec un repère pour voir sa rotation. */
+function molette(part, pos, dir, r = 0.08, h = 0.08) {
+  const g = new THREE.Group();
+  g.position.set(...pos);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...dir).normalize());
+  const tourne = new THREE.Group(); g.add(tourne);
+  tourne.add(mesh(new THREE.CylinderGeometry(r, r, h, 20), M.noir()));
+  tourne.add(mesh(new THREE.BoxGeometry(r * 0.5, h * 1.02, r * 0.3), M.alu(), r * 0.75, 0, 0));
+  S.add(part, g);
+  return tourne;
+}
+const tubeAxeX = (r, x0, x1, mat, ouvert) => {
+  const g = ouvert ? new THREE.CylinderGeometry(r, r, x1 - x0, 48, 1, true, Math.PI / 2, Math.PI) : new THREE.CylinderGeometry(r, r, x1 - x0, 48, 1, true);
+  return { geo: axeX(g), x: (x0 + x1) / 2 };
+};
+
+// ---------- Chercheur 8×50 ----------
+// Objectif 50 mm de focale ≈ 180 mm, oculaire ≈ 22 mm : grossissement 8, champ ≈ 6°.
+const CH = viseur([3.0, 2.15, 0], 2.15, 3.95, [0.7, 2.6, 0]);
+const CH_OBJ = 3.65, CH_FOY = CH_OBJ - 1.8, CH_OCU = CH_FOY - 0.225;
+const chTubes = []; // tube et pare-buée, ouverts quand le trajet de la lumière est affiché
+{
+  const { fixe, piv, P } = CH;
+  const pied = S.part("ch-pied", "Pied et sabot", {
+    parent: fixe, ancre: [2.6, 1.5, 0.35],
+    texte: "Le support du chercheur se glisse dans un sabot vissé sur le tube et se bloque par une vis. On peut retirer le chercheur pour ranger le télescope, puis le remettre sans perdre tout le réglage.",
+    chiffres: "Sabot standard type Synta (Sky-Watcher), le même pour un viseur à point rouge",
+  });
+  S.add(pied, mesh(new THREE.BoxGeometry(1.0, 0.08, 0.36), M.noir(), 2.6, RT + 0.04, 0));
+  S.add(pied, mesh(new THREE.BoxGeometry(0.9, 0.1, 0.24), M.alu(), 2.6, RT + 0.13, 0));
+  molette(pied, [2.6, RT + 0.06, 0.24], [0, 0, 1], 0.06, 0.1);
+
+  const support = S.part("ch-support", "Support et vis de réglage", {
+    parent: fixe, ancre: [2.2, 2.75, 0],
+    texte: "Deux anneaux tiennent le chercheur. À l'arrière, deux vis moletées le poussent et un poussoir à ressort, en face, le plaque contre elles. La vis du dessus règle le haut-bas, celle du côté la gauche-droite : en les tournant, on incline le chercheur jusqu'à ce qu'il vise le même point que le tube.",
+    chiffres: "2 vis moletées + 1 poussoir à ressort · le chercheur pivote dans le joint de l'anneau avant",
+  });
+  for (const x of [2.2, 3.0]) {
+    S.add(support, mesh(new THREE.BoxGeometry(0.1, 0.4, 0.14), M.noir(), x, 1.6, 0));
+    S.add(support, mesh(axeX(new THREE.CylinderGeometry(0.36, 0.36, 0.12, 40, 1, true)), M.noir(), x, 2.15, 0)).material.side = THREE.DoubleSide;
+    S.add(support, mesh(axeX(new THREE.TorusGeometry(0.36, 0.03, 8, 40).rotateX(Math.PI / 2)), M.noir(), x, 2.15, 0));
+  }
+  S.add(support, mesh(axeX(new THREE.TorusGeometry(0.27, 0.025, 8, 40).rotateX(Math.PI / 2)), M.caoutchouc(), 3.0, 2.15, 0)); // joint torique
+  for (const [t, ressort] of [[0, false], [Math.PI / 2, false], [Math.PI * 1.25, true]]) {
+    const d = [0, Math.cos(t), Math.sin(t)];
+    const tige = mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.32, 10), M.alu(), 2.2, 2.15 + d[1] * 0.41, d[2] * 0.41);
+    tige.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...d));
+    S.add(support, tige);
+    if (ressort) {
+      const boitier = mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.18, 14), M.alu(), 2.2, 2.15 + d[1] * 0.47, d[2] * 0.47);
+      boitier.quaternion.copy(tige.quaternion);
+      S.add(support, boitier);
+    } else CH.vis.push(molette(support, [2.2, 2.15 + d[1] * 0.6, d[2] * 0.6], d, 0.09, 0.09));
+  }
+
+  const corps = S.part("ch-tube", "Tube du chercheur", {
+    parent: piv, ancre: P(3.5, 2.5),
+    texte: "Une petite lunette : son objectif de 50 mm forme l'image des étoiles au fond du tube. Elle grossit 8 fois et montre environ 6° de ciel, près de cinq fois le champ de l'oculaire du télescope. Comme toute lunette droite, elle renverse l'image (rotation de 180°).",
+    chiffres: "8×50 : grossissement 8, objectif 50 mm · focale ≈ 180 mm · champ ≈ 6° · étoiles jusqu'à la magnitude 9 à 10",
+  });
+  for (const [r, x0, x1] of [[0.25, 1.55, 3.75], [0.3, 3.75, 3.97]]) {
+    const ext = S.add(corps, mesh(new THREE.BufferGeometry(), M.peinture(), ...P(0, 2.15)));
+    const int = S.add(corps, mesh(new THREE.BufferGeometry(), M.flocage(), ...P(0, 2.15)));
+    chTubes.push({ ext, int, r, x0, x1 });
+  }
+  S.add(corps, mesh(axeX(new THREE.CylinderGeometry(0.3, 0.25, 0.06, 40, 1, true)), M.peinture(), ...P(3.75, 2.15))).material.side = THREE.DoubleSide;
+  S.add(corps, mesh(axeX(new THREE.CylinderGeometry(0.24, 0.24, 0.05, 40)), M.lentille(), ...P(CH_OBJ, 2.15)));
+  S.add(corps, mesh(axeX(new THREE.CylinderGeometry(0.255, 0.255, 0.08, 40, 1, true)), M.noir(), ...P(CH_OBJ, 2.15))).material.side = THREE.DoubleSide;
+
+  const reticule = S.part("ch-ret", "Réticule", {
+    parent: piv, ancre: P(CH_FOY, 2.5, 0),
+    texte: "Deux fils croisés placés au foyer de l'objectif, là où se forme l'image. Ils sont donc nets en même temps que les étoiles. On centre l'objet sur la croix : c'est le point que vise le chercheur.",
+    chiffres: "Au foyer de l'objectif, ≈ 180 mm derrière lui",
+  });
+  S.add(reticule, mesh(new THREE.BoxGeometry(0.012, 0.48, 0.012), M.noir(), ...P(CH_FOY, 2.15)));
+  S.add(reticule, mesh(new THREE.BoxGeometry(0.012, 0.012, 0.48), M.noir(), ...P(CH_FOY, 2.15)));
+  S.add(reticule, mesh(axeX(new THREE.TorusGeometry(0.24, 0.012, 6, 40).rotateX(Math.PI / 2)), M.alu(), ...P(CH_FOY, 2.15)));
+
+  const ocu = S.part("ch-ocu", "Oculaire du chercheur", {
+    parent: piv, ancre: P(1.3, 2.45),
+    texte: "Il grossit l'image formée au foyer, réticule compris. On tourne sa bague pour faire la mise au point sur les étoiles. La pupille de sortie est large : l'œil trouve facilement l'image.",
+    chiffres: "Focale ≈ 22 mm · 180 ÷ 22 ≈ 8× · pupille de sortie 50 ÷ 8 ≈ 6 mm",
+  });
+  S.add(ocu, mesh(axeX(new THREE.CylinderGeometry(0.14, 0.14, 0.45, 32, 1, true)), M.noir(), ...P(1.37, 2.15))).material.side = THREE.DoubleSide;
+  S.add(ocu, mesh(axeX(new THREE.CylinderGeometry(0.165, 0.165, 0.14, 32, 1, true)), M.caoutchouc(), ...P(1.3, 2.15))).material.side = THREE.DoubleSide;
+  S.add(ocu, mesh(axeX(new THREE.CylinderGeometry(0.12, 0.12, 0.03, 32)), M.lentille(), ...P(CH_OCU, 2.15)));
+}
+function coupe(on) {
+  for (const t of chTubes) {
+    const a = tubeAxeX(t.r, t.x0, t.x1, null, on), b = tubeAxeX(t.r - 0.012, t.x0, t.x1, null, on);
+    t.ext.geometry.dispose(); t.ext.geometry = a.geo; t.ext.position.x = a.x - CH.piv.position.x;
+    t.int.geometry.dispose(); t.int.geometry = b.geo; t.int.position.x = b.x - CH.piv.position.x;
+  }
+}
+
+// ---------- Viseur à point rouge ----------
+const PR = viseur([2.85, 1.45, 0], 1.7, 2.93, [-0.6, 1.7, 0]);
+const PR_FEN = 2.85, PR_LED = [2.28, 1.6];
+{
+  const { fixe, piv, P } = PR;
+  const embase = S.part("pr-embase", "Embase", {
+    parent: fixe, ancre: [2.5, 1.38, 0.3],
+    texte: "Le pied du viseur se serre sur un sabot fixé au tube, le même que celui d'un chercheur. Le viseur s'enlève et se remet sans tout dérégler.",
+    chiffres: "Sabot standard type Synta (Sky-Watcher)",
+  });
+  S.add(embase, mesh(new THREE.BoxGeometry(1.0, 0.08, 0.36), M.noir(), 2.5, RT + 0.04, 0));
+  S.add(embase, mesh(new THREE.BoxGeometry(0.9, 0.08, 0.26), M.noir(), 2.5, RT + 0.12, 0));
+  S.add(embase, mesh(new THREE.BoxGeometry(0.16, 0.3, 0.05), M.noir(), 2.2, 1.45, 0.17));
+
+  const vis = S.part("pr-vis", "Molettes de réglage", {
+    parent: fixe, ancre: [2.2, 1.75, 0.38],
+    texte: "Deux molettes inclinent le boîtier par rapport à son embase : celle du dessous en haut-bas, celle du côté en gauche-droite. On les tourne jusqu'à ce que le point rouge tombe sur l'objet centré dans l'oculaire.",
+    chiffres: "2 molettes : haut-bas et gauche-droite",
+  });
+  PR.vis.push(molette(vis, [2.18, 1.4, 0], [0, 1, 0], 0.08, 0.06));
+  PR.vis.push(molette(vis, [2.2, 1.52, 0.24], [0, 0, 1], 0.075, 0.06));
+
+  const led = S.part("pr-led", "LED et molette d'intensité", {
+    parent: piv, ancre: P(2.3, 1.85, -0.1),
+    texte: "La LED est placée au foyer de la petite fenêtre concave : ses rayons repartent parallèles, comme s'ils venaient d'une étoile. Le point semble donc à l'infini et reste sur l'étoile même si l'on bouge la tête. La molette règle sa luminosité : au plus faible, pour ne pas noyer les étoiles.",
+    chiffres: "LED rouge · pile bouton CR2032 (selon modèle) · à éteindre après la séance",
+  });
+  S.add(led, mesh(new THREE.BoxGeometry(0.78, 0.14, 0.3), M.noir(), ...P(2.43, 1.53)));
+  S.add(led, mesh(new THREE.BoxGeometry(0.14, 0.08, 0.12), M.noir(), ...P(2.2, 1.56)));
+  S.add(led, halo(ROUGE, 0.05)).position.set(...P(...PR_LED));
+  molette(led, P(2.55, 1.53, -0.17), [0, 0, -1], 0.08, 0.06);
+
+  const fen = S.part("pr-fenetre", "Fenêtre", {
+    parent: piv, ancre: P(PR_FEN, 2.0),
+    texte: "Une petite vitre légèrement concave, traitée pour réfléchir le rouge. Elle renvoie vers l'œil la lumière de la LED tout en laissant voir le ciel à travers. L'œil voit un point rouge posé sur les étoiles, sans grossissement.",
+    chiffres: "Grossissement 1 · point de quelques minutes d'arc (≈ 3 à 6′) · image droite",
+  });
+  S.add(fen, mesh(axeX(new THREE.CylinderGeometry(0.2, 0.2, 0.16, 40, 1, true)), M.noir(), ...P(PR_FEN, 1.7))).material.side = THREE.DoubleSide;
+  S.add(fen, mesh(axeX(new THREE.TorusGeometry(0.2, 0.025, 8, 40).rotateX(Math.PI / 2)), M.noir(), ...P(PR_FEN - 0.08, 1.7)));
+  const vitre = S.add(fen, mesh(axeX(new THREE.CylinderGeometry(0.185, 0.185, 0.012, 40)), M.verre(), ...P(PR_FEN, 1.7)));
+  vitre.material.opacity = 0.3; vitre.rotation.z = 6 * DEG;
+}
+
+// ---------- Telrad ----------
+// Cercles de 0,5°, 2° et 4° projetés à l'infini ; vitre inclinée à 45°.
+const TR = viseur([3.15, 1.38, 0], 2.2, 3.25, [-0.9, 2.2, 0]);
+const TR_X = 3.0, TR_LENT = 1.83, TR_RET = 1.5;
+{
+  const { fixe, piv, P } = TR;
+  const embase = S.part("tr-embase", "Embase", {
+    parent: fixe, ancre: [1.6, 1.35, 0.3],
+    texte: "Une semelle collée sur le tube avec un adhésif double face. Le Telrad s'y glisse et s'en retire sans outil ; une embase par instrument permet de passer le même Telrad de l'un à l'autre.",
+    chiffres: "Longueur ≈ 18 cm · embases supplémentaires vendues séparément",
+  });
+  S.add(embase, mesh(new THREE.BoxGeometry(1.85, 0.06, 0.5), M.noir(), 2.45, RT + 0.03, 0));
+  S.add(embase, mesh(new THREE.BoxGeometry(0.12, 0.1, 0.5), M.noir(), 3.15, RT + 0.09, 0));
+
+  const vis = S.part("tr-vis", "Molettes de réglage", {
+    parent: fixe, ancre: [1.55, 1.6, 0.3],
+    texte: "Trois molettes à l'arrière soulèvent ou inclinent le boîtier, articulé à l'avant sur son embase. On les tourne jusqu'à poser le centre des cercles sur l'objet centré dans l'oculaire.",
+    chiffres: "3 molettes · boîtier articulé à l'avant, rappelé par des ressorts",
+  });
+  for (const z of [-0.18, 0, 0.18]) TR.vis.push(molette(vis, [1.62, 1.36, z], [0, 1, 0], 0.07, 0.1));
+
+  const boitier = S.part("tr-boitier", "Boîtier, réticule et LED", {
+    parent: piv, ancre: P(2.2, 1.95, 0),
+    texte: "Dans le boîtier, une LED éclaire un réticule gravé de trois cercles. Une optique placée au-dessus le renvoie à l'infini : les cercles restent posés sur les étoiles même si l'on bouge la tête. Leurs tailles servent d'échelle pour reporter une distance lue sur une carte.",
+    chiffres: "Cercles de 0,5°, 2° et 4° · le petit a la taille de la pleine Lune · 2 piles AA",
+  });
+  S.add(boitier, mesh(new THREE.BoxGeometry(1.45, 0.4, 0.56), M.peinture(), ...P(2.42, 1.62)));
+  S.add(boitier, mesh(new THREE.BoxGeometry(0.2, 0.06, 0.56), M.peinture(), ...P(1.62, 1.45)));
+  S.add(boitier, mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.02, 40), M.lentille(), ...P(TR_X, TR_LENT)));
+  S.add(boitier, halo(ROUGE, 0.1)).position.set(...P(TR_X, TR_RET));
+  molette(boitier, P(2.0, 1.62, 0.3), [0, 0, 1], 0.09, 0.07);
+
+  const vitre = S.part("tr-vitre", "Vitre inclinée", {
+    parent: piv, ancre: P(2.75, 2.55, 0),
+    texte: "Une vitre transparente, inclinée à 45°, superpose au ciel l'image des cercles rouges. On garde les deux yeux ouverts et l'on voit le ciel tel quel, sans grossissement ni inversion : c'est le viseur le plus simple pour suivre une carte.",
+    chiffres: "Grossissement 1 · image droite, non inversée",
+  });
+  const v = S.add(vitre, mesh(new THREE.BoxGeometry(0.64, 0.012, 0.54), M.verre(), ...P(TR_X, 2.2)));
+  v.rotation.z = -Math.PI / 4; v.material.opacity = 0.3;
+  for (const z of [-0.285, 0.285]) {
+    const s = new THREE.Shape();
+    s.moveTo(-0.3, 0); s.lineTo(0.3, 0); s.lineTo(-0.3, 0.62); s.closePath();
+    const g = new THREE.ExtrudeGeometry(s, { depth: 0.02, bevelEnabled: false });
+    S.add(vitre, mesh(g, M.peinture(), ...P(TR_X, 1.82, z - 0.01)));
+  }
+}
+
+const VISEURS = { chercheur: CH, point: PR, telrad: TR };
+
+// ---------- Le ciel visé : les Pléiades ----------
+// Coordonnées J2000 (AD en h, m, s ; Déc en °, ′, ″) et magnitudes. Repère : écart en degrés autour d'Alcyone,
+// x vers la droite (l'ouest, quand on fait face à l'amas), y vers le haut (le nord).
+const NOMMEES = [
+  ["Alcyone", 3, 47, 29.1, 24, 6, 18, 2.87], ["Atlas", 3, 49, 9.7, 24, 3, 12, 3.62],
+  ["Électre", 3, 44, 52.5, 24, 6, 48, 3.70], ["Maïa", 3, 45, 49.6, 24, 22, 4, 3.86],
+  ["Mérope", 3, 46, 19.6, 23, 56, 54, 4.17], ["Taygète", 3, 45, 12.5, 24, 28, 2, 4.29],
+  ["Pléioné", 3, 49, 11.2, 24, 8, 12, 5.05], ["Céléno", 3, 44, 48.2, 24, 17, 22, 5.45],
+  ["Astérope", 3, 45, 54.5, 24, 33, 17, 5.76],
+];
+const ad = (h, m, s) => (h + m / 60 + s / 3600) * 15, dec = (d, m, s) => d + m / 60 + s / 3600;
+const AD0 = ad(3, 47, 29.1), DEC0 = dec(24, 6, 18);
+const ETOILES = NOMMEES.map(([nom, h, m, s, d, dm, ds, mag]) => ({ nom, x: -(ad(h, m, s) - AD0) * Math.cos(DEC0 * DEG), y: dec(d, dm, ds) - DEC0, m: mag }));
+{
+  const r = alea(4517);
+  // membres plus faibles de l'amas, concentrés autour du centre
+  for (let i = 0; i < 70; i++) {
+    const a = 2 * Math.PI * r(), d = 0.45 * Math.sqrt(-2 * Math.log(Math.max(r(), 1e-6)));
+    ETOILES.push({ x: -0.1 + d * Math.cos(a), y: 0.05 + d * Math.sin(a), m: 6.6 + 5 * r() });
+  }
+  // étoiles du champ, de plus en plus nombreuses vers les faibles magnitudes
+  for (let i = 0; i < 9000; i++) {
+    let m = 12 + Math.log10(Math.max(r(), 1e-9)) / 0.4;
+    if (m < 5.8) m = 5.8 + 2 * r();
+    ETOILES.push({ x: (r() * 2 - 1) * 8, y: (r() * 2 - 1) * 8, m });
+  }
+}
+/** Direction (repère du monde) d'un point du ciel donné en degrés (droite, haut) autour d'Alcyone. */
+const dirCiel = (x, y) => new THREE.Vector3(1, Math.tan(y * DEG), Math.tan(x * DEG)).normalize();
+
+// ciel 3D : il suit la caméra pour que les astres soient à l'infini (sans parallaxe entre tube et viseur)
+const ciel3D = new THREE.Group();
+S.scene.add(ciel3D);
+for (const [mMax, taille] of [[3.5, 9], [4.5, 6.5], [5.5, 4.5], [7, 2.6]]) {
+  const pts = [];
+  for (const e of ETOILES) if (e.m < mMax && e.m >= mMax - (mMax === 3.5 ? 9 : mMax === 7 ? 1.5 : 1)) pts.push(dirCiel(e.x, e.y).multiplyScalar(LOIN));
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  const p = new THREE.Points(g, new THREE.PointsMaterial({ color: 0xdfe8ff, size: taille, sizeAttenuation: false, map: textureHalo(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  p.frustumCulled = false;
+  ciel3D.add(p);
+}
+S.label("Les Pléiades (M45)", () => S.camera.position.clone().addScaledVector(dirCiel(0.3, 2.0), LOIN), { lumiere: true });
+
+// réticule projeté à l'infini (vu seulement « Derrière le viseur ») : point rouge ou cercles du Telrad
+const reticule3D = new THREE.Group();
+S.scene.add(reticule3D);
+const matRet = () => new THREE.LineBasicMaterial({ color: ROUGE, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+const cerclesTelrad = new THREE.Group();
+for (const diam of [0.5, 2, 4]) {
+  const r = LOIN * Math.tan(diam / 2 * DEG), pts = [];
+  for (let i = 0; i <= 96; i++) { const a = i / 96 * 2 * Math.PI; pts.push(new THREE.Vector3(LOIN, r * Math.sin(a), r * Math.cos(a))); }
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), matRet());
+  l.renderOrder = 10; l.frustumCulled = false;
+  cerclesTelrad.add(l);
+}
+const pointRouge = new THREE.Points(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(LOIN, 0, 0)]),
+  new THREE.PointsMaterial({ color: ROUGE, size: 9, sizeAttenuation: false, map: textureHalo(), transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending }));
+pointRouge.renderOrder = 10; pointRouge.frustumCulled = false;
+reticule3D.add(cerclesTelrad, pointRouge);
+
+// ---------- Axes de visée ----------
+const LONG_AXE = 60;
+function ligneAxe(couleur) {
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(1, 0, 0)]),
+    new THREE.LineDashedMaterial({ color: couleur, dashSize: 0.35, gapSize: 0.2, transparent: true, opacity: 0.8, depthWrite: false }));
+  l.frustumCulled = false;
+  S.scene.add(l);
+  return l;
+}
+const axeTube = ligneAxe(COULEURS.ambre), axeVis = ligneAxe(ROUGE);
+function poserAxe(l, a, dir) {
+  const p = l.geometry.attributes.position;
+  p.setXYZ(0, a.x, a.y, a.z);
+  p.setXYZ(1, a.x + dir.x * LONG_AXE, a.y + dir.y * LONG_AXE, a.z + dir.z * LONG_AXE);
+  p.needsUpdate = true;
+  l.computeLineDistances();
+}
+const V = () => VISEURS[modele];
+const axeViseur = () => new THREE.Vector3(1, 0, 0).applyQuaternion(V().piv.getWorldQuaternion(new THREE.Quaternion()));
+const axeDuTube = () => new THREE.Vector3(1, 0, 0).applyQuaternion(instr.quaternion);
+const oeilMonde = () => V().piv.localToWorld(new THREE.Vector3(...V().oeil));
+const avantViseur = () => V().piv.localToWorld(new THREE.Vector3(...V().avant));
+const avantTube = () => instr.localToWorld(new THREE.Vector3(TUBE_FRONT, 0, 0));
+const axesVisibles = () => S.state.axes && !enImmersion;
+S.label("Axe du tube", () => avantTube().addScaledVector(axeDuTube(), 16).add(new THREE.Vector3(0, -0.35, 0)), { lumiere: true, visible: axesVisibles });
+S.label("Axe du viseur", () => avantViseur().addScaledVector(axeViseur(), 16).add(new THREE.Vector3(0, 0.35, 0)), { lumiere: true, visible: axesVisibles });
+
+// ---------- Trajet de la lumière ----------
+const fx = faisceau(0.6, 0.2, 64);
+S.scene.add(fx.group);
+function trajets() {
+  const v = V(), w = (x, y, z = 0) => v.piv.localToWorld(new THREE.Vector3(...v.P(x, y, z)));
+  const etoile = dirCiel(0, 0), liste = [];
+  if (modele === "chercheur") {
+    for (const h of [-0.19, -0.09, 0.09, 0.19]) {
+      const y = 2.15;
+      liste.push({ pts: [w(6.4, y + h), w(CH_OBJ, y + h), w(CH_FOY, y), w(CH_OCU, y - h / 8), w(0.8, y - h / 8)], cols: [COULEURS.etoile, COULEURS.ambre, COULEURS.ambre, COULEURS.orange] });
+    }
+  } else if (modele === "point") {
+    for (const d of [-0.09, 0, 0.09]) {
+      const F = w(PR_FEN, 1.7 + d);
+      liste.push({ pts: [w(...PR_LED), F, w(-0.2, 1.7 + d)], cols: [ROUGE, ROUGE] });
+      liste.push({ pts: [F.clone().addScaledVector(etoile, 4), F, F.clone().addScaledVector(etoile, -3.0)], cols: [COULEURS.etoile, COULEURS.etoile] });
+    }
+  } else {
+    for (const d of [-0.12, 0, 0.12]) {
+      const F = w(TR_X + d, 2.2 - d);
+      liste.push({ pts: [w(TR_X, TR_RET), w(TR_X + d, TR_LENT), F, w(0.5, 2.2 - d)], cols: [ROUGE, ROUGE, ROUGE] });
+      liste.push({ pts: [F.clone().addScaledVector(etoile, 4), F, F.clone().addScaledVector(etoile, -2.5)], cols: [COULEURS.etoile, COULEURS.etoile] });
+    }
+  }
+  fx.poser(liste);
+}
+const lumVisible = () => S.state.lumiere && !enImmersion;
+S.label("Vers l'œil", () => V().piv.localToWorld(new THREE.Vector3(...V().P(modele === "chercheur" ? 0.75 : modele === "point" ? -0.15 : 0.45, V().axeY + 0.25))), { lumiere: true, visible: lumVisible });
+S.label("LED", () => V().piv.localToWorld(new THREE.Vector3(...(modele === "point" ? V().P(PR_LED[0] - 0.05, PR_LED[1] + 0.2, 0) : V().P(TR_X, TR_RET + 0.05, 0.4)))), { lumiere: true, visible: () => lumVisible() && modele !== "chercheur" });
+
+// ---------- Ce que l'on voit : au viseur et à l'oculaire ----------
+const N = 360;
+function toile() { const c = document.createElement("canvas"); c.width = c.height = N; return c; }
+/** Champ rond centré sur c (degrés), de rayon R (degrés) ; inverse : image tournée de 180°. */
+function champ(c, R, inverse, lim) {
+  const cv = toile(), x = cv.getContext("2d"), k = (N / 2) / R;
+  x.fillStyle = "#03050a"; x.fillRect(0, 0, N, N);
+  for (const e of ETOILES) {
+    if (e.m > lim) continue;
+    let dx = e.x - c.x, dy = e.y - c.y;
+    if (Math.abs(dx) > R * 1.05 || Math.abs(dy) > R * 1.05) continue;
+    if (inverse) { dx = -dx; dy = -dy; }
+    const X = N / 2 + dx * k, Y = N / 2 - dy * k, ecart = lim - e.m;
+    const r = Math.min(5, 0.7 + 0.55 * ecart), a = Math.min(1, 0.35 + 0.18 * ecart);
+    if (r > 2.2) {
+      const g = x.createRadialGradient(X, Y, 0, X, Y, r * 2.4);
+      g.addColorStop(0, `rgba(235,242,255,${a})`); g.addColorStop(0.35, `rgba(215,228,255,${a * 0.55})`); g.addColorStop(1, "rgba(200,215,255,0)");
+      x.fillStyle = g; x.beginPath(); x.arc(X, Y, r * 2.4, 0, 2 * Math.PI); x.fill();
+    } else {
+      x.fillStyle = `rgba(225,235,255,${a})`; x.beginPath(); x.arc(X, Y, r, 0, 2 * Math.PI); x.fill();
+    }
+  }
+  return { cv, x, k };
+}
+function dessinReticule({ x, k }) {
+  const c = N / 2;
+  if (modele === "chercheur") {
+    x.strokeStyle = "rgba(170,185,205,0.75)"; x.lineWidth = 1.2;
+    x.beginPath(); x.moveTo(0, c); x.lineTo(N, c); x.moveTo(c, 0); x.lineTo(c, N); x.stroke();
+  } else if (modele === "point") {
+    const g = x.createRadialGradient(c, c, 0, c, c, 7);
+    g.addColorStop(0, "rgba(255,90,80,1)"); g.addColorStop(0.4, "rgba(255,45,45,0.7)"); g.addColorStop(1, "rgba(255,45,45,0)");
+    x.fillStyle = g; x.beginPath(); x.arc(c, c, 7, 0, 2 * Math.PI); x.fill();
+  } else {
+    x.strokeStyle = "rgba(255,60,55,0.9)"; x.lineWidth = 1.6;
+    for (const diam of [0.5, 2, 4]) { x.beginPath(); x.arc(c, c, k * diam / 2, 0, 2 * Math.PI); x.stroke(); }
+  }
+}
+let cleDessin = "";
+function dessinerApercu(ecarts) {
+  const ap = S.apercu, W = ap.canvas.clientWidth, m = MODELES[modele];
+  const cle = [modele, S.state.haut, S.state.cote, W].join("|");
+  if (cle === cleDessin || !W) return;
+  cleDessin = cle;
+  const { T, Vs } = ecarts;
+  const vis = champ(Vs, m.champ / 2, m.inverse, m.lim);
+  dessinReticule(vis);
+  const ocu = champ(T, CHAMP_OCU / 2, true, 12);
+  vuesRondes(ap.canvas, [
+    { image: vis.cv, titre: m.inverse ? "Chercheur" : "Viseur" },
+    { image: ocu.cv, titre: "Oculaire" },
+  ]);
+  const e = Math.hypot(S.state.haut, S.state.cote), demi = CHAMP_OCU / 2;
+  let msg;
+  if (e < 0.08) msg = "<strong>Réglage terminé</strong> : le réticule tombe sur Alcyone, centrée dans l'oculaire. Le viseur et le tube visent le même point.";
+  else {
+    msg = `Le tube vise Alcyone : elle est au centre de l'oculaire. Tournez les vis du viseur (curseurs « Écart ») pour amener ${m.reticule} sur elle : il reste ${virgule(e)}°.` +
+      (m.inverse ? " Le chercheur renverse l'image : l'étoile s'y déplace dans le sens inverse de ce qu'on attend." : "");
+    msg += e < demi - 0.05
+      ? ` <em>Avec ce réglage, un objet centré au viseur tomberait encore dans l'oculaire, décentré de ${virgule(e)}°.</em>`
+      : ` <em>Avec ce réglage, un objet centré au viseur tomberait à ${virgule(e)}° du centre : hors du champ de l'oculaire (${virgule(CHAMP_OCU)}°).</em>`;
+  }
+  ap.legende.innerHTML = `<h2>${m.nom}</h2><p>${msg}</p>
+    <p class="spec">${m.inverse ? "Chercheur : 8×, champ ≈ 6°, image renversée" : "Viseur : 1×, le ciel vu à l'œil nu (12° montrés)"} · oculaire : ${G_OCU}×, ${virgule(CHAMP_OCU)}°, image renversée</p>`;
+}
+
+// ---------- Actions ----------
+let sale = true, enImmersion = false;
+function choisir(id) {
+  const etaitImmerge = enImmersion;
+  modele = id;
+  for (const k in MODELES) {
+    document.getElementById("r-" + k).setAttribute("aria-pressed", String(k === id));
+    const v = VISEURS[k], on = k === id;
+    v.fixe.visible = v.piv.visible = on;
+  }
+  sousTitre.textContent = `Exemple : Newton 200/1000 · ${MODELES[id].nom}`;
+  if (S.state.selected && !S.parts.find((p) => p.id === S.state.selected && p.group.parent.visible)) S.select(null);
+  sale = true;
+  if (etaitImmerge) { majPose(); S.vue("oeil"); }
+}
+function deregler() {
+  const r = () => (Math.random() < 0.5 ? -1 : 1) * (0.6 + Math.random() * 1.2);
+  S.regler("haut", Math.round(r() * 20) / 20);
+  S.regler("cote", Math.round(r() * 20) / 20);
+}
+
+// pose : inclinaison du viseur par ses vis. Le tube et le ciel ne bougent pas : le tube vise Alcyone.
+const qViseur = new THREE.Quaternion(), eul = new THREE.Euler();
+function majPose() {
+  const h = S.state.haut, c = S.state.cote;
+  eul.set(0, -c * DEG, h * DEG, "YZX");
+  qViseur.setFromEuler(eul);
+  for (const k in VISEURS) {
+    const v = VISEURS[k];
+    v.piv.quaternion.copy(qViseur);
+    v.vis.forEach((m, i) => { m.rotation.y = (k === "telrad" ? [c, h, -c][i] : i === 0 ? h : c) * 4; });
+  }
+  instr.updateMatrixWorld(true);
+  return {
+    T: { x: 0, y: 0 },    // axe du tube : sur Alcyone
+    Vs: { x: c, y: h },   // axe du viseur : décalé de l'écart réglé
+  };
+}
+
+let ecarts = null;
+S.onFrame(({ time }) => {
+  if (sale) { ecarts = majPose(); trajets(); sale = false; }
+  dessinerApercu(ecarts);
+  enImmersion = S.camera.position.distanceTo(oeilMonde()) < 0.25;
+  ciel3D.position.copy(S.camera.position);
+  reticule3D.position.copy(S.camera.position);
+  reticule3D.quaternion.copy(V().piv.getWorldQuaternion(new THREE.Quaternion()));
+  reticule3D.visible = enImmersion && modele !== "chercheur";
+  cerclesTelrad.visible = modele === "telrad";
+  pointRouge.visible = modele === "point";
+  axeTube.visible = axeVis.visible = axesVisibles();
+  if (axeTube.visible) { poserAxe(axeTube, avantTube(), axeDuTube()); poserAxe(axeVis, avantViseur(), axeViseur()); }
+  fx.group.visible = lumVisible();
+  fx.photons.visible = S.state.anim || S.reduced;
+  if (fx.group.visible) fx.animer(time * 0.5, 4);
+  S.notice(enImmersion && modele === "chercheur" ? "Dans le chercheur, l'image est grossie 8 fois et renversée : voyez l'encart « Ce que l'on voit ». Ici, l'œil vise le long du chercheur." : null);
+});
+
+choisir("chercheur");
+S.start();
+</script>
+</body>
+</html>
