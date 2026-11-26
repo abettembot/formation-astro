@@ -17,7 +17,7 @@
 </head>
 <body>
 <script type="module">
-import { createSchema, THREE, COULEURS, materiaux as M, textures, axeX, mesh, halo, textureHalo, faisceau, legende } from "../commun/schema.js";
+import { createSchema, THREE, COULEURS, materiaux as M, textures, axeX, mesh, halo, textureHalo, legende } from "../commun/schema.js";
 
 // ---------- Échelle : 1 unité = 1 rayon terrestre (6 371 km) ----------
 // Soleil hors d'échelle (vrai : 23 500 rayons terrestres plus loin, 109 fois plus grand).
@@ -104,6 +104,7 @@ const S = createSchema({
     { type: "curseur", id: "kp", label: "Indice Kp", min: 0, max: 9, pas: 1, valeur: kp,
       format: (v) => `${v} · ${NIVEAU[v]}`, onInput: (v) => { kp = v; reconstruire(); } },
     { type: "raccourcis", id: "niveaux", label: "Activité", boutons: RACC.map((r) => ({ id: r.id, label: r.label, onClick: () => S.regler("kp", r.kp) })) },
+    { type: "bascule", id: "trajet", label: "Trajet des particules", actif: true },
     { type: "bascule", id: "vent", label: "Vent solaire", actif: true },
     { type: "bascule", id: "champ", label: "Lignes de champ", actif: true },
     { type: "bascule", id: "ovale", label: "Ovale auroral", actif: true },
@@ -111,7 +112,7 @@ const S = createSchema({
   ],
   vues: [
     // sur téléphone (écran en hauteur), on centre sur la Terre et sa magnétosphère : le Soleil sort du cadre
-    { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [-7, 26, 66] : [-14, 26, 76], cible: () => innerWidth < 760 ? [-4, -1, 0] : [-11, -1, 0] },
+    { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [-7, 26, 66] : [-12, 25, 74], cible: () => innerWidth < 760 ? [-4, -1, 0] : [-9.5, -1, 0] },
     { id: "profil", label: "Profil", pos: [0, 1.5, 46], cible: [2, 0, 0] },
     { id: "pole", label: "Au-dessus du pôle", exacte: true, pos: () => AXE_M.clone().multiplyScalar(4.2).add(new THREE.Vector3(1.6, 0, 0)), cible: [0.3, 0.4, 0] },
     { id: "france", label: "Ciel de France", immersif: true, haut: U_OBS, fov: 90, fovMin: 30, fovMax: 120, pos: OEIL, cible: () => visee(-8, 22) },
@@ -120,12 +121,13 @@ const S = createSchema({
   intro: () => `
     <div class="eyebrow">Du Soleil à l'aurore</div>
     ${legende([
-      { couleur: COULEURS.etoile, texte: "Le Soleil souffle en permanence un vent de particules électrisées. Lors d'une éruption, il projette aussi une bulle de matière bien plus rapide : une éjection de masse coronale." },
-      { couleur: COULEURS.ambre, texte: "En 1 à 4 jours, ce vent atteint la Terre. Le champ magnétique terrestre, la magnétosphère, le dévie : il glisse autour." },
-      { couleur: COULEURS.orange, texte: "Côté nuit, il étire le champ terrestre en une longue queue. Quand elle se détend brusquement, des électrons sont projetés vers la Terre le long des lignes de champ, jusqu'aux régions polaires." },
-      { couleur: COULEURS.vert, texte: "Entre 100 et 400 km d'altitude, ils percutent l'oxygène et l'azote de l'air, qui s'illuminent en vert, en rouge et en violet : c'est l'aurore." },
+      { couleur: COULEURS.ambre, texte: "Le Soleil souffle en permanence un vent de particules électrisées, qui atteint la Terre en 1 à 4 jours. Le champ magnétique terrestre le dévie : presque toutes ses particules glissent autour sans jamais toucher la Terre." },
+      { couleur: COULEURS.orange, texte: "Une petite partie est pourtant captée côté jour, quand le champ du vent solaire se raccorde à celui de la Terre (étape 1). Elle est emportée par-dessus les pôles (2), puis s'accumule au milieu de la queue magnétique, côté nuit (3)." },
+      { couleur: COULEURS.corail, texte: "Les lignes de champ étirées de la queue finissent par se raccorder, comme un élastique qui lâche. Les particules sont renvoyées vers la Terre (4) et descendent le long des lignes de champ jusqu'aux régions polaires." },
+      { couleur: COULEURS.vert, texte: "Entre 100 et 400 km d'altitude, elles percutent l'oxygène et l'azote de l'air, qui s'illuminent en vert, en rouge et en violet : c'est l'aurore." },
     ])}
-    <p>Le curseur « Indice Kp » règle la force de l'orage magnétique, de 0 (calme) à 9 (extrême). Passez ensuite dans la vue « Ciel de France » pour voir ce qu'on en voit chez nous.</p>
+    <p>Les particules venues du Soleil n'arrivent donc pas directement sur les pôles : elles font un détour par la queue et reviennent par le côté nuit. C'est pourquoi les plus belles aurores se voient vers minuit.</p>
+    <p>Le curseur « Indice Kp » règle la force de l'orage magnétique, de 0 (calme) à 9 (extrême). Une éjection de masse coronale, bulle de matière lancée par une éruption, accélère tout ce cycle. Passez ensuite dans la vue « Ciel de France » pour voir ce qu'on en voit chez nous.</p>
     <p class="spec">Pour l'observer : regarder plein nord, loin des lumières. L'œil voit mal le rouge la nuit, alors qu'un smartphone ou un appareil photo posé quelques secondes le capte très bien. Schéma non proportionnel : Soleil beaucoup trop proche et trop petit, hauteur des aurores ×3 dans les vues de l'espace (réelle dans « Ciel de France »).</p>`,
 });
 
@@ -148,7 +150,7 @@ S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd9
 // ---------- Vent solaire (particules qui contournent la magnétosphère) ----------
 const vent = S.part("vent", "Vent solaire", {
   ancre: [-24, 13, 0],
-  texte: "Un flot continu d'électrons et de protons qui s'échappe de la couronne du Soleil dans toutes les directions. Il emporte avec lui une partie du champ magnétique du Soleil. Arrivé près de la Terre, il bute sur son champ magnétique et le contourne : la plupart de ses particules n'atteignent jamais l'atmosphère.",
+  texte: "Un flot continu d'électrons et de protons qui s'échappe de la couronne du Soleil dans toutes les directions. Il emporte avec lui une partie du champ magnétique du Soleil. Arrivé près de la Terre, il bute sur son champ magnétique et le contourne : la plupart de ses particules n'atteignent jamais l'atmosphère. Celles qui allument les aurores font un long détour par la queue magnétique (trajet numéroté).",
   chiffres: "Vitesse : 400 à 800 km/s · ≈ 5 protons par cm³ près de la Terre · trajet Soleil-Terre en 2 à 4 jours",
   extra: () => `<p class="spec">Ici (Kp ${kp}) : ≈ ${fmt(vitesseVent())} km/s. Le 10 mai 2024, il a atteint 800 à 1 000 km/s.</p>`,
 });
@@ -171,7 +173,7 @@ function majVent(dt) {
     if (vx[i] > X_FIN) vx[i] -= 91;
     const rho = Math.hypot(vb[i], rayonA(MP, vx[i]));
     P.setXYZ(i, vx[i], rho * Math.cos(vpsi[i]), rho * Math.sin(vpsi[i]));
-    const a = lisse(-35, -30, vx[i]) * (1 - lisse(46, X_FIN, vx[i])) * (choc ? 0.6 : 1);
+    const a = 0.55 * lisse(-35, -30, vx[i]) * (1 - lisse(46, X_FIN, vx[i])) * (choc ? 0.6 : 1); // fond discret : le trajet numéroté reste lisible
     C.setXYZ(i, cAmbre.r * a, cAmbre.g * a, cAmbre.b * a);
   }
   P.needsUpdate = true; C.needsUpdate = true;
@@ -193,12 +195,12 @@ const choc = S.part("choc", "Onde de choc", {
 
 // ---------- Magnétosphère (côté jour) et queue magnétique ----------
 const magneto = S.part("magneto", "Magnétosphère", {
-  texte: "La région où le champ magnétique de la Terre l'emporte sur celui du Soleil. Sa frontière, la magnétopause, se place là où la pression du vent solaire équilibre la pression magnétique de la Terre. Elle dévie l'essentiel des particules solaires. Plus le vent souffle fort, plus elle est comprimée côté jour.",
+  texte: "La région où le champ magnétique de la Terre l'emporte sur celui du Soleil. Sa frontière, la magnétopause, se place là où la pression du vent solaire équilibre la pression magnétique de la Terre. Elle dévie l'essentiel des particules solaires. Une petite partie entre pourtant côté jour, quand le champ magnétique du vent solaire est orienté vers le sud et se raccorde à celui de la Terre. Plus le vent souffle fort, plus elle est comprimée côté jour.",
   chiffres: "Magnétopause côté jour : ≈ 10 rayons terrestres (64 000 km) par temps calme, ≈ 5 à 6 le 10 mai 2024 · satellites géostationnaires : 6,6 rayons terrestres",
   extra: () => `<p class="spec">Ici (Kp ${kp}) : magnétopause à ≈ ${fmt(r0, 1)} rayons terrestres (≈ ${fmt(Math.round(r0 * RT_KM / 1000) * 1000)} km).${r0 < 6.6 ? " Les satellites géostationnaires se retrouvent en plein vent solaire." : ""}</p>`,
 });
 const queue = S.part("queue", "Queue magnétique", {
-  texte: "Côté nuit, le vent solaire étire le champ magnétique de la Terre en une très longue queue. En son milieu, le feuillet de plasma (en orange) accumule des particules. Lors d'un orage, les lignes de champ étirées se reconnectent brusquement, comme un élastique qui lâche : des électrons sont projetés vers la Terre le long des lignes de champ. Ce sont eux qui allument les aurores, et non des particules venues du Soleil en droite ligne.",
+  texte: "Côté nuit, le vent solaire étire le champ magnétique de la Terre en une très longue queue. Les particules solaires captées côté jour y arrivent par-dessus les pôles et s'accumulent dans le feuillet de plasma (en orange). Lors d'un orage, les lignes de champ étirées se raccordent brusquement, comme un élastique qui lâche : les particules sont renvoyées vers la Terre, accélérées, et guidées par les lignes de champ jusqu'aux pôles. C'est pour cela que les aurores arrivent par le côté nuit.",
   chiffres: "Longueur : des centaines de rayons terrestres, bien au-delà de l'orbite de la Lune (60 rayons terrestres) · électrons accélérés à 1 à 10 keV",
 });
 const matCoque = (couleur, op) => { const m = M.air(couleur, op); m.side = THREE.DoubleSide; return m; };
@@ -259,19 +261,97 @@ function construireLignes() {
   lignes.geometry = new THREE.BufferGeometry().setFromPoints(seg);
 }
 
-// ---------- Électrons précipités : de la queue vers l'ovale, le long des lignes de champ ----------
-const elec = faisceau(0, 5, 160);
-elec.photons.material.sizeAttenuation = false; // même taille à l'écran de près comme de loin
-S.scene.add(elec.group);
-function construireElectrons() {
-  const liste = [];
-  for (let d = -70; d <= 70; d += 14) for (const h of [1, -1]) {
-    const phi = d * DEG, o = ovale(phi), lamF = o.E + 0.35 * o.W, L = 1 / Math.cos(lamF) ** 2;
-    const lamFin = Math.acos(Math.sqrt((1 + EXAG * 110 / RT_KM) / L)), pts = [];
-    for (let k = 0; k <= 30; k++) { const lam = lamFin * k / 30; pts.push(etirer(mag(h * lam, phi, L * Math.cos(lam) ** 2))); }
-    liste.push({ pts, cols: pts.slice(1).map(() => COULEURS.orange) });
+// ---------- Trajet des particules jusqu'à l'aurore (cycle de Dungey) ----------
+// 1. le vent solaire arrive sur le nez de la magnétopause ; 2. raccordé au champ terrestre, il est emporté
+// par-dessus le pôle jusque dans la queue ; 3. il s'accumule au milieu de la queue ; 4. la queue se
+// reconnecte et le renvoie vers la Terre ; 5. il descend le long d'une ligne de champ jusqu'à l'ovale.
+const ETAPES = {
+  vent: { vitesse: 12, couleur: COULEURS.ambre },
+  capture: { vitesse: 7, couleur: COULEURS.orange },
+  queue: { vitesse: 4, couleur: COULEURS.orange },
+  retour: { vitesse: 7, couleur: COULEURS.corail },
+  chute: { vitesse: 2.5, couleur: COULEURS.corail },
+};
+const X_REC = 17, PAR_TRAJET = 3;
+let trajets = [];
+const trajetLignes = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.4, depthWrite: false }));
+const ptsMat = (taille) => new THREE.PointsMaterial({ size: taille, sizeAttenuation: false, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+const pointsVides = (n, taille) => {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  const p = new THREE.Points(g, ptsMat(taille)); p.frustumCulled = false;
+  return p;
+};
+const trajetParticules = pointsVides(6 * PAR_TRAJET, 8), trajetEclairs = pointsVides(6, 26);
+const trajetGroupe = new THREE.Group();
+trajetGroupe.add(trajetLignes, trajetParticules, trajetEclairs);
+S.scene.add(trajetGroupe);
+function construireTrajets() {
+  trajets = [];
+  for (const h of [1, -1]) for (const z0 of [-2.5, 0, 2.5]) {
+    const pts = [], etapes = [];
+    const ajouter = (p, e) => { if (pts.length) etapes.push(e); pts.push(p); };
+    const psi = z0 * 0.07;
+    // point sur la magnétopause (k < 1 : juste à l'intérieur)
+    const bord = (t, k) => {
+      const th = t * DEG, r = k * r0 * Math.pow(2 / (1 + Math.cos(th)), alpha);
+      return new THREE.Vector3(-r * Math.cos(th), h * r * Math.sin(th) * Math.cos(psi), r * Math.sin(th) * Math.sin(psi));
+    };
+    ajouter(new THREE.Vector3(-36, h * 0.6, z0 * 1.2));
+    ajouter(bord(6, 1.03), "vent");
+    // par-dessus le pôle puis dans le lobe de la queue, jusqu'au feuillet central : une courbe lissée
+    const ctrl = [];
+    for (let t = 15; t <= 100; t += 17) ctrl.push(bord(t, 0.85));
+    for (const xx of [8, 13]) { const rho = 0.5 * rayonA(MP, xx); ctrl.push(new THREE.Vector3(xx, h * rho * Math.cos(psi * 3), rho * Math.sin(psi * 3))); }
+    ctrl.push(new THREE.Vector3(X_REC, h * 0.15 * rayonA(MP, X_REC), z0 * 0.8), new THREE.Vector3(X_REC - 1, 0, z0 * 0.8));
+    for (const p of new THREE.CatmullRomCurve3(ctrl).getPoints(60).slice(1)) ajouter(p, p.x < 4 ? "capture" : "queue");
+    // descente le long de la ligne de champ qui aboutit dans l'ovale, côté nuit
+    const phi = z0 * 12 * DEG, o = ovale(phi), L = 1 / Math.cos(o.E + 0.35 * o.W) ** 2;
+    const lamFin = Math.acos(Math.sqrt((1 + EXAG * 110 / RT_KM) / L));
+    for (let k = 0; k <= 30; k++) { const lam = lamFin * k / 30; ajouter(etirer(mag(h * lam, phi, L * Math.cos(lam) ** 2)), k === 0 ? "retour" : "chute"); }
+    const durees = etapes.map((e, i) => pts[i].distanceTo(pts[i + 1]) / ETAPES[e].vitesse);
+    trajets.push({ pts, etapes, durees, total: durees.reduce((a, b) => a + b, 0) });
   }
-  elec.poser(liste);
+  const pos = [], col = [], c = new THREE.Color();
+  for (const t of trajets) for (let i = 0; i < t.etapes.length; i++) {
+    c.setHex(ETAPES[t.etapes[i]].couleur);
+    pos.push(...t.pts[i].toArray(), ...t.pts[i + 1].toArray());
+    col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  trajetLignes.geometry.dispose(); trajetLignes.geometry = g;
+  // repères numérotés, le long du trajet nord le plus proche de l'axe Soleil-Terre
+  const t = trajets[1], idx = (e, f = 0.5) => { const ii = t.etapes.map((x, i) => (x === e ? i : -1)).filter((i) => i >= 0); return t.pts[ii[Math.floor(f * (ii.length - 1))]]; };
+  const iR = t.etapes.indexOf("retour");
+  reperes[0].p = t.pts[1];
+  reperes[1].p = idx("capture", 0.55);
+  reperes[2].p = t.pts[iR];
+  { const s = trajets[4], c = s.etapes.map((x, i) => (x === "chute" ? i : -1)).filter((i) => i >= 0); reperes[3].p = s.pts[c[Math.floor(c.length * 0.45)]]; } // trajet sud : à l'écart du repère 3
+}
+const reperes = ["1 · Captées côté jour", "2 · Emportées au-dessus du pôle", "3 · Accumulées dans la queue", "4 · Renvoyées vers les pôles"].map((texte) => ({ texte, p: new THREE.Vector3() }));
+const cT = new THREE.Color(), cVertEclair = new THREE.Color(COULEURS.vert);
+function majTrajets(time) {
+  const P = trajetParticules.geometry.attributes.position, C = trajetParticules.geometry.attributes.color;
+  const PE = trajetEclairs.geometry.attributes.position, CE = trajetEclairs.geometry.attributes.color;
+  let k = 0;
+  trajets.forEach((t, n) => {
+    let eclair = 0;
+    for (let j = 0; j < PAR_TRAJET; j++, k++) {
+      let s = (time + j * t.total / PAR_TRAJET + n * 1.7) % t.total, i = 0;
+      eclair = Math.max(eclair, 1 - s / 0.8); // l'aurore s'allume à l'arrivée de chaque particule
+      while (i < t.durees.length - 1 && s > t.durees[i]) { s -= t.durees[i]; i++; }
+      const a = t.pts[i], b = t.pts[i + 1], f = Math.min(1, s / t.durees[i]);
+      P.setXYZ(k, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f);
+      cT.setHex(ETAPES[t.etapes[i]].couleur); C.setXYZ(k, cT.r, cT.g, cT.b);
+    }
+    const pied = t.pts[t.pts.length - 1];
+    PE.setXYZ(n, pied.x, pied.y, pied.z);
+    CE.setXYZ(n, cVertEclair.r * eclair, cVertEclair.g * eclair, cVertEclair.b * eclair);
+  });
+  for (const a of [P, C, PE, CE]) a.needsUpdate = true;
 }
 
 // ---------- Ceintures de Van Allen (masquées au départ) ----------
@@ -388,12 +468,12 @@ function reconstruire() {
   S.add(ceintures, croissant(1.25, 2.3, COULEURS.corail, 0.24));
   S.add(ceintures, croissant(3.2, L2, COULEURS.froid, 0.18));
   // étiquettes
-  { const th = 35 * DEG, r = r0 * Math.pow(2 / (1 + Math.cos(th)), alpha); magneto.ancre.set(-r * Math.cos(th), r * Math.sin(th) + 0.4, 0); }
+  { const th = 35 * DEG, r = r0 * Math.pow(2 / (1 + Math.cos(th)), alpha); magneto.ancre.set(-r * Math.cos(th), -r * Math.sin(th) - 0.4, 0); } // en bas : le haut porte le trajet numéroté
   { const th = 75 * DEG, r = rbs * 1.8 / (1 + 0.8 * Math.cos(th)); choc.ancre.set(-r * Math.cos(th), r * Math.sin(th) + 0.4, 0); }
   queue.ancre.set(30, rayonA(MP, 30) + 0.6, 0);
   ceintures.ancre.copy(mag(32 * DEG, Math.PI, 0.5 * (3.2 + L2) * Math.cos(32 * DEG) ** 2));
   construireLignes();
-  construireElectrons();
+  construireTrajets();
   for (const r of RACC) document.getElementById("r-" + r.id)?.setAttribute("aria-pressed", String(kp === r.kp));
   S.refreshInfo();
 }
@@ -401,8 +481,9 @@ function reconstruire() {
 // ---------- Étiquettes propres au schéma ----------
 const espace = () => !imm;
 S.label("Terre", () => AXE_M.clone().multiplyScalar(1.3), { partId: "terre", visible: espace });
-S.label("Ovale auroral", () => { const o = ovale(Math.PI / 2); return mag(o.E + o.W / 2, Math.PI / 2, 1.06); }, { partId: "ovale", visible: () => espace() && S.state.ovale });
-S.label("Rideau d'aurore", () => { const o = ovale(0); return mag(o.E + 0.5 * o.W, 0, 1 + EXAG * 400 / RT_KM); }, { partId: "rideau", visible: espace });
+S.label("Ovale auroral", () => { const o = ovale(Math.PI / 2); return mag(o.E + o.W / 2, Math.PI / 2, 1.06); }, { partId: "ovale", visible: () => espace() && S.state.ovale && S.camera.position.length() < 25 });
+S.label("Rideau d'aurore", () => { const o = ovale(0); return mag(o.E + 0.5 * o.W, 0, 1 + EXAG * 400 / RT_KM); }, { partId: "rideau", visible: () => espace() && S.camera.position.length() < 25 });
+for (const r of reperes) S.label(r.texte, () => r.p, { lumiere: true, visible: () => espace() && S.state.trajet });
 S.label("France", () => U_OBS.clone().multiplyScalar(1.03), { lumiere: true, visible: () => espace() && S.camera.position.length() < 12 });
 // par les yeux : hauteur des aurores et points cardinaux
 const lblVert = S.label("", () => pointAurore(110), { partId: "rideau", visible: () => imm && hauteur(110) > 0.5 });
@@ -412,7 +493,7 @@ for (const [nom, az] of [["Nord", 0], ["Nord-est", 45], ["Nord-ouest", -45], ["E
 }
 
 // ---------- Animation ----------
-const espaceObj = [soleil.group, vent.group, cme.group, choc.group, magneto.group, queue.group, ceintures.group, lignes, elec.group, france];
+const espaceObj = [soleil.group, vent.group, cme.group, choc.group, magneto.group, queue.group, ceintures.group, lignes, trajetGroupe, france];
 S.onFrame(({ dt, time }) => {
   const d = S.camera.position.length();
   imm = d < 1.02;
@@ -435,8 +516,9 @@ S.onFrame(({ dt, time }) => {
     cme.ancre.set(X_SOLEIL + R * Math.cos(30 * DEG), R * Math.sin(30 * DEG) + 0.5, 0);
   }
   if (vent.group.visible) majVent(S.state.anim && !S.reduced ? dt : 0);
-  elec.photons.visible = S.state.anim || S.reduced;
-  if (!imm) elec.animer(time, 3);
+  trajetGroupe.visible = !imm && S.state.trajet;
+  trajetParticules.visible = trajetEclairs.visible = S.state.anim || S.reduced;
+  if (trajetGroupe.visible) majTrajets(time);
   majAurores(time);
 
   if (imm) {
