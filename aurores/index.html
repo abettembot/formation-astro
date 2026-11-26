@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aurores polaires</title>
+<meta name="description" content="Schéma 3D interactif des aurores polaires : vent solaire, magnétosphère, ovale auroral et couleurs des aurores, avec l'exemple de la tempête du 10 mai 2024.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, materiaux as M, textures, axeX, mesh, halo, textureHalo, faisceau, legende } from "../commun/schema.js";
+
+// ---------- Échelle : 1 unité = 1 rayon terrestre (6 371 km) ----------
+// Soleil hors d'échelle (vrai : 23 500 rayons terrestres plus loin, 109 fois plus grand).
+// Hauteur des aurores exagérée 3 fois vu de l'espace, réelle dans la vue « Ciel de France ».
+const RT_KM = 6371, DEG = Math.PI / 180;
+const X_SOLEIL = -40, R_SOLEIL = 3.5, X_FIN = 56;
+const EXAG = 3;
+const fmt = (v, d = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: d, maximumFractionDigits: d });
+const lisse = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+// ---------- Repères : Terre fixe, Soleil vers −X, minuit vers +X ----------
+// texture de la Terre : longitude 0 vers +X, 90° E vers −Z, nord vers +Y
+const geo = (lat, lon) => new THREE.Vector3(Math.cos(lat * DEG) * Math.cos(lon * DEG), Math.sin(lat * DEG), -Math.cos(lat * DEG) * Math.sin(lon * DEG));
+const AXE_M = geo(80.9, -72.6);                                                        // pôle nord géomagnétique (2025)
+const EX = new THREE.Vector3(1, 0, 0).addScaledVector(AXE_M, -AXE_M.x).normalize();   // azimut magnétique 0 : minuit
+const EZ = new THREE.Vector3().crossVectors(EX, AXE_M);
+/** Point en coordonnées magnétiques : latitude lam, azimut phi (0 = minuit, π = midi), rayon r. */
+const mag = (lam, phi, r = 1) => new THREE.Vector3()
+  .addScaledVector(EX, r * Math.cos(lam) * Math.cos(phi))
+  .addScaledVector(EZ, r * Math.cos(lam) * Math.sin(phi))
+  .addScaledVector(AXE_M, r * Math.sin(lam));
+
+// observateur au centre de la France, à minuit
+const U_OBS = geo(47, 2.5);
+const OEIL = U_OBS.clone().multiplyScalar(1 + 2 / RT_KM);
+const NORD = new THREE.Vector3(0, 1, 0).addScaledVector(U_OBS, -U_OBS.y).normalize();
+const EST = new THREE.Vector3().crossVectors(NORD, U_OBS);
+const direction = (az, h) => NORD.clone().multiplyScalar(Math.cos(az * DEG)).addScaledVector(EST, Math.sin(az * DEG))
+  .multiplyScalar(Math.cos(h * DEG)).addScaledVector(U_OBS, Math.sin(h * DEG));
+const visee = (az, h) => OEIL.clone().add(direction(az, h));
+const PHI_OBS = Math.atan2(U_OBS.dot(EZ), U_OBS.dot(EX));
+const LAM_OBS = Math.asin(U_OBS.dot(AXE_M)) / DEG; // ≈ 48,5°
+
+// ---------- Modèle simplifié, réglé par l'indice Kp ----------
+// magnétopause : forme de Shue (1998), r = r0 (2 / (1 + cos θ))^α ; onde de choc : conique.
+// ovale : latitudes magnétiques calées sur ce qu'on observe depuis la France (aurore basse
+// sur l'horizon nord vers Kp 6-7, haute dans le ciel pour Kp 9).
+let kp = 9, r0, alpha, rbs, MP = [], BS = [];
+function calculer() {
+  r0 = 10.5 - 0.55 * kp; alpha = 0.58 + 0.005 * kp; rbs = 1.33 * r0 + 0.3;
+  MP = []; BS = [];
+  for (let t = 0; t < 179; t += 0.5) {
+    const th = t * DEG, r = r0 * Math.pow(2 / (1 + Math.cos(th)), alpha), x = -r * Math.cos(th);
+    MP.push([x, r * Math.sin(th)]); if (x > X_FIN) break;
+  }
+  for (let t = 0; t < 179; t += 0.5) {
+    const th = t * DEG, r = rbs * 1.8 / (1 + 0.8 * Math.cos(th)), x = -r * Math.cos(th);
+    BS.push([x, r * Math.sin(th)]); if (x > X_FIN) break;
+  }
+}
+/** Rayon d'une surface de révolution (table [x, rayon]) à l'abscisse x. */
+function rayonA(T, x) {
+  if (x <= T[0][0]) return 0;
+  for (let i = 1; i < T.length; i++) if (x <= T[i][0]) {
+    const [x0, y0] = T[i - 1], [x1, y1] = T[i];
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+  }
+  return T[T.length - 1][1];
+}
+/** Ovale auroral à l'azimut phi : bord sud E et largeur W (radians). */
+function ovale(phi) {
+  const f = (1 - Math.cos(phi)) / 2; // 0 à minuit, 1 à midi
+  const En = 67 - 0.17 * kp * kp, Ed = 77 - 0.06 * kp * kp, Wn = 4 + 0.7 * kp, Wd = 2.5 + 0.2 * kp;
+  return { E: (En + (Ed - En) * f) * DEG, W: (Wn + (Wd - Wn) * f) * DEG };
+}
+const vitesseVent = () => Math.round((400 + 65 * kp) / 50) * 50;
+const NIVEAU = ["calme", "calme", "calme", "agité", "agité", "orage G1", "orage G2", "orage G3", "orage G4", "orage G5"];
+
+// hauteur (en degrés) au-dessus de l'horizon, vue de France, de l'aurore la plus proche à une altitude donnée
+const pointAurore = (altKm) => { const o = ovale(PHI_OBS); return mag(o.E + 0.1 * o.W, PHI_OBS, 1 + altKm / RT_KM); };
+const hauteur = (altKm) => Math.asin(pointAurore(altKm).sub(OEIL).normalize().dot(U_OBS)) / DEG;
+const texteHauteur = (h) => (h > 0.5 ? `${fmt(h)}° au-dessus de l'horizon nord` : "sous l'horizon");
+
+let imm = false, ex = EXAG; // vue par les yeux ; exagération courante des hauteurs
+
+const RACC = [{ id: "calme", label: "Calme", kp: 1 }, { id: "orage", label: "Orage", kp: 5 }, { id: "mai2024", label: "10 mai 2024", kp: 9 }];
+const S = createSchema({
+  surtitre: "Support de formation · Ciel",
+  titre: "Aurores polaires",
+  sousTitre: "Exemple : tempête du 10 mai 2024 · Kp 9",
+  distanceMin: 1.6,
+  distanceMax: 105,
+  commandes: [
+    { type: "curseur", id: "kp", label: "Indice Kp", min: 0, max: 9, pas: 1, valeur: kp,
+      format: (v) => `${v} · ${NIVEAU[v]}`, onInput: (v) => { kp = v; reconstruire(); } },
+    { type: "raccourcis", id: "niveaux", label: "Activité", boutons: RACC.map((r) => ({ id: r.id, label: r.label, onClick: () => S.regler("kp", r.kp) })) },
+    { type: "bascule", id: "vent", label: "Vent solaire", actif: true },
+    { type: "bascule", id: "champ", label: "Lignes de champ", actif: true },
+    { type: "bascule", id: "ovale", label: "Ovale auroral", actif: true },
+    { type: "bascule", id: "ceintures", label: "Van Allen", actif: false },
+  ],
+  vues: [
+    // sur téléphone (écran en hauteur), on centre sur la Terre et sa magnétosphère : le Soleil sort du cadre
+    { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [-7, 26, 66] : [-14, 26, 76], cible: () => innerWidth < 760 ? [-4, -1, 0] : [-11, -1, 0] },
+    { id: "profil", label: "Profil", pos: [0, 1.5, 46], cible: [2, 0, 0] },
+    { id: "pole", label: "Au-dessus du pôle", exacte: true, pos: () => AXE_M.clone().multiplyScalar(4.2).add(new THREE.Vector3(1.6, 0, 0)), cible: [0.3, 0.4, 0] },
+    { id: "france", label: "Ciel de France", immersif: true, haut: U_OBS, fov: 90, fovMin: 30, fovMax: 120, pos: OEIL, cible: () => visee(-8, 22) },
+  ],
+  aide: "Vues de l'espace : glisser pour tourner, molette ou pincer pour zoomer · Ciel de France : vous êtes l'observateur, glisser pour regarder autour, molette ou pincer pour élargir le champ · Cliquer un élément : l'expliquer",
+  intro: () => `
+    <div class="eyebrow">Du Soleil à l'aurore</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "Le Soleil souffle en permanence un vent de particules électrisées. Lors d'une éruption, il projette aussi une bulle de matière bien plus rapide : une éjection de masse coronale." },
+      { couleur: COULEURS.ambre, texte: "En 1 à 4 jours, ce vent atteint la Terre. Le champ magnétique terrestre, la magnétosphère, le dévie : il glisse autour." },
+      { couleur: COULEURS.orange, texte: "Côté nuit, il étire le champ terrestre en une longue queue. Quand elle se détend brusquement, des électrons sont projetés vers la Terre le long des lignes de champ, jusqu'aux régions polaires." },
+      { couleur: COULEURS.vert, texte: "Entre 100 et 400 km d'altitude, ils percutent l'oxygène et l'azote de l'air, qui s'illuminent en vert, en rouge et en violet : c'est l'aurore." },
+    ])}
+    <p>Le curseur « Indice Kp » règle la force de l'orage magnétique, de 0 (calme) à 9 (extrême). Passez ensuite dans la vue « Ciel de France » pour voir ce qu'on en voit chez nous.</p>
+    <p class="spec">Pour l'observer : regarder plein nord, loin des lumières. L'œil voit mal le rouge la nuit, alors qu'un smartphone ou un appareil photo posé quelques secondes le capte très bien. Schéma non proportionnel : Soleil beaucoup trop proche et trop petit, hauteur des aurores ×3 dans les vues de l'espace (réelle dans « Ciel de France »).</p>`,
+});
+
+// ---------- Éclairage : une seule source, le Soleil, à gauche ----------
+S.lumieres.principale.position.set(-1, 0, 0);
+S.lumieres.principale.intensity = 3;
+S.lumieres.contre.intensity = 0;
+S.lumieres.ambiance.intensity = 0.35;
+S.scene.environment = null;
+
+// ---------- Soleil ----------
+const soleil = S.part("soleil", "Soleil", {
+  ancre: [X_SOLEIL, R_SOLEIL + 0.8, 0],
+  texte: "Notre étoile perd en permanence une partie de son atmosphère : c'est le vent solaire. Son activité suit un cycle d'environ 11 ans. Près du maximum, comme en 2024-2025, les taches, les éruptions et les éjections de matière sont plus nombreuses, et les aurores aussi. Il est dessiné ici beaucoup trop près et trop petit.",
+  chiffres: "Distance : 150 millions de km (23 500 rayons terrestres) · diamètre : 109 fois celui de la Terre · cycle d'activité ≈ 11 ans, maximum fin 2024",
+});
+S.add(soleil, mesh(new THREE.SphereGeometry(R_SOLEIL, 48, 24), M.lumineux(0xffd98a), X_SOLEIL, 0, 0));
+{ const h = halo(COULEURS.ambre, R_SOLEIL * 4.2); h.material.opacity = 0.55; h.position.x = X_SOLEIL; soleil.group.add(h); }
+
+// ---------- Vent solaire (particules qui contournent la magnétosphère) ----------
+const vent = S.part("vent", "Vent solaire", {
+  ancre: [-24, 13, 0],
+  texte: "Un flot continu d'électrons et de protons qui s'échappe de la couronne du Soleil dans toutes les directions. Il emporte avec lui une partie du champ magnétique du Soleil. Arrivé près de la Terre, il bute sur son champ magnétique et le contourne : la plupart de ses particules n'atteignent jamais l'atmosphère.",
+  chiffres: "Vitesse : 400 à 800 km/s · ≈ 5 protons par cm³ près de la Terre · trajet Soleil-Terre en 2 à 4 jours",
+  extra: () => `<p class="spec">Ici (Kp ${kp}) : ≈ ${fmt(vitesseVent())} km/s. Le 10 mai 2024, il a atteint 800 à 1 000 km/s.</p>`,
+});
+const NV = 320;
+const vb = new Float32Array(NV), vpsi = new Float32Array(NV), vx = new Float32Array(NV);
+for (let i = 0; i < NV; i++) { vb[i] = 0.3 + Math.sqrt(Math.random()) * 24; vpsi[i] = Math.random() * 2 * Math.PI; vx[i] = -35 + Math.random() * 91; }
+const ventGeo = new THREE.BufferGeometry();
+ventGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(NV * 3), 3));
+ventGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(NV * 3), 3));
+const ventPts = new THREE.Points(ventGeo, new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, map: textureHalo(), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+ventPts.frustumCulled = false;
+vent.group.add(ventPts);
+const cAmbre = new THREE.Color(COULEURS.ambre);
+function majVent(dt) {
+  const P = ventGeo.attributes.position, C = ventGeo.attributes.color, v = 7 + 0.5 * kp;
+  for (let i = 0; i < NV; i++) {
+    const rho0 = Math.hypot(vb[i], rayonA(MP, vx[i]));
+    const choc = rho0 < rayonA(BS, vx[i]); // derrière l'onde de choc : vent ralenti et chauffé
+    vx[i] += dt * v * (choc ? 0.45 : 1);
+    if (vx[i] > X_FIN) vx[i] -= 91;
+    const rho = Math.hypot(vb[i], rayonA(MP, vx[i]));
+    P.setXYZ(i, vx[i], rho * Math.cos(vpsi[i]), rho * Math.sin(vpsi[i]));
+    const a = lisse(-35, -30, vx[i]) * (1 - lisse(46, X_FIN, vx[i])) * (choc ? 0.6 : 1);
+    C.setXYZ(i, cAmbre.r * a, cAmbre.g * a, cAmbre.b * a);
+  }
+  P.needsUpdate = true; C.needsUpdate = true;
+}
+
+// ---------- Éjection de masse coronale (visible à partir de Kp 5) ----------
+const cme = S.part("cme", "Éjection de masse coronale", {
+  texte: "Une énorme bulle de gaz et de champ magnétique arrachée à la couronne lors d'une éruption. Plus rapide et plus dense que le vent solaire, elle comprime la magnétosphère à son arrivée. Si son champ magnétique est orienté vers le sud, il se raccorde à celui de la Terre et déclenche un orage magnétique : c'est la recette des grandes aurores.",
+  chiffres: "Vitesse : 500 à 3 000 km/s · masse ≈ un milliard de tonnes · trajet en 1 à 3 jours · le 10 mai 2024 : plusieurs éjections successives parties du groupe de taches AR 3664",
+});
+const cmeMesh = S.add(cme, mesh(axeX(new THREE.SphereGeometry(1, 48, 12, 0, 2 * Math.PI, 0, 38 * DEG)), M.lumineux(COULEURS.ambre, 0.3), X_SOLEIL, 0, 0));
+
+// ---------- Onde de choc ----------
+const choc = S.part("choc", "Onde de choc", {
+  texte: "Le vent solaire arrive plus vite que les ondes ne se propagent dans ce gaz. Devant l'obstacle magnétique de la Terre, il ralentit donc brutalement, comme l'eau devant l'étrave d'un bateau. Derrière ce front, le gaz ralenti et chauffé s'écoule autour de la magnétosphère.",
+  chiffres: "À ≈ 13 à 15 rayons terrestres côté Soleil par temps calme (≈ 90 000 km) · le vent y passe d'environ 400 à 100 km/s",
+  extra: () => `<p class="spec">Ici (Kp ${kp}) : à ≈ ${fmt(rbs, 1)} rayons terrestres.</p>`,
+});
+
+// ---------- Magnétosphère (côté jour) et queue magnétique ----------
+const magneto = S.part("magneto", "Magnétosphère", {
+  texte: "La région où le champ magnétique de la Terre l'emporte sur celui du Soleil. Sa frontière, la magnétopause, se place là où la pression du vent solaire équilibre la pression magnétique de la Terre. Elle dévie l'essentiel des particules solaires. Plus le vent souffle fort, plus elle est comprimée côté jour.",
+  chiffres: "Magnétopause côté jour : ≈ 10 rayons terrestres (64 000 km) par temps calme, ≈ 5 à 6 le 10 mai 2024 · satellites géostationnaires : 6,6 rayons terrestres",
+  extra: () => `<p class="spec">Ici (Kp ${kp}) : magnétopause à ≈ ${fmt(r0, 1)} rayons terrestres (≈ ${fmt(Math.round(r0 * RT_KM / 1000) * 1000)} km).${r0 < 6.6 ? " Les satellites géostationnaires se retrouvent en plein vent solaire." : ""}</p>`,
+});
+const queue = S.part("queue", "Queue magnétique", {
+  texte: "Côté nuit, le vent solaire étire le champ magnétique de la Terre en une très longue queue. En son milieu, le feuillet de plasma (en orange) accumule des particules. Lors d'un orage, les lignes de champ étirées se reconnectent brusquement, comme un élastique qui lâche : des électrons sont projetés vers la Terre le long des lignes de champ. Ce sont eux qui allument les aurores, et non des particules venues du Soleil en droite ligne.",
+  chiffres: "Longueur : des centaines de rayons terrestres, bien au-delà de l'orbite de la Lune (60 rayons terrestres) · électrons accélérés à 1 à 10 keV",
+});
+const matCoque = (couleur, op) => { const m = M.air(couleur, op); m.side = THREE.DoubleSide; return m; };
+const ligneMat = (couleur, op) => new THREE.LineBasicMaterial({ color: couleur, transparent: true, opacity: op, depthWrite: false });
+/** Demi-coque de révolution autour de l'axe X (côté −Z : la moitié vers l'observateur est ôtée, comme une coupe). */
+function coque(pts, couleur, op) {
+  const g = axeX(new THREE.LatheGeometry(pts.map(([x, r]) => new THREE.Vector2(r, x)), 72, Math.PI / 2, Math.PI));
+  return mesh(g, matCoque(couleur, op));
+}
+/** Contour de la coupe (dans le plan z = 0). */
+function contour(pts, couleur, op) {
+  const g = new THREE.Group();
+  for (const s of [1, -1]) g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.map(([x, r]) => new THREE.Vector3(x, s * r, 0))), ligneMat(couleur, op)));
+  return g;
+}
+const C_MAGNETO = 0xb8c4e0, X_QUEUE = 6;
+
+// ---------- Terre et lignes de champ ----------
+const terre = S.part("terre", "Terre", {
+  etiquette: false,
+  texte: "Son noyau de fer liquide en mouvement produit un champ magnétique semblable à celui d'un aimant droit, incliné d'environ 10° sur l'axe de rotation. Les lignes de champ (en gris) sortent près d'un pôle et rentrent près de l'autre, et les particules électrisées ne peuvent avancer qu'en s'enroulant autour d'elles. Le pôle nord géomagnétique est au nord du Canada : à latitude égale, le Canada voit bien plus d'aurores que l'Europe.",
+  chiffres: "Rayon : 6 371 km · champ à la surface : 30 à 60 µT · pôle nord géomagnétique : 80,9° N, 72,6° O (2025)",
+});
+S.add(terre, mesh(new THREE.SphereGeometry(1, 256, 128), M.astre(textures.terre())));
+const france = mesh(new THREE.SphereGeometry(0.014, 12, 8), M.lumineux(0xf6f9fd), ...U_OBS.clone().multiplyScalar(1.002).toArray());
+S.scene.add(france);
+
+const lignes = new THREE.LineSegments(new THREE.BufferGeometry(), ligneMat(0xc4d0e0, 0.2));
+S.scene.add(lignes);
+/** Étirement des lignes de champ côté nuit par le vent solaire (la queue). */
+function etirer(p) {
+  if (p.x > 0) p.x *= 1 + (0.15 + 0.02 * kp) * Math.min(5, Math.max(0, p.length() - 1.5));
+  return p;
+}
+function construireLignes() {
+  const seg = [];
+  const pousser = (pts) => { for (let i = 0; i < pts.length - 1; i++) seg.push(pts[i], pts[i + 1]); };
+  // lignes fermées : r = L cos² λ (dipôle), comprimées côté jour par la magnétopause, étirées côté nuit
+  for (const L of [2, 3, 4, 5, 6, 7, 8, 10]) for (let i = 0; i < 8; i++) {
+    const phi = i * Math.PI / 4, jour = -Math.cos(phi);
+    if (jour > -0.2 && L > (r0 - 0.7) * (1 + 0.25 * (1 - jour))) continue;
+    const l0 = Math.acos(Math.sqrt(1 / L)), pts = [];
+    for (let k = 0; k <= 48; k++) { const lam = -l0 + 2 * l0 * k / 48; pts.push(etirer(mag(lam, phi, L * Math.cos(lam) ** 2))); }
+    pousser(pts);
+  }
+  // lignes ouvertes : elles partent des calottes polaires et filent dans la queue (les deux lobes)
+  for (const h of [1, -1]) for (let i = 0; i < 6; i++) {
+    const phi = i * Math.PI / 3, o = ovale(phi);
+    for (const lamF of [o.E + o.W + 1.5 * DEG, (o.E + o.W + 1.5 * DEG + 88 * DEG) / 2]) {
+      const Lo = 1 / Math.cos(lamF) ** 2, pts = [];
+      for (let k = 0; k <= 6; k++) { const r = 1 + 2.2 * k / 6; pts.push(mag(h * Math.acos(Math.sqrt(r / Lo)), phi, r)); }
+      const psi = 0.9 * Math.sin(phi);
+      for (const xx of [12, 30, X_FIN - 2]) { const rho = 0.5 * rayonA(MP, xx); pts.push(new THREE.Vector3(xx, h * rho * Math.cos(psi), rho * Math.sin(psi))); }
+      pousser(new THREE.CatmullRomCurve3(pts).getPoints(80));
+    }
+  }
+  lignes.geometry.dispose();
+  lignes.geometry = new THREE.BufferGeometry().setFromPoints(seg);
+}
+
+// ---------- Électrons précipités : de la queue vers l'ovale, le long des lignes de champ ----------
+const elec = faisceau(0, 5, 160);
+elec.photons.material.sizeAttenuation = false; // même taille à l'écran de près comme de loin
+S.scene.add(elec.group);
+function construireElectrons() {
+  const liste = [];
+  for (let d = -70; d <= 70; d += 14) for (const h of [1, -1]) {
+    const phi = d * DEG, o = ovale(phi), lamF = o.E + 0.35 * o.W, L = 1 / Math.cos(lamF) ** 2;
+    const lamFin = Math.acos(Math.sqrt((1 + EXAG * 110 / RT_KM) / L)), pts = [];
+    for (let k = 0; k <= 30; k++) { const lam = lamFin * k / 30; pts.push(etirer(mag(h * lam, phi, L * Math.cos(lam) ** 2))); }
+    liste.push({ pts, cols: pts.slice(1).map(() => COULEURS.orange) });
+  }
+  elec.poser(liste);
+}
+
+// ---------- Ceintures de Van Allen (masquées au départ) ----------
+const ceintures = S.part("ceintures", "Ceintures de Van Allen", {
+  texte: "À ne pas confondre avec les aurores. Ces deux anneaux contiennent des particules piégées par le champ magnétique : elles rebondissent d'un pôle à l'autre et tournent autour de la Terre pendant des jours ou des années, sans tomber dans l'atmosphère. Les aurores viennent d'autres électrons, ceux de la queue magnétique, qui plongent vers les pôles. Lors d'un orage violent, la ceinture extérieure peut être en partie vidée.",
+  chiffres: "Intérieure (surtout des protons) : ≈ 1 000 à 12 000 km d'altitude · extérieure (surtout des électrons) : ≈ 13 000 à 60 000 km · découvertes en 1958 grâce au satellite Explorer 1",
+});
+/** Croissant compris entre deux lignes de champ L1 et L2, tourné autour de l'axe magnétique (demi-anneau). */
+function croissant(L1, L2, couleur, op) {
+  const lc = Math.acos(Math.sqrt(L1 / L2)), pts = [];
+  for (let k = 0; k <= 40; k++) { const l = -lc + 2 * lc * k / 40, r = L2 * Math.cos(l) ** 2; pts.push(new THREE.Vector2(r * Math.cos(l), r * Math.sin(l))); }
+  for (let k = 40; k >= 0; k--) { const l = -lc + 2 * lc * k / 40, r = L1 * Math.cos(l) ** 2; pts.push(new THREE.Vector2(r * Math.cos(l), r * Math.sin(l))); }
+  const m = mesh(new THREE.LatheGeometry(pts, 72, Math.PI / 2, Math.PI), matCoque(couleur, op));
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), AXE_M);
+  return m;
+}
+
+// ---------- Aurores : ovale (lueur au sol vue de l'espace) et rideaux colorés ----------
+const ovalePart = S.part("ovale", "Ovale auroral", {
+  etiquette: false,
+  texte: "L'anneau où tombent les électrons, centré sur le pôle géomagnétique et non sur le pôle géographique. Il est plus près du pôle côté jour et descend plus bas côté nuit, là où les aurores sont les plus belles, vers minuit. Plus l'orage est fort, plus il s'élargit et descend vers l'équateur. Un second ovale, symétrique, entoure le pôle sud : ce sont les aurores australes.",
+  chiffres: "Côté nuit : ≈ 65 à 67° de latitude magnétique par temps calme (nord de la Scandinavie, Islande) · ≈ 50 à 55° pour Kp 9 · France : entre 45 et 52°",
+  extra: () => `<p class="spec">Ici (Kp ${kp}) : bord sud de l'ovale à ≈ ${fmt(ovale(0).E / DEG)}° de latitude magnétique côté nuit.</p>`,
+});
+const rideau = S.part("rideau", "Rideau d'aurore", {
+  etiquette: false,
+  texte: "Les électrons percutent les atomes de la haute atmosphère et leur donnent de l'énergie, que ceux-ci rendent sous forme de lumière d'une couleur précise, comme le gaz d'une enseigne au néon. L'oxygène donne le vert, le plus courant, et le rouge, plus haut et plus pâle. L'azote donne le bleu-violet et le liseré rose du bas du rideau. Depuis la France, on ne voit en général que le haut du rideau, rouge, au-dessus de l'horizon nord.",
+  chiffres: "Vert 557,7 nm (oxygène, 100 à 250 km) · rouge 630,0 nm (oxygène, 200 à 400 km) · bleu-violet 427,8 nm (azote ionisé, ≈ 100 km) · rose (azote, ≈ 90 km)",
+  extra: () => `<p class="spec">Vu du centre de la France (47° N) avec Kp ${kp} : bas de l'aurore verte (110 km) ${texteHauteur(hauteur(110))}, aurore rouge (300 km) ${texteHauteur(hauteur(300))}.</p>`,
+});
+// altitudes du rideau (km) et poids [vert, rouge, violet] de chaque rangée
+const ALT = [85, 95, 105, 115, 140, 180, 220, 260, 320, 400];
+const CV = [[0, 0, 0], [0.1, 0.3, 0.5], [0.85, 0, 0.25], [1, 0, 0], [0.75, 0.05, 0], [0.45, 0.15, 0], [0.2, 0.3, 0], [0.06, 0.35, 0], [0, 0.25, 0], [0, 0, 0]];
+const NA = 720, NR = ALT.length, FR = [0.12, 0.45, 0.8], NF = 6;
+const cV = new THREE.Color(COULEURS.vert), cR = new THREE.Color(COULEURS.rouge), cB = new THREE.Color(COULEURS.violet);
+function voile(nf, nr) {
+  const g = new THREE.BufferGeometry(), n = nf * (NA + 1) * nr, idx = [];
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  for (let s = 0; s < nf; s++) for (let i = 0; i < NA; i++) for (let j = 0; j < nr - 1; j++) {
+    const a = (s * (NA + 1) + i) * nr + j, b = a + nr;
+    idx.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  g.setIndex(idx);
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1.3);
+  const m = new THREE.Mesh(g, M.voile(0.95)); m.frustumCulled = false;
+  return m;
+}
+const rideauMesh = S.add(rideau, voile(NF, NR));
+const ovaleMesh = S.add(ovalePart, voile(2, 3));
+function majAurores(t) {
+  const amp0 = (0.15 + 0.095 * kp) * (imm ? 0.85 : 1), fr = 0.4 + 0.13 * kp;
+  const P = rideauMesh.geometry.attributes.position.array, C = rideauMesh.geometry.attributes.color.array;
+  const P2 = ovaleMesh.geometry.attributes.position.array, C2 = ovaleMesh.geometry.attributes.color.array;
+  let v = 0, w = 0;
+  for (let s = 0; s < NF; s++) {
+    const h = s < 3 ? 1 : -1, k = s % 3;
+    for (let i = 0; i <= NA; i++) {
+      const phi = -Math.PI + 2 * Math.PI * i / NA, o = ovale(phi), cp = Math.cos(phi), sp = Math.sin(phi);
+      const minuit = 0.3 + 0.7 * Math.pow((1 + cp) / 2, 1.5);
+      const onde = (0.5 * Math.sin(7 * phi + 0.35 * t + 2 * k) + 0.25 * Math.sin(19 * phi - 0.6 * t + k)) * DEG * (1 + 0.1 * kp);
+      const lam = h * (o.E + FR[k] * o.W + onde), d = mag(lam, phi);
+      const rayons = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(90 * phi + 0.6 * t + 2.3 * k + 3 * Math.sin(11 * phi))) ** 2; // stries verticales
+      const a = amp0 * minuit * rayons * (0.55 + 0.45 * Math.sin(5 * phi + 0.5 * t + 1.7 * k) * Math.sin(3 * phi - 0.27 * t + k)) * (k === 0 ? 1 : 0.75);
+      for (let j = 0; j < NR; j++, v += 3) {
+        const r = 1 + ex * ALT[j] / RT_KM, [g, rr, b] = CV[j];
+        P[v] = d.x * r; P[v + 1] = d.y * r; P[v + 2] = d.z * r;
+        let e = a;
+        if (imm) { // vu du sol : l'air absorbe la lumière qui arrive au ras de l'horizon
+          const dx = P[v] - OEIL.x, dy = P[v + 1] - OEIL.y, dz = P[v + 2] - OEIL.z;
+          e *= lisse(-0.5, 12, Math.asin((dx * U_OBS.x + dy * U_OBS.y + dz * U_OBS.z) / Math.hypot(dx, dy, dz)) / DEG);
+        }
+        C[v] = (cV.r * g + cR.r * rr * fr + cB.r * b) * e;
+        C[v + 1] = (cV.g * g + cR.g * rr * fr + cB.g * b) * e;
+        C[v + 2] = (cV.b * g + cR.b * rr * fr + cB.b * b) * e;
+      }
+      // ovale : bande verte diffuse à 110 km, une par hémisphère
+      if (k === 0) for (let j = 0; j < 3; j++, w += 3) {
+        const dd = mag(h * (o.E + o.W * j / 2), phi), r = 1 + ex * 110 / RT_KM, e = j === 1 ? (0.2 + 0.05 * kp) * minuit : 0;
+        P2[w] = dd.x * r; P2[w + 1] = dd.y * r; P2[w + 2] = dd.z * r;
+        C2[w] = cV.r * e; C2[w + 1] = cV.g * e; C2[w + 2] = cV.b * e;
+      }
+    }
+  }
+  for (const m of [rideauMesh, ovaleMesh]) { m.geometry.attributes.position.needsUpdate = true; m.geometry.attributes.color.needsUpdate = true; }
+}
+
+// ---------- Reconstruction quand l'indice Kp change ----------
+function reconstruire() {
+  calculer();
+  // magnétosphère côté jour et queue : la même surface, coupée à x = X_QUEUE
+  const iq = MP.findIndex(([x]) => x > X_QUEUE);
+  S.viderElement(magneto);
+  S.add(magneto, coque(MP.slice(0, iq + 1), C_MAGNETO, 0.1));
+  S.add(magneto, contour(MP.slice(0, iq + 1), C_MAGNETO, 0.55));
+  S.viderElement(queue);
+  const mq = MP.slice(iq - 1);
+  S.add(queue, coque(mq, C_MAGNETO, 0.07));
+  S.add(queue, contour(mq, C_MAGNETO, 0.45));
+  { // feuillet de plasma, au milieu de la queue
+    const sh = new THREE.Shape(), xs = [];
+    for (let x = X_QUEUE + 2; x <= X_FIN; x += 2) xs.push(x);
+    sh.moveTo(xs[0], 0);
+    for (const x of xs) sh.lineTo(x, 0.7 * rayonA(MP, x));
+    for (const x of [...xs].reverse()) sh.lineTo(x, -0.7 * rayonA(MP, x));
+    const g = new THREE.ShapeGeometry(sh); g.rotateX(-Math.PI / 2);
+    S.add(queue, mesh(g, matCoque(COULEURS.orange, 0.16)));
+  }
+  S.viderElement(choc);
+  S.add(choc, coque(BS, COULEURS.ambre, 0.06));
+  S.add(choc, contour(BS, COULEURS.ambre, 0.4));
+  S.viderElement(ceintures);
+  const L2 = Math.min(6.5, r0 - 0.2);
+  S.add(ceintures, croissant(1.25, 2.3, COULEURS.corail, 0.24));
+  S.add(ceintures, croissant(3.2, L2, COULEURS.froid, 0.18));
+  // étiquettes
+  { const th = 35 * DEG, r = r0 * Math.pow(2 / (1 + Math.cos(th)), alpha); magneto.ancre.set(-r * Math.cos(th), r * Math.sin(th) + 0.4, 0); }
+  { const th = 75 * DEG, r = rbs * 1.8 / (1 + 0.8 * Math.cos(th)); choc.ancre.set(-r * Math.cos(th), r * Math.sin(th) + 0.4, 0); }
+  queue.ancre.set(30, rayonA(MP, 30) + 0.6, 0);
+  ceintures.ancre.copy(mag(32 * DEG, Math.PI, 0.5 * (3.2 + L2) * Math.cos(32 * DEG) ** 2));
+  construireLignes();
+  construireElectrons();
+  for (const r of RACC) document.getElementById("r-" + r.id)?.setAttribute("aria-pressed", String(kp === r.kp));
+  S.refreshInfo();
+}
+
+// ---------- Étiquettes propres au schéma ----------
+const espace = () => !imm;
+S.label("Terre", () => AXE_M.clone().multiplyScalar(1.3), { partId: "terre", visible: espace });
+S.label("Ovale auroral", () => { const o = ovale(Math.PI / 2); return mag(o.E + o.W / 2, Math.PI / 2, 1.06); }, { partId: "ovale", visible: () => espace() && S.state.ovale });
+S.label("Rideau d'aurore", () => { const o = ovale(0); return mag(o.E + 0.5 * o.W, 0, 1 + EXAG * 400 / RT_KM); }, { partId: "rideau", visible: espace });
+S.label("France", () => U_OBS.clone().multiplyScalar(1.03), { lumiere: true, visible: () => espace() && S.camera.position.length() < 12 });
+// par les yeux : hauteur des aurores et points cardinaux
+const lblVert = S.label("", () => pointAurore(110), { partId: "rideau", visible: () => imm && hauteur(110) > 0.5 });
+const lblRouge = S.label("", () => pointAurore(300), { partId: "rideau", visible: () => imm && hauteur(300) > 0.5 });
+for (const [nom, az] of [["Nord", 0], ["Nord-est", 45], ["Nord-ouest", -45], ["Est", 90], ["Ouest", -90]]) {
+  S.label(nom, () => OEIL.clone().addScaledVector(direction(az, 0), 0.02), { lumiere: true, visible: () => imm });
+}
+
+// ---------- Animation ----------
+const espaceObj = [soleil.group, vent.group, cme.group, choc.group, magneto.group, queue.group, ceintures.group, lignes, elec.group, france];
+S.onFrame(({ dt, time }) => {
+  const d = S.camera.position.length();
+  imm = d < 1.02;
+  const near = d < 1.3 ? 0.0002 : 0.05;
+  if (S.camera.near !== near) { S.camera.near = near; S.camera.updateProjectionMatrix(); }
+  ex = 1 + (EXAG - 1) * lisse(1.01, 1.5, d);
+
+  for (const o of espaceObj) o.visible = !imm;
+  vent.group.visible = !imm && S.state.vent;
+  lignes.visible = !imm && S.state.champ;
+  ceintures.group.visible = !imm && S.state.ceintures;
+  ovalePart.group.visible = S.state.ovale && !imm; // repère du schéma, pas une lueur visible du sol
+
+  // éjection de masse coronale : une bulle part du Soleil toutes les 7 s pendant un orage
+  cme.group.visible = !imm && S.state.vent && kp >= 5;
+  if (cme.group.visible) {
+    const u = S.reduced ? 0.45 : (time / 7) % 1, R = R_SOLEIL + u * (-X_SOLEIL - rbs - 2 - R_SOLEIL);
+    cmeMesh.scale.setScalar(R);
+    cmeMesh.material.opacity = 0.32 * Math.sin(Math.PI * Math.min(1, u * 1.15));
+    cme.ancre.set(X_SOLEIL + R * Math.cos(30 * DEG), R * Math.sin(30 * DEG) + 0.5, 0);
+  }
+  if (vent.group.visible) majVent(S.state.anim && !S.reduced ? dt : 0);
+  elec.photons.visible = S.state.anim || S.reduced;
+  if (!imm) elec.animer(time, 3);
+  majAurores(time);
+
+  if (imm) {
+    const hv = hauteur(110), hr = hauteur(300);
+    lblVert.el.textContent = `Aurore verte · ${fmt(hv)}°`;
+    lblRouge.el.textContent = `Aurore rouge · ${fmt(hr)}°`;
+    S.notice(hauteur(400) < 2 ? "Orage trop faible : vue de France, l'aurore reste sous l'horizon nord. Montez l'indice Kp." : null);
+  } else S.notice(null);
+});
+
+S.start();
+</script>
+</body>
+</html>

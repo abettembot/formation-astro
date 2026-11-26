@@ -60,6 +60,9 @@ export const materiaux = {
   astre: (map) => new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0, envMapIntensity: 0 }),
   // objet lumineux par lui-même (Soleil, repère toujours visible) : insensible à l'éclairage
   lumineux: (couleur, opacite = 1) => new THREE.MeshBasicMaterial({ color: couleur, transparent: opacite < 1, opacity: opacite, side: THREE.DoubleSide, toneMapped: false, depthWrite: opacite >= 1 }),
+  // voile de lumière émis par un gaz (aurore, lueur de l'air) : couleur donnée par sommet (attribut color),
+  // qui s'ajoute à ce qui est derrière. Un sommet noir est donc invisible : on règle l'éclat par la couleur.
+  voile: (opacite = 1) => new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: opacite, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
   // ombre portée par un astre sphérique (Lune, Terre) sur un autre, éclairés par des rayons parallèles.
   // Se pose sur une sphère à peine plus grande que l'astre qui reçoit l'ombre. Le schéma met à jour
   // uniforms.centre (centre de l'astre qui fait de l'ombre) à chaque image. Options :
@@ -599,7 +602,8 @@ const MOBILE = 760;
  *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue),
  *           immersif:true (vue « par les yeux » : la caméra reste au point pos et tourne sur elle-même ;
  *           glisser oriente le regard, la molette ou le pincement élargit ou resserre le champ,
- *           entre fovMin et fovMax, 30° et 120° par défaut ; implique exacte)
+ *           entre fovMin et fovMax, 30° et 120° par défaut ; implique exacte),
+ *           haut:[x,y,z] (verticale de la vue, axe Y par défaut : observateur posé sur un globe)
  *  - eclate : true pour afficher le curseur « Vue éclatée »
  *  - animation : false pour retirer le bouton « Animation » (schéma sans rien d'animé)
  *  - commandes : [{ type:"bascule", id, label, actif, onChange(v) }
@@ -923,7 +927,8 @@ export function createSchema(cfg) {
   let camAnim = null, vueSuivie = null;
   const vec = (x) => { const r = typeof x === "function" ? x() : x; return r.isVector3 ? r.clone() : new THREE.Vector3(...r); };
   function cadrage(v) {
-    const to = { pos: vec(v.pos), target: vec(v.cible), fov: (typeof v.fov === "function" ? v.fov() : v.fov) ?? FOV };
+    const to = { pos: vec(v.pos), target: vec(v.cible), fov: (typeof v.fov === "function" ? v.fov() : v.fov) ?? FOV,
+      up: v.haut ? vec(v.haut).normalize() : new THREE.Vector3(0, 1, 0) };
     // vue immersive : la cible est posée juste devant l'œil, la caméra tourne donc sur elle-même
     if (v.immersif) to.target.sub(to.pos).setLength(0.01).add(to.pos);
     else if (innerWidth < MOBILE && !v.exacte) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
@@ -968,7 +973,16 @@ export function createSchema(cfg) {
     if (doigts.size === 2) { const d = ecart(); if (ecartPrec > 0 && d > 0) changerChamp(ecartPrec / d); ecartPrec = d; }
   });
   for (const t of ["pointerup", "pointercancel"]) renderer.domElement.addEventListener(t, (e) => { doigts.delete(e.pointerId); ecartPrec = 0; });
+  // verticale de la vue (haut de l'écran) : axe Y par défaut, ou v.haut (observateur posé sur un globe)
+  const AXE_Y = new THREE.Vector3(0, 1, 0);
+  function appliquerHaut(h) {
+    if (camera.up.equals(h)) return;
+    camera.up.copy(h);
+    controls._quat.setFromUnitVectors(camera.up, AXE_Y); // repère de rotation d'OrbitControls
+    controls._quatInverse.copy(controls._quat).invert();
+  }
   function applyCam(c) {
+    appliquerHaut(c.up);
     camera.position.copy(c.pos); controls.target.copy(c.target);
     if (camera.fov !== c.fov) { camera.fov = c.fov; camera.updateProjectionMatrix(); }
   }
@@ -980,7 +994,7 @@ export function createSchema(cfg) {
     else quitterImmersif(instant || reduced);
     const to = cadrage(v);
     if (instant || reduced) { applyCam(to); return; }
-    camAnim = { v, from: { pos: camera.position.clone(), target: controls.target.clone(), fov: camera.fov }, to, t: 0 };
+    camAnim = { v, from: { pos: camera.position.clone(), target: controls.target.clone(), fov: camera.fov, up: camera.up.clone() }, to, t: 0 };
   }
   // l'utilisateur reprend la main : la vue cesse de suivre l'objet mobile
   controls.addEventListener("start", () => { vueSuivie = null; });
@@ -1046,6 +1060,7 @@ export function createSchema(cfg) {
         const k = ease(camAnim.t);
         camera.position.lerpVectors(camAnim.from.pos, camAnim.to.pos, k);
         controls.target.lerpVectors(camAnim.from.target, camAnim.to.target, k);
+        appliquerHaut(v3.lerpVectors(camAnim.from.up, camAnim.to.up, k).normalize());
         const fov = camAnim.from.fov + (camAnim.to.fov - camAnim.from.fov) * k;
         if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
         if (camAnim.t >= 1) { if (!camAnim.v.immersif) quitterImmersif(); camAnim = null; }
