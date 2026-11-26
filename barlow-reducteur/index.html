@@ -408,8 +408,10 @@ function dessinerEncart() {
     dessinerChamp(ctx, 0, s);
     dessinerMars(ctx, s + gap, s);
     ctx.font = "11.5px Arial"; ctx.textAlign = "center"; ctx.fillStyle = "#c4d0e0";
-    ctx.fillText("Champ (Lune : 0,5°)", s / 2, s + 14);
-    ctx.fillText(`Mars : ${NPX} × ${NPX} pixels`, s + gap + s / 2, s + 14);
+    // légende la plus complète qui tient sous l'image (encart réduit sur téléphone)
+    const tient = (...textes) => textes.find((t) => ctx.measureText(t).width <= s - 4) ?? textes.at(-1);
+    ctx.fillText(tient("Champ (Lune : 0,5°)", "Champ"), s / 2, s + 14);
+    ctx.fillText(tient(`Mars : ${NPX} × ${NPX} pixels`, `Mars : ${NPX} × ${NPX} px`, "Mars"), s + gap + s / 2, s + 14);
   }
   const deborde = g.champ[1] < 0.52, dp = MARS / g.ech;
   let verdict;
