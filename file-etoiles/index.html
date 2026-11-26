@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Filé d'étoiles</title>
+<meta name="description" content="Schéma 3D interactif : la rotation de la Terre fait filer les étoiles pendant une pose photo sur trépied. Règle des 500, dérive en pixels et pose maximale sans suivi.">
+<link rel="stylesheet" href="../commun/charte.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import { createSchema, THREE, COULEURS, css, materiaux as M, axeZ, mesh, legende, halo } from "../commun/schema.js";
+import { ETOILES, TRACES } from "../commun/ciel.js";
+
+// ---------- Échelle et repères ----------
+// 1 unité = 1 m autour du photographe. La sphère céleste (rayon 10 m) est symbolique : elle porte les directions des étoiles.
+// L'appareil et le trépied sont dessinés 4 fois plus grands que nature pour rester lisibles.
+// Repère local : sol = plan XZ, zénith = +Y, nord = −Z, sud = +Z, est = +X, ouest = −X.
+// Sphère céleste : groupe « sphere » dont l'axe Y local est l'axe du monde ; le groupe « voute » tourne autour et porte les étoiles.
+// Le ciel est figé un soir de mi-janvier vers 22 h (heure solaire), à Rouvroy : Orion passe plein sud.
+const DEG = Math.PI / 180;
+const R = 10, R_SOL = 11.5;
+const LAT = 49 + 38 / 60 + 55 / 3600;         // Rouvroy, commune du club : 49° 38′ 55″ N
+const JOUR_SIDERAL = 86164.0905;               // 23 h 56 min 4 s, en secondes
+const OMEGA = 2 * Math.PI / JOUR_SIDERAL;      // vitesse de rotation de la Terre : 7,292·10⁻⁵ rad/s
+const T0 = 84;                                 // heure sidérale au début de la pose (degrés) : 5 h 36 min
+const TETE = new THREE.Vector3(0, 1.45, 0);    // rotule du trépied, où pivote l'appareil
+const OEIL = new THREE.Vector3(0, 0.2, 0);     // point de vue « par l'objectif »
+const POSE_MIN = 1, POSE_MAX = 7200;           // curseur de pose : 1 s à 2 h
+const N_OUVERTURE = 2.8;                       // ouverture de l'objectif (règle NPF)
+
+// ---------- Matériel ----------
+const FOCALES = [14, 24, 50, 135];
+const CAPTEURS = {
+  ff:   { nom: "plein format", bouton: "Plein format · 5,9 µm", w: 36, h: 24, pix: 5.9, crop: 1, def: "6000 × 4000 pixels (24 Mpx)" },
+  apsc: { nom: "APS-C", bouton: "APS-C · 3,76 µm", w: 23.5, h: 15.6, pix: 3.76, crop: 1.5, def: "6248 × 4176 pixels (26 Mpx)" },
+};
+const VISEES = {
+  polaire:   { nom: "Polaire", bouton: "Polaire", hip: 11767, etoile: "la Polaire" },
+  cassiopee: { nom: "Cassiopée", bouton: "Cassiopée", hip: 4427, etoile: "Gamma Cassiopée, au centre du W" },
+  orion:     { nom: "Orion", bouton: "Orion", hip: 26311, etoile: "Alnilam, au centre du Baudrier" },
+};
+for (const v of Object.values(VISEES)) { const e = ETOILES.find((x) => x[4] === v.hip); Object.assign(v, { ad: e[0], dec: e[1], bv: e[3] }); }
+
+// ---------- État ----------
+const sim = { focale: 24, capteur: "ff", visee: "orion", pose: 0, mode: "500" };
+let pilote = false, ecoule = 0, debutCycle = 0, apercuSale = true;
+
+// ---------- Calculs ----------
+const cap = () => CAPTEURS[sim.capteur];
+const visee = () => VISEES[sim.visee];
+const regle = (n) => n / (sim.focale * cap().crop);
+const champ = () => [2 * Math.atan(cap().w / 2 / sim.focale) / DEG, 2 * Math.atan(cap().h / 2 / sim.focale) / DEG];
+/** Vitesse de glissement d'une étoile au centre de l'image, en pixels par seconde. */
+const vitessePx = (dec) => sim.focale * 1000 / cap().pix * OMEGA * Math.cos(dec * DEG);
+const npf = () => (35 * N_OUVERTURE + 30 * cap().pix) / sim.focale;
+const poseDe = (i) => POSE_MIN * Math.pow(POSE_MAX / POSE_MIN, i / 1000);
+const indiceDe = (t) => Math.round(1000 * Math.log(t / POSE_MIN) / Math.log(POSE_MAX / POSE_MIN));
+
+// ---------- Mise en forme ----------
+const fmt = (v, n = 0) => v.toLocaleString("fr-FR", { minimumFractionDigits: n, maximumFractionDigits: n });
+function fmtPose(t) {
+  if (t < 59.95) return `${fmt(t, 1)} s`;
+  if (t < 3599.5) {
+    const s = Math.round(t), m = Math.floor(s / 60), r = s % 60;
+    return r ? `${m} min ${String(r).padStart(2, "0")} s` : `${m} min`;
+  }
+  const m = Math.round(t / 60);
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+}
+const fmtPx = (d) => d < 9.95 ? fmt(d, 1) : fmt(d, 0);
+const nbPx = (d) => `${fmtPx(d)} pixel${d >= 1.95 ? "s" : ""}`;
+const fmtPix = () => fmt(cap().pix, Math.round(cap().pix * 100) % 10 ? 2 : 1);
+function verdict(d) {
+  if (d <= 2) return { mot: "Étoile ronde", couleur: COULEURS.etoile };
+  if (d <= 4) return { mot: "Étoile un peu allongée", couleur: COULEURS.orange };
+  return { mot: "Trait visible", couleur: COULEURS.corail };
+}
+
+const S = createSchema({
+  surtitre: "Support de formation · Astrophotographie",
+  titre: "Filé d'étoiles",
+  sousTitre: "Exemple : 24 mm f/2,8 sur trépied · Rouvroy 49° N",
+  distanceMin: 2,
+  distanceMax: 100,
+  apercu: [{ titre: "Sur le capteur" }, { titre: "Loupe à 100 %" }],
+  commandes: [
+    { type: "curseur", id: "pose", label: "Pose", min: 0, max: 1000, pas: 1, valeur: 0,
+      format: (v) => fmtPose(pilote ? sim.pose : poseDe(v)),
+      onInput: (v) => { if (!pilote) { sim.pose = poseDe(v); sim.mode = null; maj(); } } },
+    { type: "raccourcis", id: "poses", label: "Durée de pose", boutons: [
+      { id: "p500", label: "Règle des 500", onClick: () => { sim.mode = "500"; maj(); } },
+      { id: "p300", label: "Règle des 300", onClick: () => { sim.mode = "300"; maj(); } },
+      { id: "p1h", label: "Filé de 1 h", onClick: () => { sim.mode = "1h"; maj(); } },
+    ] },
+    { type: "raccourcis", id: "focales", label: "Focale de l'objectif", boutons: FOCALES.map((f) => ({ id: "f" + f, label: f + " mm", onClick: () => { sim.focale = f; maj(); } })) },
+    { type: "raccourcis", id: "capteurs", label: "Capteur", boutons: Object.entries(CAPTEURS).map(([id, c]) => ({ id: "c" + id, label: c.bouton, onClick: () => { sim.capteur = id; maj(); } })) },
+    { type: "raccourcis", id: "visees", label: "Visée", boutons: Object.entries(VISEES).map(([id, v]) => ({ id: "v" + id, label: v.bouton, onClick: () => { sim.visee = id; maj(); } })) },
+    { type: "bascule", id: "cadre", label: "Champ photographié", actif: true },
+    { type: "bascule", id: "constellations", label: "Constellations", actif: true },
+    { type: "bascule", id: "reperes", label: "Repères", actif: true },
+  ],
+  vues: [
+    { id: "iso", label: "3/4", pos: () => innerWidth < 760 ? [36, 24, 46] : [17, 10, 21], cible: [0, 2, 0], exacte: true },
+    { id: "profil", label: "Profil", pos: () => innerWidth < 760 ? [58, 6, 0.01] : [27, 4, 0.01], cible: [0, 2.5, 0], exacte: true },
+    { id: "appareil", label: "Appareil", pos: [2.6, 2.4, 3.4], cible: [0, 1.15, 0], exacte: true },
+    // par l'objectif : le champ de la vue est celui de l'objectif choisi
+    { id: "objectif", label: "Par l'objectif", immersif: true, fovMin: 4, fovMax: 120,
+      fov: () => champ()[1], pos: OEIL, cible: () => OEIL.clone().addScaledVector(direction0(visee()), R) },
+  ],
+  aide: "3/4, Profil, Appareil : glisser pour tourner autour, molette ou pincer pour zoomer · Par l'objectif : glisser pour regarder autour, molette ou pincer pour changer le champ · Cliquer un élément : l'expliquer",
+  intro: () => {
+    const t5 = regle(500), t3 = regle(300), fc = sim.focale * cap().crop;
+    return `
+    <div class="eyebrow">Pourquoi les étoiles filent</div>
+    ${legende([
+      { couleur: COULEURS.etoile, texte: "La Terre tourne sur elle-même en 23 h 56 min : tout le ciel semble tourner autour de la Polaire, de 15° par heure." },
+      { couleur: COULEURS.ambre, texte: "Posé sur un trépied, l'appareil tourne avec la Terre. Pendant la pose, l'image de chaque étoile glisse sur le capteur." },
+      { couleur: COULEURS.corail, texte: "Dès que ce glissement dépasse un ou deux pixels, l'étoile n'est plus un point mais un petit trait : c'est le filé." },
+    ])}
+    <div class="eyebrow">La règle des 500</div>
+    <p>Pose maximale (en secondes) = 500 ÷ (focale × facteur de recadrage). Le facteur vaut 1 en plein format et 1,5 en APS-C.</p>
+    <p class="spec">${sim.focale} mm en ${cap().nom} : 500 ÷ ${fmt(fc, fc % 1 ? 1 : 0)} = ${fmtPose(t5)} · règle des 300 : ${fmtPose(t3)}</p>
+    <p>Elle date de l'argentique. Sur un capteur actuel, elle laisse toujours un trait d'environ 6 pixels, quelle que soit la focale : visible en zoomant à 100 %. La règle des 300 est plus sûre. Viser près de la Polaire permet de poser plus longtemps.</p>
+    <p class="spec">Sans suivi, la pose maximale dépend de la focale, de la taille des pixels et de la déclinaison de la zone visée.</p>`;
+  },
+});
+
+// ---------- Fond et éclairage ----------
+S.ciel.visible = false;                       // le ciel de fond aléatoire cède la place à la vraie carte
+S.scene.environmentIntensity = 0.3;
+S.lumieres.contre.intensity = 0.3;
+S.lumieres.ambiance.intensity = 0.35;
+S.lumieres.principale.intensity = 1.4;
+const parSesYeux = () => S.camera.position.length() < 1.5;
+
+// uniforms partagés par les étoiles, les filés et les lignes du ciel
+const U = {
+  sous: { value: 0.15 },   // visibilité sous l'horizon (vue de l'extérieur : estompé ; par l'objectif : caché)
+  echelle: { value: 1 },   // taille des points en pixels
+  arc: { value: 0 },       // angle parcouru par le ciel depuis l'ouverture de l'obturateur (radians)
+};
+const FONDU = "mix(sous, 1.0, smoothstep(-0.08, 0.08, w.y))";
+function matLigne(couleur, opacite) {
+  return new THREE.ShaderMaterial({
+    uniforms: { couleur: { value: new THREE.Color(couleur) }, opacite: { value: opacite }, sous: U.sous },
+    vertexShader: `uniform float sous; varying float vA;
+      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vA = ${FONDU}; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform vec3 couleur; uniform float opacite; varying float vA;
+      void main() { float a = opacite * vA; if (a < 0.003) discard; gl_FragColor = vec4(couleur, a);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false,
+  });
+}
+const ligne = (pts, couleur, op) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), matLigne(couleur, op));
+/** Position d'une étoile dans le repère de la voûte (qui tourne). */
+const surVoute = (ad, dec, r = R) => new THREE.Vector3(Math.cos(dec * DEG) * Math.cos(ad * DEG), Math.sin(dec * DEG), -Math.cos(dec * DEG) * Math.sin(ad * DEG)).multiplyScalar(r);
+/** Position dans le repère de la sphère (fixe) : déclinaison et angle horaire. */
+const surSphere = (dec, H, r = R) => new THREE.Vector3(Math.cos(dec * DEG) * Math.cos(H * DEG), Math.sin(dec * DEG), Math.cos(dec * DEG) * Math.sin(H * DEG)).multiplyScalar(r);
+const cercleDec = (dec, n = 160) => Array.from({ length: n + 1 }, (_, i) => surSphere(dec, i / n * 360));
+function teinteBV(bv) {
+  const P = [[-0.3, 0.62, 0.72, 1], [0, 0.8, 0.86, 1], [0.6, 1, 0.96, 0.88], [1.0, 1, 0.85, 0.65], [1.6, 1, 0.7, 0.45]];
+  let k = 0; while (k < P.length - 2 && bv > P[k + 1][0]) k++;
+  const [a, b] = [P[k], P[k + 1]], t = Math.min(1, Math.max(0, (bv - a[0]) / (b[0] - a[0])));
+  return new THREE.Color().setRGB(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t, THREE.SRGBColorSpace);
+}
+
+// ---------- Sphère céleste (orientée pour la latitude du club) ----------
+const sphere = new THREE.Group(), voute = new THREE.Group();
+sphere.add(voute); S.scene.add(sphere);
+{
+  const p = LAT * DEG;
+  const A = new THREE.Vector3(0, Math.cos(p), Math.sin(p));   // équateur céleste au méridien sud
+  const C = new THREE.Vector3(0, Math.sin(p), -Math.cos(p));  // pôle nord céleste
+  const B = new THREE.Vector3(-1, 0, 0);                      // équateur céleste à l'ouest
+  sphere.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(A, C, B));
+  sphere.updateMatrixWorld(true);
+}
+const POLE = new THREE.Vector3(0, 1, 0).applyQuaternion(sphere.quaternion);
+const versMonde = (g, v) => g.localToWorld(v.clone());
+/** Direction (unitaire, repère du sol) d'une étoile à l'ouverture de l'obturateur. */
+const direction0 = (e) => surSphere(e.dec, T0 - e.ad, 1).applyQuaternion(sphere.quaternion);
+
+// ---------- Sol et horizon ----------
+const matSol = M.sol(); matSol.transparent = true;
+const disqueSol = mesh(new THREE.CircleGeometry(R_SOL, 96).rotateX(-Math.PI / 2), matSol);
+disqueSol.renderOrder = -2;
+S.scene.add(disqueSol);
+S.scene.add(ligne(Array.from({ length: 129 }, (_, i) => new THREE.Vector3(Math.cos(i / 64 * Math.PI) * R, 0.02, Math.sin(i / 64 * Math.PI) * R)), 0xc4d0e0, 0.55));
+for (const [nom, x, z] of [["Nord", 0, -1], ["Est", 1, 0], ["Sud", 0, 1], ["Ouest", -1, 0]]) {
+  S.label(nom, () => new THREE.Vector3(x * (R + 0.4), 0.1, z * (R + 0.4)), { visible: () => S.state.reperes });
+}
+
+// ---------- Les étoiles : la vraie carte du ciel ----------
+const ETOILES_DIR = ETOILES.map((e) => ({ dir: direction0({ ad: e[0], dec: e[1] }), mag: e[2], teinte: teinteBV(e[3]), dec: e[1] }));
+{
+  const n = ETOILES.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), mag = new Float32Array(n);
+  ETOILES.forEach(([ad, dec, m], i) => {
+    pos.set(surVoute(ad, dec, R * 0.99).toArray(), i * 3);
+    const c = ETOILES_DIR[i].teinte; col.set([c.r, c.g, c.b], i * 3);
+    mag[i] = m;
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("teinte", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("mag", new THREE.BufferAttribute(mag, 1));
+  const etoiles = new THREE.Points(g, new THREE.ShaderMaterial({
+    uniforms: U,
+    vertexShader: `attribute float mag; attribute vec3 teinte; uniform float sous, echelle; varying vec3 vC; varying float vA;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vA = clamp(1.3 - 0.16 * mag, 0.4, 1.0) * ${FONDU}; vC = teinte;
+        gl_PointSize = max(2.6, 11.0 - 1.7 * mag) * echelle;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `varying vec3 vC; varying float vA;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0; if (d > 1.0) discard;
+        float c = pow(1.0 - d, 1.6) + 0.6 * (1.0 - smoothstep(0.0, 0.35, d));
+        gl_FragColor = vec4(vC, min(1.0, c) * vA * 1.4);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  etoiles.frustumCulled = false;
+  voute.add(etoiles);
+}
+
+// filés : un arc par étoile (jusqu'à la magnitude 4,5), dans le repère fixe de la sphère.
+// L'arc part de la position à l'ouverture de l'obturateur et s'allonge avec l'angle parcouru par le ciel (uniform arc).
+const files = (() => {
+  const choix = ETOILES.filter((e) => e[2] <= 4.5), SEG = 32, nv = choix.length * SEG * 2;
+  const h0 = new Float32Array(nv), dec = new Float32Array(nv), k = new Float32Array(nv), mag = new Float32Array(nv), col = new Float32Array(nv * 3);
+  let i = 0;
+  for (const [ad, d, m, bv] of choix) {
+    const c = teinteBV(bv);
+    for (let s = 0; s < SEG; s++) for (const f of [s / SEG, (s + 1) / SEG]) {
+      h0[i] = (T0 - ad) * DEG; dec[i] = d * DEG; k[i] = f; mag[i] = m; col.set([c.r, c.g, c.b], i * 3); i++;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(nv * 3), 3));
+  g.setAttribute("aH0", new THREE.BufferAttribute(h0, 1));
+  g.setAttribute("aDec", new THREE.BufferAttribute(dec, 1));
+  g.setAttribute("aK", new THREE.BufferAttribute(k, 1));
+  g.setAttribute("aMag", new THREE.BufferAttribute(mag, 1));
+  g.setAttribute("teinte", new THREE.BufferAttribute(col, 3));
+  const l = new THREE.LineSegments(g, new THREE.ShaderMaterial({
+    uniforms: U,
+    vertexShader: `attribute float aH0, aDec, aK, aMag; attribute vec3 teinte; uniform float sous, arc; varying vec3 vC; varying float vA;
+      void main() {
+        float H = aH0 + aK * arc;
+        vec3 p = ${(R * 0.988).toFixed(3)} * vec3(cos(aDec) * cos(H), sin(aDec), cos(aDec) * sin(H));
+        vec4 w = modelMatrix * vec4(p, 1.0);
+        vA = clamp(1.25 - 0.17 * aMag, 0.25, 1.0) * ${FONDU}; vC = teinte;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `varying vec3 vC; varying float vA;
+      void main() { gl_FragColor = vec4(vC, vA * 0.85);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  l.frustumCulled = false;
+  sphere.add(l);
+  return l;
+})();
+
+// tracés des constellations
+const constellations = new THREE.Group(); voute.add(constellations);
+{
+  const pts = [];
+  for (const t of TRACES) for (let i = 0; i + 3 < t.length; i += 2) pts.push(surVoute(t[i], t[i + 1], R * 0.992), surVoute(t[i + 2], t[i + 3], R * 0.992));
+  constellations.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), matLigne(0x8b9ab0, 0.4)));
+}
+
+// ---------- Repères : axe du monde et équateur céleste ----------
+const reperes = new THREE.Group(); sphere.add(reperes);
+{
+  const axe = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -R, 0), new THREE.Vector3(0, R * 1.08, 0)]),
+    new THREE.LineDashedMaterial({ color: COULEURS.etoile, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.6, depthWrite: false }));
+  axe.computeLineDistances();
+  reperes.add(axe, ligne(cercleDec(0), 0x8b9ab0, 0.7));
+}
+const pAxe = S.part("axe", "Axe du monde", {
+  parent: sphere, ancre: [0, R * 1.12, 0],
+  texte: "Le prolongement de l'axe de rotation de la Terre. Tout le ciel tourne autour, de l'est vers l'ouest, en 23 h 56 min 4 s. Près de l'axe, les étoiles décrivent de petits cercles et se déplacent lentement : en visant la Polaire, on peut poser bien plus longtemps.",
+  chiffres: "Hauteur du pôle céleste = latitude : 49,6° au-dessus de l'horizon nord à Rouvroy · Polaire à 0,7° du pôle",
+});
+S.part("equateur", "Équateur céleste", {
+  parent: sphere, ancre: surSphere(0, -50, R * 1.02).toArray(),
+  texte: "Le prolongement de l'équateur terrestre sur le ciel. Les étoiles qui sont dessus parcourent le plus grand cercle : ce sont elles qui glissent le plus vite. La règle des 500 est calculée pour elles, c'est le cas le plus défavorable.",
+  chiffres: "15° par heure · 15,04″ d'arc par seconde · un diamètre de Lune en 2 min",
+});
+
+// ---------- Étoiles visées ----------
+for (const [id, v] of Object.entries(VISEES)) {
+  const pos = surVoute(v.ad, v.dec, R * 0.99);
+  const textes = {
+    polaire: "À moins de 1° du pôle nord céleste, elle décrit un cercle minuscule et semble immobile. Autour d'elle, les étoiles glissent très lentement : c'est la direction où l'on peut poser le plus longtemps, et le centre des filés circulaires.",
+    cassiopee: "Le W de Cassiopée, toujours visible chez nous, se trouve à 60° de déclinaison. Les étoiles y glissent deux fois moins vite qu'à l'équateur céleste : la pose peut doubler par rapport à la règle des 500.",
+    orion: "Le Baudrier d'Orion est presque sur l'équateur céleste : c'est là que les étoiles filent le plus vite. La règle des 500 s'applique telle quelle.",
+  };
+  const p = S.part(id, v.nom, {
+    parent: voute, ancre: pos.clone().multiplyScalar(1.03).toArray(),
+    texte: textes[id],
+    extra: () => {
+      const k = Math.cos(v.dec * DEG), t2 = 2 / vitessePx(v.dec);
+      return `<p class="spec">Étoile visée : ${v.etoile} · déclinaison ${v.dec >= 0 ? "+" : "−"}${fmt(Math.abs(v.dec), 1)}° · vitesse × ${fmt(k, 2)} par rapport à l'équateur</p>
+        <p class="spec">Avec ${sim.focale} mm en ${cap().nom}, l'étoile visée reste sous 2 pixels de filé jusqu'à ${fmtPose(t2)} de pose. Les étoiles plus éloignées du pôle, ailleurs dans le cadre, filent plus vite.</p>`;
+    },
+  });
+  // sphère invisible, pour pouvoir cliquer l'étoile
+  S.add(p, mesh(new THREE.SphereGeometry(0.3, 12, 8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }), ...pos.toArray()));
+  v.halo = halo(COULEURS.etoile, 0.9); v.halo.position.copy(pos); voute.add(v.halo);
+}
+
+// ---------- Filé d'étoiles (fiche) ----------
+S.part("file", "Filé d'étoiles", {
+  parent: sphere, ancre: surSphere(66, 195, R * 1.02).toArray(),
+  texte: "Pendant la pose, chaque étoile trace un arc de cercle centré sur le pôle céleste. Pour une photo d'étoiles ponctuelles, cet arc doit rester plus petit qu'un ou deux pixels. Sur plusieurs heures, on en fait un effet voulu : des cercles concentriques autour de la Polaire.",
+  chiffres: "Arc de 15° par heure · 1 h = 15° · 2 h = 30° · en pratique : 240 poses de 30 s empilées en mode « éclaircir »",
+});
+
+// ---------- Appareil sur trépied ----------
+const tete = new THREE.Group(); tete.position.copy(TETE); S.scene.add(tete);
+// dans le repère de la tête, l'objectif pointe vers +Z (lookAt)
+const appareil = S.part("appareil", "Appareil photo", {
+  parent: tete, ancre: [0, 0.42, -0.14],
+  texte: "Au fond du boîtier, le capteur est une grille de millions de pixels. Pendant la pose, chaque pixel accumule la lumière qu'il reçoit. Si l'image d'une étoile passe d'un pixel à l'autre, elle dessine un trait au lieu d'un point. Plus les pixels sont petits, plus vite ce trait apparaît.",
+  extra: () => `<p class="spec">${cap().nom === "APS-C" ? "APS-C" : "Plein format"} ${fmt(cap().w, cap().w % 1 ? 1 : 0)} × ${fmt(cap().h, cap().h % 1 ? 1 : 0)} mm · ${cap().def} · pixels de ${fmtPix()} µm · facteur de recadrage ${fmt(cap().crop, cap().crop % 1 ? 1 : 0)}</p>
+    <p class="spec">Règle NPF (Société astronomique de France), plus fine car elle tient compte des pixels et de l'ouverture : (35 × ${fmt(N_OUVERTURE, 1)} + 30 × ${fmtPix()}) ÷ ${sim.focale} = ${fmtPose(npf())} à f/2,8.</p>`,
+});
+{
+  S.add(appareil, mesh(new THREE.BoxGeometry(0.54, 0.36, 0.24), M.noir(), 0, 0, -0.14));
+  S.add(appareil, mesh(new THREE.BoxGeometry(0.13, 0.36, 0.16), M.caoutchouc(), -0.23, -0.01, -0.06));   // poignée (à droite vue de derrière)
+  S.add(appareil, mesh(new THREE.BoxGeometry(0.2, 0.13, 0.2), M.noir(), 0, 0.23, -0.14));                // viseur
+  S.add(appareil, mesh(new THREE.BoxGeometry(0.36, 0.24, 0.01), M.verre(), 0.04, -0.01, -0.265));         // écran arrière
+  S.add(appareil, mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.03, 16), M.alu(), -0.2, 0.195, -0.08)); // déclencheur
+  S.add(appareil, mesh(axeZ(new THREE.CylinderGeometry(0.15, 0.15, 0.03, 40)), M.alu(), 0, 0, -0.005));   // baïonnette
+}
+const objectif = S.part("objectif", "Objectif", {
+  parent: tete, ancre: [0, 0.3, 0.3],
+  texte: "Il forme l'image du ciel sur le capteur. Sa focale fixe le champ photographié et la vitesse à laquelle les étoiles glissent sur le capteur : à 50 mm, elles glissent deux fois plus vite qu'à 24 mm. Un grand-angle lumineux, de 14 à 24 mm ouvert à f/2,8, est idéal pour débuter.",
+  extra: () => {
+    const [a, b] = champ(), v = vitessePx(0);
+    return `<p class="spec">${sim.focale} mm sur ${cap().nom} : champ ${fmt(a, a < 20 ? 1 : 0)}° × ${fmt(b, b < 20 ? 1 : 0)}° · à l'équateur céleste, une étoile glisse de ${fmt(sim.focale * OMEGA * 1000, 2)} µm par seconde, soit 1 pixel toutes les ${fmt(1 / v, 1)} s</p>`;
+  },
+});
+const OBJECTIFS = { 14: { L: 0.46, r: 0.16, dome: true }, 24: { L: 0.36, r: 0.15 }, 50: { L: 0.28, r: 0.13 }, 135: { L: 0.78, r: 0.15 } };
+function construireObjectif() {
+  S.viderElement(objectif);
+  const o = OBJECTIFS[sim.focale];
+  S.add(objectif, mesh(axeZ(new THREE.CylinderGeometry(o.r, o.r * 0.95, o.L, 40)), M.noir(), 0, 0, o.L / 2 + 0.01));
+  S.add(objectif, mesh(axeZ(new THREE.CylinderGeometry(o.r + 0.012, o.r + 0.012, o.L * 0.3, 40)), M.caoutchouc(), 0, 0, o.L * 0.55));  // bague de mise au point
+  S.add(objectif, mesh(axeZ(new THREE.TorusGeometry(o.r - 0.01, 0.012, 8, 40)), M.alu(), 0, 0, o.L + 0.01));
+  if (o.dome) {
+    const d = S.add(objectif, mesh(new THREE.SphereGeometry(o.r * 0.9, 32, 12, 0, 2 * Math.PI, 0, Math.PI / 2.6), M.lentille(), 0, 0, o.L - 0.05));
+    d.rotation.x = Math.PI / 2;
+  } else {
+    S.add(objectif, mesh(axeZ(new THREE.CylinderGeometry(o.r - 0.02, o.r - 0.02, 0.01, 40)), M.lentille(), 0, 0, o.L + 0.005));
+  }
+  objectif.ancre.set(0, o.r + 0.12, o.L * 0.6);
+}
+const trepied = S.part("trepied", "Trépied", {
+  ancre: [0.55, 0.75, 0.2],
+  texte: "Il tient l'appareil immobile… par rapport au sol. Mais le sol tourne avec la Terre : le trépied ne suit pas le ciel. Pour poser plus longtemps sans filé, il faut une monture motorisée qui tourne en sens inverse, un tour par jour sidéral.",
+  chiffres: "Déclencher avec le retardateur de 2 s ou une télécommande, pour ne pas faire bouger l'appareil",
+});
+{
+  S.add(trepied, mesh(new THREE.SphereGeometry(0.08, 20, 14), M.alu(), 0, TETE.y - 0.2, 0));              // rotule
+  S.add(trepied, mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 16), M.alu(), 0, TETE.y - 0.33, 0)); // colonne
+  S.add(trepied, mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.08, 24), M.noir(), 0, TETE.y - 0.46, 0));   // araignée
+  const haut = new THREE.Vector3(0, TETE.y - 0.48, 0), Y = new THREE.Vector3(0, 1, 0);
+  for (let k = 0; k < 3; k++) {
+    const a = k * 2 * Math.PI / 3 + Math.PI / 6;
+    const pied = new THREE.Vector3(Math.cos(a) * 0.62, 0, Math.sin(a) * 0.62);
+    const d = pied.clone().sub(haut), L = d.length(), u = d.clone().normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(Y, u);
+    for (const [r, f0, f1, mat] of [[0.03, 0, 0.55, M.alu()], [0.022, 0.55, 0.98, M.alu()], [0.032, 0.53, 0.58, M.noir()], [0.035, 0.97, 1, M.caoutchouc()]]) {
+      const m = S.add(trepied, mesh(new THREE.CylinderGeometry(r, r, L * (f1 - f0), 12), mat));
+      m.quaternion.copy(q);
+      m.position.copy(haut).addScaledVector(u, L * (f0 + f1) / 2);
+    }
+  }
+}
+
+// ---------- Champ photographié (sur la sphère) ----------
+const cadre = new THREE.Group(); S.scene.add(cadre);
+const pChamp = S.part("champ", "Champ photographié", {
+  ancre: [0, 0, 0],
+  texte: "La portion du ciel que l'objectif projette sur le capteur. Une courte focale embrasse un grand champ, et chaque étoile y glisse lentement. Une longue focale grossit : le champ se resserre et le filé arrive vite.",
+  extra: () => { const [a, b] = champ(); return `<p class="spec">${sim.focale} mm sur ${cap().nom} : ${fmt(a, a < 20 ? 1 : 0)}° × ${fmt(b, b < 20 ? 1 : 0)}° (la Lune mesure 0,5°)</p>`; },
+});
+let base = null;   // repère de l'image : f (visée), d (droite), h (haut)
+/** Projection d'une direction sur le capteur (mm depuis le centre), ou null si elle est derrière. */
+function projeter(dir) {
+  const z = dir.dot(base.f);
+  if (z < 0.02) return null;
+  return [sim.focale * dir.dot(base.d) / z, sim.focale * dir.dot(base.h) / z];
+}
+/** Direction visée par un point (u, v) du capteur, en mm. */
+const versCiel = (u, v) => base.f.clone().multiplyScalar(sim.focale).addScaledVector(base.d, u).addScaledVector(base.h, v).normalize();
+const lignesCadre = new THREE.Group(); cadre.add(lignesCadre);
+function construireCadre() {
+  for (const o of lignesCadre.children) { o.geometry.dispose(); o.material.dispose(); }
+  lignesCadre.clear();
+  S.viderElement(pChamp);
+  const { w, h } = cap(), N = 24, bord = [];
+  const coins = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]];
+  for (let c = 0; c < 4; c++) for (let i = 0; i < N; i++) {
+    const t = i / N, [a, b] = coins[c], [a2, b2] = coins[c + 1];
+    bord.push(versCiel((a + (a2 - a) * t) * w / 2, (b + (b2 - b) * t) * h / 2).multiplyScalar(R * 0.985));
+  }
+  bord.push(bord[0].clone());
+  lignesCadre.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(bord), new THREE.LineBasicMaterial({ color: 0xc4d0e0, transparent: true, opacity: 0.75, depthWrite: false })));
+  const aretes = [];
+  for (const [a, b] of coins.slice(0, 4)) aretes.push(TETE.clone(), versCiel(a * w / 2, b * h / 2).multiplyScalar(R * 0.985));
+  const lA = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(aretes), new THREE.LineBasicMaterial({ color: 0xc4d0e0, transparent: true, opacity: 0.3, depthWrite: false }));
+  lA.name = "aretes";
+  lignesCadre.add(lA);
+  // voile très léger sur le champ (cliquable)
+  const NX = 16, NY = 12, pos = [], idx = [];
+  for (let j = 0; j <= NY; j++) for (let i = 0; i <= NX; i++) pos.push(...versCiel((i / NX - 0.5) * w, (j / NY - 0.5) * h).multiplyScalar(R * 0.998).toArray());
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) { const a = j * (NX + 1) + i; idx.push(a, a + 1, a + NX + 1, a + 1, a + NX + 2, a + NX + 1); }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+  const voile = S.add(pChamp, new THREE.Mesh(g, M.lumineux(0xc4d0e0, 0.05)));
+  voile.renderOrder = -1;
+  pChamp.ancre.copy(versCiel(0, h / 2).multiplyScalar(R * 1.04));
+}
+
+// ---------- Mise à jour après un réglage ----------
+let candidates = [], focalePrec = null;
+const affiche = {};
+function recaler(id, v) {
+  if (affiche[id] === v) return;
+  affiche[id] = v; pilote = true; S.regler(id, v); pilote = false;
+}
+function maj() {
+  if (sim.mode === "500") sim.pose = regle(500);
+  if (sim.mode === "300") sim.pose = regle(300);
+  if (sim.mode === "1h") sim.pose = 3600;
+  affiche.pose = null; recaler("pose", indiceDe(sim.pose));
+  // l'appareil vise l'étoile choisie, horizon de niveau
+  const f = direction0(visee());
+  tete.lookAt(TETE.clone().add(f));
+  const d = f.clone().cross(new THREE.Vector3(0, 1, 0)).normalize();
+  base = { f, d, h: d.clone().cross(f) };
+  if (focalePrec !== sim.focale) { construireObjectif(); focalePrec = sim.focale; }
+  construireCadre();
+  // étoiles susceptibles d'apparaître sur l'image pendant la pose
+  const { w, h } = cap();
+  const lim = Math.min(89, Math.atan(Math.hypot(w, h) / 2 / sim.focale) / DEG + sim.pose * OMEGA / DEG + 2);
+  const cosLim = Math.cos(lim * DEG);
+  candidates = ETOILES_DIR.filter((e) => e.dir.dot(f) > cosLim);
+  // boutons actifs
+  for (const fo of FOCALES) document.getElementById("r-f" + fo).setAttribute("aria-pressed", String(fo === sim.focale));
+  for (const id of Object.keys(CAPTEURS)) document.getElementById("r-c" + id).setAttribute("aria-pressed", String(id === sim.capteur));
+  for (const id of Object.keys(VISEES)) document.getElementById("r-v" + id).setAttribute("aria-pressed", String(id === sim.visee));
+  for (const m of ["500", "300", "1h"]) document.getElementById("r-p" + m).setAttribute("aria-pressed", String(sim.mode === m));
+  debutCycle = S.time;
+  legendes();
+  apercuSale = true;
+  S.refreshInfo();
+}
+
+// ---------- Encarts : l'image sur le capteur et la loupe ----------
+const [apImage, apLoupe] = S.apercus;
+const lblEcoule = document.createElement("span");
+function preparer(canvas, W, H) {
+  const dpr = Math.min(devicePixelRatio, 2);
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = H + "px";
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return ctx;
+}
+/** Dérive (pixels) d'un point du ciel pendant une pose de t secondes. */
+function derive(dir, t) {
+  const a = projeter(dir), b = projeter(dir.clone().applyAxisAngle(POLE, -t * OMEGA));
+  if (!a || !b) return 0;
+  return Math.hypot(b[0] - a[0], b[1] - a[1]) * 1000 / cap().pix;
+}
+function deriveMax(t) {
+  const { w, h } = cap(); let m = 0;
+  for (let j = 0; j <= 4; j++) for (let i = 0; i <= 4; i++) m = Math.max(m, derive(versCiel((i / 4 - 0.5) * w, (j / 4 - 0.5) * h), t));
+  return m;
+}
+function legendes() {
+  const [a, b] = champ(), dc = derive(direction0(visee()), sim.pose), dm = deriveMax(sim.pose), v = verdict(dc);
+  const t2 = 2 / vitessePx(visee().dec);
+  apImage.legende.innerHTML = `<span>${sim.focale} mm en ${cap().nom} : champ de ${fmt(a, a < 20 ? 1 : 0)}° × ${fmt(b, b < 20 ? 1 : 0)}° · pose de ${fmtPose(sim.pose)}</span>
+    <span>Dérive : ${nbPx(dc)} au centre, jusqu'à ${nbPx(dm)} dans le cadre</span>`;
+  apImage.legende.append(lblEcoule);
+  apLoupe.legende.innerHTML = `<span><strong style="color:${css(v.couleur)}">${v.mot}</strong> : pendant la pose, l'étoile au centre glisse de ${nbPx(dc)}.</span>
+    <span>Au centre, moins de 2 pixels jusqu'à ${fmtPose(t2)} de pose. 1 case = 1 pixel de ${fmtPix()} µm.</span>`;
+}
+
+const tmp = new THREE.Vector3();
+let largeurs = [0, 0];
+function dessinerImage() {
+  const cv = apImage.canvas, W = cv.clientWidth;
+  if (!W) return;
+  const { w, h, pix } = cap(), H = Math.round(W * h / w), s = W / w;
+  const ctx = preparer(cv, W, H);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#03060d"; ctx.fillRect(0, 0, W, H);
+  const xy = (p) => [W / 2 + p[0] * s, H / 2 - p[1] * s];
+  // échantillons du trajet : rotations communes à toutes les étoiles
+  const arc = ecoule * OMEGA, n = 2 + Math.min(70, Math.ceil(arc / DEG * 3));
+  const rots = Array.from({ length: n }, (_, k) => new THREE.Quaternion().setFromAxisAngle(POLE, -arc * k / (n - 1)));
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const k = W / 380;
+  for (const e of candidates) {
+    const r = Math.min(3, Math.max(0.45, 2.7 - 0.4 * e.mag)) * k;
+    const alpha = Math.min(1, Math.max(0.22, 1.15 - 0.16 * e.mag));
+    ctx.strokeStyle = ctx.fillStyle = `rgba(${Math.round(e.teinte.r * 255)},${Math.round(e.teinte.g * 255)},${Math.round(e.teinte.b * 255)},${alpha})`;
+    ctx.beginPath();
+    let premier = null, dernier = null;
+    for (const q of rots) {
+      tmp.copy(e.dir).applyQuaternion(q);
+      if (tmp.y < -0.01) { premier = null; continue; }   // sous l'horizon
+      const p = projeter(tmp);
+      if (!p) continue;
+      const [x, y] = xy(p);
+      if (!premier) { premier = [x, y]; ctx.moveTo(x, y); } else ctx.lineTo(x, y);
+      dernier = [x, y];
+    }
+    if (!premier) continue;
+    if (Math.hypot(dernier[0] - premier[0], dernier[1] - premier[1]) < r * 0.5) {
+      ctx.beginPath(); ctx.arc(dernier[0], dernier[1], r, 0, 2 * Math.PI); ctx.fill();
+    } else { ctx.lineWidth = 2 * r; ctx.stroke(); }
+  }
+  ctx.globalCompositeOperation = "source-over";
+  // sol, s'il entre dans le cadre
+  const sol = [];
+  for (let az = 0; az <= 360; az += 2) {
+    const p = projeter(new THREE.Vector3(Math.sin(az * DEG), 0, -Math.cos(az * DEG)));
+    if (p && Math.abs(p[0]) < w * 3) sol.push(xy(p));
+  }
+  if (sol.length > 1 && sol.some(([, y]) => y < H)) {
+    sol.sort((a, b) => a[0] - b[0]);
+    ctx.fillStyle = "#141c14";
+    ctx.beginPath(); ctx.moveTo(sol[0][0], H + 2);
+    for (const [x, y] of sol) ctx.lineTo(x, y);
+    ctx.lineTo(sol[sol.length - 1][0], H + 2); ctx.closePath(); ctx.fill();
+  }
+  // repère de la loupe, autour de l'étoile visée
+  const c = projeter(direction0(visee()));
+  if (c) {
+    const [x, y] = xy(c);
+    ctx.strokeStyle = "rgba(196,208,224,0.55)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, 9 * k, 0, 2 * Math.PI); ctx.stroke();
+  }
+  // cadre du capteur et format
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+}
+function dessinerLoupe() {
+  const cv = apLoupe.canvas, W = cv.clientWidth;
+  if (!W) return;
+  const pix = cap().pix;
+  const enPx = (p) => [p[0] * 1000 / pix, p[1] * 1000 / pix];
+  // trajet de l'étoile visée, en pixels du capteur
+  const dir = direction0(visee());
+  const dTot = derive(dir, ecoule), dFin = derive(dir, sim.pose);
+  const ns = Math.min(300, Math.max(2, Math.ceil(dTot * 3)));
+  const pts = [];
+  for (let i = 0; i < ns; i++) {
+    const p = projeter(dir.clone().applyAxisAngle(POLE, -ecoule * OMEGA * i / (ns - 1)));
+    if (p) pts.push(enPx(p));
+  }
+  if (!pts.length) return;
+  // grille fixe pendant toute la pose, à la taille du trait final
+  const N = Math.min(41, Math.max(15, 2 * Math.ceil((dFin + 8) / 2) + 1)), NL = Math.max(9, 2 * Math.round(N * 0.3) + 1);
+  const c = W / N, mx = (N - 1) / 2, my = (NL - 1) / 2, H = Math.round(NL * c);
+  const ctx = preparer(cv, W, H);
+  ctx.fillStyle = "#03060d"; ctx.fillRect(0, 0, W, H);
+  // centre de la loupe : milieu du trait final, ou position actuelle de l'étoile si le trait déborde
+  const deborde = dFin + 6 >= NL && dFin + 6 >= N * 0.9;
+  const a = pts[0], fin = enPx(projeter(dir.clone().applyAxisAngle(POLE, -sim.pose * OMEGA)) || [0, 0]);
+  const [cx, cy] = deborde ? pts[pts.length - 1] : [(a[0] + fin[0]) / 2, (a[1] + fin[1]) / 2];
+  const ox = Math.round(cx), oy = Math.round(cy);
+  const sig2 = 2 * 0.85 * 0.85;   // tache de l'étoile : largeur à mi-hauteur ≈ 2 pixels (turbulence, optique)
+  const t = teinteBV(visee().bv);
+  for (let j = 0; j < NL; j++) for (let i = 0; i < N; i++) {
+    const px = ox + i - mx, py = oy + my - j;
+    let I = 0;
+    for (const p of pts) { const dx = p[0] - px, dy = p[1] - py; const d2 = dx * dx + dy * dy; if (d2 < 12) I += Math.exp(-d2 / sig2); }
+    I /= pts.length;
+    if (I < 0.004) continue;
+    const v = Math.sqrt(Math.min(1, I));
+    ctx.fillStyle = `rgb(${Math.round(t.r * 255 * v)},${Math.round(t.g * 255 * v)},${Math.round(t.b * 255 * v)})`;
+    ctx.fillRect(i * c, j * c, c + 0.5, c + 0.5);
+  }
+  // grille des pixels
+  ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < N; i++) { ctx.moveTo(i * c, 0); ctx.lineTo(i * c, H); }
+  for (let j = 1; j < NL; j++) { ctx.moveTo(0, j * c); ctx.lineTo(W, j * c); }
+  ctx.stroke();
+  if (deborde) {
+    ctx.font = `${Math.round(W / 28)}px Arial`; ctx.fillStyle = "#c4d0e0"; ctx.textAlign = "left";
+    ctx.fillText(`Trait final de ${nbPx(dFin)} : il déborde de la loupe`, 8, H - 8);
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+}
+
+// ---------- Animation : l'obturateur s'ouvre, les étoiles glissent, puis la pose recommence ----------
+const OUVERT = 6, PAUSE = 2.5;   // secondes d'animation pour toute la pose, puis temps d'arrêt sur l'image finale
+let ecoulePrec = -1, ecouleTexte = "";
+S.onFrame(({ time }) => {
+  const anime = S.state.anim && !S.reduced;
+  const phase = (time - debutCycle) % (OUVERT + PAUSE);
+  ecoule = anime ? Math.min(1, phase / OUVERT) * sim.pose : sim.pose;
+  U.arc.value = ecoule * OMEGA;
+  voute.rotation.y = -(T0 * DEG + ecoule * OMEGA);
+  sphere.updateMatrixWorld(true);
+
+  const yeux = parSesYeux();
+  U.sous.value = yeux ? 0 : 0.15;
+  U.echelle.value = S.renderer.getPixelRatio() * Math.min(1, Math.max(0.55, 18 / S.camera.position.length()));
+  matSol.opacity = yeux ? 1 : 0.88;
+  matSol.depthWrite = yeux;
+  tete.visible = trepied.group.visible = !yeux;
+  cadre.visible = S.state.cadre;
+  lignesCadre.getObjectByName("aretes").visible = !yeux;
+  constellations.visible = S.state.constellations;
+  reperes.visible = S.state.reperes;
+  files.visible = ecoule > 0;
+  pAxe.group.visible = !yeux;   // par l'objectif, son étiquette recouvrirait celle de la Polaire
+  for (const v of Object.values(VISEES)) v.halo.visible = !yeux && v === visee();
+
+  // encarts : redessinés quand la pose avance ou que leur taille change
+  const lw = [apImage.canvas.clientWidth, apLoupe.canvas.clientWidth];
+  if (apercuSale || ecoule !== ecoulePrec || lw[0] !== largeurs[0] || lw[1] !== largeurs[1]) {
+    dessinerImage(); dessinerLoupe();
+    ecoulePrec = ecoule; largeurs = lw; apercuSale = false;
+    const txt = anime ? `Obturateur ouvert : ${fmtPose(ecoule)} sur ${fmtPose(sim.pose)}` : "";
+    if (txt !== ecouleTexte) { lblEcoule.textContent = txt; ecouleTexte = txt; }
+  }
+});
+
+maj();
+pilote = true; S.start(); pilote = false;   // le curseur de pose garde la valeur exacte de la règle choisie
+</script>
+</body>
+</html>

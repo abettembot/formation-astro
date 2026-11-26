@@ -595,7 +595,7 @@ const MOBILE = 760;
  *  - surtitre, titre, sousTitre : en-tête du panneau
  *  - vues : [{ id, label, pos:[x,y,z], cible:[x,y,z] }] — la première est la vue de départ
  *           pos et cible peuvent être des fonctions (renvoyant un tableau ou un Vector3).
- *           Options : fov (champ en degrés, 38 par défaut), exacte:true (pas de recul sur mobile),
+ *           Options : fov (champ vertical en degrés, 38 par défaut ; nombre ou fonction), exacte:true (pas de recul sur mobile),
  *           suivre:true (la caméra suit pos/cible à chaque image jusqu'à ce que l'utilisateur bouge la vue),
  *           immersif:true (vue « par les yeux » : la caméra reste au point pos et tourne sur elle-même ;
  *           glisser oriente le regard, la molette ou le pincement élargit ou resserre le champ,
@@ -923,7 +923,7 @@ export function createSchema(cfg) {
   let camAnim = null, vueSuivie = null;
   const vec = (x) => { const r = typeof x === "function" ? x() : x; return r.isVector3 ? r.clone() : new THREE.Vector3(...r); };
   function cadrage(v) {
-    const to = { pos: vec(v.pos), target: vec(v.cible), fov: v.fov ?? FOV };
+    const to = { pos: vec(v.pos), target: vec(v.cible), fov: (typeof v.fov === "function" ? v.fov() : v.fov) ?? FOV };
     // vue immersive : la cible est posée juste devant l'œil, la caméra tourne donc sur elle-même
     if (v.immersif) to.target.sub(to.pos).setLength(0.01).add(to.pos);
     else if (innerWidth < MOBILE && !v.exacte) to.pos.sub(to.target).multiplyScalar(1.35).add(to.target);
